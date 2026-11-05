@@ -68,9 +68,10 @@ class Board implements Component {
   private query = "";
   private mine = false;
   private assigneeFilter: string | undefined; // undefined = everyone, "" = unassigned
-  private pending = 0; // reloads in flight; tickets and PRs can load side by side
+  // Views with a load in flight. PRs load in the background from the start, so each view tracks its own.
+  private inFlight = new Set<"tickets" | "prs">();
   private get loading() {
-    return this.pending > 0;
+    return this.inFlight.has(this.view);
   }
   private status = "";
   private statusColor: Color = "overlay";
@@ -91,7 +92,8 @@ class Board implements Component {
     private me: string | undefined,
     private quit: () => void,
   ) {
-    void this.reload();
+    void this.reload("tickets");
+    void this.reload("prs");
   }
 
   private refresh = () => this.tui.requestRender();
@@ -106,17 +108,19 @@ class Board implements Component {
   }
 
   private async reload(which = this.view) {
-    this.pending++;
+    if (this.inFlight.has(which)) return;
+    this.inFlight.add(which);
     this.refresh();
     try {
       if (which === "prs") this.prs = await openPrs();
       else this.issues = await this.jira.issues(this.jql);
-      this.details.clear();
-      this.say("");
+      // PR keys hold a `#`, ticket keys don't: keep the other view's cached details.
+      for (const key of this.details.keys()) if (key.includes("#") === (which === "prs")) this.details.delete(key);
+      if (which === this.view) this.say("");
     } catch (e: any) {
-      this.say(String(e.message ?? e), "red");
+      this.say(`${which === "prs" ? "PRs" : "Tickets"}: ${e.message ?? e}`, "red");
     } finally {
-      this.pending--;
+      this.inFlight.delete(which);
       this.refresh();
     }
   }
@@ -342,7 +346,7 @@ class Board implements Component {
       this.assigneeFilter = undefined;
       this.query = "";
       move(0);
-      if (this.view === "prs" && !this.prs) void this.reload();
+      if (this.view === "prs" && !this.prs) void this.reload(); // the startup load failed
     } else if (matchesKey(data, "ctrl+o")) {
       if (this.view === "prs") this.prFilter = ({ all: "requested", requested: "mine", mine: "all" } as const)[this.prFilter];
       else this.mine = !this.mine && !!this.me;

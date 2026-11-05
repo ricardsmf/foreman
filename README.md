@@ -43,7 +43,7 @@ or write extra context, `enter` dispatch, `esc` back.
 ## Reviews
 
 - The PR view lists open PRs in the GitHub repos checked out under `~/work/code`, from `gh` (its own
-  sign-in), leaving out bots'. PRs that request your review come first, marked `requested`, then
+  sign-in), leaving out bots'. They load in the background when the board starts. PRs that request your review come first, marked `requested`, then
   yours.
 - Your PRs show their review state (`in review`, `approved`, `changes`, `conflict`, `draft`) and CI
   (`✓` passed, `✗` failed, `●` running). Red means something needs you; green means approved with CI
