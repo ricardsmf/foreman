@@ -82,7 +82,7 @@ function which(bin: string): string {
   return Bun.which(bin) ?? bin;
 }
 
-/** Creates or reuses the ticket's worktree and starts the agent on it in a new Rex tab. */
+/** Creates or reuses the ticket's worktree and starts the agent on it in a new Rex session named after the ticket. */
 export async function dispatch(jira: Jira, d: Dispatch, progress: (line: string) => void): Promise<string> {
   const { issue, repo } = d;
   const keyLower = issue.key.toLowerCase();
@@ -143,12 +143,20 @@ export async function dispatch(jira: Jira, d: Dispatch, progress: (line: string)
       ? [which("pi"), prompt]
       : [which("claude"), "--mcp-config", MCP_CONFIG, ...(d.agent === "Claude (yolo)" ? ["--dangerously-skip-permissions"] : []), prompt];
   progress(`Starting ${d.agent}…`);
-  const rex = ["rex", "run", "--cwd", cwd, "--label", `${issue.key} ${d.agent}`, "--focus=false"];
-  if (process.env.REX_SESSION) rex.push("-s", process.env.REX_SESSION);
-  await sh([...rex, "--", ...cmd]);
+  // `rex new` starts the session in the background; the app stays on the board.
+  const session = await freeSessionLabel(`${keyLower}-${slug(issue.summary).split("-").slice(0, 3).join("-")}`);
+  await sh(["rex", "new", session, "--cwd", cwd, "--window", d.agent, "--", ...cmd]);
 
   const state = loadState();
   state.dispatched[issue.key] = cwd;
   saveState(state);
-  return `✓ ${d.agent} is working on ${issue.key} in ${tilde(cwd)} (${branch})`;
+  return `✓ ${d.agent} is working on ${issue.key} in session ${session} · ${tilde(cwd)} (${branch})`;
+}
+
+async function freeSessionLabel(base: string): Promise<string> {
+  const { sessions } = JSON.parse(await sh(["rex", "ls", "--json"])) as { sessions: { label: string }[] };
+  const taken = new Set(sessions.map((s) => s.label));
+  let label = base;
+  for (let n = 2; taken.has(label); n++) label = `${base}-${n}`;
+  return label;
 }
