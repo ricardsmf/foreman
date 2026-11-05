@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSy
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Issue, Jira } from "./jira.ts";
+import { jiraKey, markdown, view, type Pr } from "./github.ts";
 
 export const REPO_ROOTS = [join(homedir(), "work", "code"), join(homedir(), "projects")];
 const BRANCH_PREFIX = "rf/";
@@ -71,7 +72,7 @@ function slug(text: string): string {
     .join("-");
 }
 
-async function sh(cmd: string[], cwd?: string): Promise<string> {
+export async function sh(cmd: string[], cwd?: string): Promise<string> {
   const p = Bun.spawn(cmd, { cwd, stdout: "pipe", stderr: "pipe" });
   const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
   if (code !== 0) throw new Error(err.trim() || `${cmd.join(" ")} exited ${code}`);
@@ -137,20 +138,92 @@ export async function dispatch(jira: Jira, d: Dispatch, progress: (line: string)
     "5. **Finish** with a short summary: what changed, how you verified it, and anything left open.",
   ].join("\n");
 
+  const session = await start(d.agent, prompt, cwd, `${keyLower}-${slug(issue.summary).split("-").slice(0, 3).join("-")}`, progress);
+  markDispatched(issue.key, cwd);
+  return `✓ ${d.agent} is working on ${issue.key} in session ${session} · ${tilde(cwd)} (${branch})`;
+}
+
+export interface ReviewDispatch {
+  pr: Pr;
+  agent: AgentLabel;
+  context: string;
+}
+
+/** Checks the PR's head out detached in `<repo>-pr-<n>` (refreshed if it exists) and starts a read-only review. */
+export async function dispatchReview(jira: Jira, d: ReviewDispatch, progress: (line: string) => void): Promise<string> {
+  const { pr } = d;
+  const repo = pr.checkout;
+  const cwd = `${repo}-pr-${pr.number}`;
+  progress(`Reading ${pr.key}…`);
+  const v = await view(pr);
+
+  progress("Fetching the PR head…");
+  // Naming the base updates origin/<base> too, so the diff's left side is current.
+  await sh(["git", "-C", repo, "fetch", "--quiet", "origin", v.baseRefName, `pull/${pr.number}/head`]);
+  const head = v.headRefOid;
+  if (existsSync(cwd)) {
+    const dirty = (await sh(["git", "-C", cwd, "status", "--porcelain"])).trim();
+    if (dirty) throw new Error(`${tilde(cwd)} has uncommitted changes; clean it up or remove the worktree`);
+    await sh(["git", "-C", cwd, "checkout", "--quiet", "--detach", head]);
+    progress(`Updated worktree ${tilde(cwd)} to ${v.headRefOid.slice(0, 8)}`);
+  } else {
+    await sh(["git", "-C", repo, "worktree", "add", "--detach", cwd, head]);
+    progress(`Created worktree ${tilde(cwd)} at ${v.headRefOid.slice(0, 8)}`);
+  }
+
+  const key = jiraKey(pr, v);
+  let ticket: string | undefined;
+  if (key) {
+    progress(`Reading ${key}…`);
+    ticket = await jira.detail(key).catch(() => undefined);
+  }
+  const base = `origin/${v.baseRefName}`;
+  const prompt = [
+    `# Review ${pr.repo}#${pr.number}: "${v.title}"`,
+    "",
+    `You are reviewing a pull request by ${v.author.login}. Do not change it.`,
+    `Working directory: ${cwd}`,
+    `Checked out: the PR head ${v.headRefOid} (detached), a git worktree created for this review.`,
+    `Diff to review: \`git diff ${base}...HEAD\` (\`${v.headRefName}\` → \`${v.baseRefName}\`).`,
+    "",
+    "## Pull request",
+    "",
+    markdown(pr, v),
+    ...(ticket ? ["", "## Jira ticket", "", ticket] : key ? ["", `The PR mentions ${key}, but the ticket could not be read.`] : []),
+    ...(d.context ? ["", "## Extra context from me", "", d.context] : []),
+    "",
+    "## Workflow",
+    "",
+    "1. **Understand.** Read the repo's AGENTS.md / CLAUDE.md, the PR description" + (ticket ? ", the ticket's acceptance criteria" : "") + ", and the code around each change.",
+    "2. **Review** the diff for correctness, missed cases, regressions, security, tests, and fit with the codebase's conventions" + (ticket ? "; check it against the ticket" : "") + ".",
+    "3. **Verify** where it helps: run the tests and linters that cover the changed code. Don't edit tracked files.",
+    "4. **Report** in your final message: a verdict, then findings ordered by severity, each with `file:line`, what is wrong and a suggested fix. Separate blocking issues from nits.",
+    "",
+    "Do not commit, push, comment on, approve or request changes on the PR, or touch the Jira ticket. I'll post the review myself.",
+  ].join("\n");
+
+  const session = await start(d.agent, prompt, cwd, `review-${slug(pr.key)}`, progress);
+  markDispatched(pr.key, cwd);
+  return `✓ ${d.agent} is reviewing ${pr.key} in session ${session} · ${tilde(cwd)}`;
+}
+
+async function start(agent: AgentLabel, prompt: string, cwd: string, label: string, progress: (line: string) => void): Promise<string> {
   // Absolute paths: the fish `claude` function would otherwise add a second --mcp-config.
   const cmd =
-    d.agent === "pi"
+    agent === "pi"
       ? [which("pi"), prompt]
-      : [which("claude"), "--mcp-config", MCP_CONFIG, ...(d.agent === "Claude (yolo)" ? ["--dangerously-skip-permissions"] : []), prompt];
-  progress(`Starting ${d.agent}…`);
+      : [which("claude"), "--mcp-config", MCP_CONFIG, ...(agent === "Claude (yolo)" ? ["--dangerously-skip-permissions"] : []), prompt];
+  progress(`Starting ${agent}…`);
   // `rex new` starts the session in the background; the app stays on the board.
-  const session = await freeSessionLabel(`${keyLower}-${slug(issue.summary).split("-").slice(0, 3).join("-")}`);
-  await sh(["rex", "new", session, "--cwd", cwd, "--window", d.agent, "--", ...cmd]);
+  const session = await freeSessionLabel(label);
+  await sh(["rex", "new", session, "--cwd", cwd, "--window", agent, "--", ...cmd]);
+  return session;
+}
 
+function markDispatched(key: string, cwd: string) {
   const state = loadState();
-  state.dispatched[issue.key] = cwd;
+  state.dispatched[key] = cwd;
   saveState(state);
-  return `✓ ${d.agent} is working on ${issue.key} in session ${session} · ${tilde(cwd)} (${branch})`;
 }
 
 async function freeSessionLabel(base: string): Promise<string> {
