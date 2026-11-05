@@ -17,6 +17,7 @@ export interface Pr {
   url: string;
   checkout: string;
   requested: boolean;
+  mine: boolean;
 }
 
 export interface PrView {
@@ -32,6 +33,8 @@ export interface PrView {
   changedFiles: number;
   isDraft: boolean;
   reviewDecision: string;
+  mergeable: string;
+  statusCheckRollup: { name?: string; context?: string; status?: string; conclusion?: string; state?: string }[];
   files: { path: string; additions: number; deletions: number }[];
 }
 
@@ -52,45 +55,89 @@ async function checkouts(): Promise<Map<string, string>> {
 let login: Promise<string> | undefined;
 export const me = () => (login ??= sh(["gh", "api", "user", "-q", ".login"]).then((s) => s.trim()));
 
-/** Open PRs by humans other than me in repos I have checked out; review requests first. */
+// One GraphQL request carries every search, so review requests and my PRs ride on the first page of
+// all open PRs. Only mine ask for review, CI and merge state: on every PR those fields make the
+// search several times slower. Search pages hold 100, so each further 100 PRs is another request.
+const PRS = `query($all: String!, $requested: String!, $mine: String!, $first: Boolean!, $after: String) {
+  all: search(query: $all, type: ISSUE, first: 100, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes { ... on PullRequest { number title url isDraft updatedAt repository { name nameWithOwner } author { __typename login } } }
+  }
+  requested: search(query: $requested, type: ISSUE, first: 100) @include(if: $first) {
+    nodes { ... on PullRequest { number repository { nameWithOwner } } }
+  }
+  mine: search(query: $mine, type: ISSUE, first: 100) @include(if: $first) {
+    nodes { ... on PullRequest {
+      number reviewDecision mergeable repository { nameWithOwner }
+      commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
+    } }
+  }
+}`;
+
+/** My PR's status cell and colour category from its review, CI and merge state. */
+function myStatus(p: any): { status: string; category: string } {
+  const ci: string | undefined = p.commits?.nodes?.[0]?.commit?.statusCheckRollup?.state;
+  const mark = ci === "SUCCESS" ? " ✓" : ci === "FAILURE" || ci === "ERROR" ? " ✗" : ci ? " ●" : "";
+  const review =
+    p.isDraft ? "draft" : p.mergeable === "CONFLICTING" ? "conflict" : ({ APPROVED: "approved", CHANGES_REQUESTED: "changes" } as any)[p.reviewDecision] ?? "in review";
+  const failing = mark === " ✗" || review === "changes" || review === "conflict";
+  const category = failing ? "Blocked" : review === "approved" && mark !== " ●" ? "Done" : mark === " ●" ? "In Progress" : "To Do";
+  return { status: review + mark, category };
+}
+
+/** Open PRs in repos I have checked out: review requests, then mine with their status, then other humans'. */
 export async function openPrs(): Promise<Pr[]> {
   const [repos, self] = await Promise.all([checkouts(), me()]);
   if (!repos.size) return [];
-  const repoArgs = [...repos.keys()].flatMap((r) => ["--repo", r]);
-  const search = (...extra: string[]) =>
-    sh(["gh", "search", "prs", "--state", "open", "--limit", "500", ...repoArgs, ...extra]).then((s) => JSON.parse(s) as any[]);
-  const [all, requested] = await Promise.all([
-    search("--json", "number,title,repository,author,url,isDraft,updatedAt"),
-    search("--review-requested", "@me", "--json", "number,repository"),
-  ]);
-  const wanted = new Set(requested.map((p) => `${p.repository.nameWithOwner}#${p.number}`.toLowerCase()));
-  return all
-    .filter((p) => !p.author?.is_bot && p.author?.login !== self)
+  const scope = `is:pr is:open archived:false ${[...repos.keys()].map((r) => `repo:${r}`).join(" ")}`;
+  const nodes: any[] = [];
+  let requested: any[] = [];
+  let mine: any[] = [];
+  let after: string | undefined;
+  for (let page = 0; page < 5; page++) {
+    const vars = [`all=${scope}`, `requested=${scope} review-requested:@me`, `mine=${scope} author:@me`, ...(after ? [`after=${after}`] : [])];
+    const args = ["gh", "api", "graphql", "-f", `query=${PRS}`, ...vars.flatMap((v) => ["-f", v]), "-F", `first=${page === 0}`];
+    const { data } = JSON.parse(await sh(args));
+    nodes.push(...data.all.nodes);
+    if (page === 0) (requested = data.requested.nodes), (mine = data.mine.nodes);
+    if (!data.all.pageInfo.hasNextPage) break;
+    after = data.all.pageInfo.endCursor;
+  }
+  const id = (p: any) => `${p.repository.nameWithOwner}#${p.number}`.toLowerCase();
+  const wanted = new Set(requested.map(id));
+  const status = new Map(mine.map((p) => [id(p), p]));
+  const rank = (pr: Pr) => (pr.requested ? 2 : pr.mine ? 1 : 0);
+  return nodes
+    .filter((p) => p.number && p.author?.__typename !== "Bot")
     .map((p) => {
       const repo: string = p.repository.nameWithOwner;
-      const isRequested = wanted.has(`${repo}#${p.number}`.toLowerCase());
+      const own = status.get(id(p));
+      const isRequested = wanted.has(id(p));
+      const state = own
+        ? myStatus({ ...p, ...own })
+        : { status: isRequested ? "requested" : p.isDraft ? "draft" : "open", category: isRequested ? "In Progress" : "To Do" };
       return {
         pr: {
           key: `${p.repository.name}#${p.number}`,
           summary: p.title,
-          status: isRequested ? "requested" : p.isDraft ? "draft" : "open",
-          category: isRequested ? "In Progress" : "To Do",
+          ...state,
           assignee: p.author?.login ?? "",
           repo,
           number: p.number,
           url: p.url,
           checkout: repos.get(repo.toLowerCase())!,
           requested: isRequested,
+          mine: !!own,
         } satisfies Pr,
         updated: p.updatedAt as string,
       };
     })
-    .sort((a, b) => Number(b.pr.requested) - Number(a.pr.requested) || b.updated.localeCompare(a.updated))
+    .sort((a, b) => rank(b.pr) - rank(a.pr) || b.updated.localeCompare(a.updated))
     .map((x) => x.pr);
 }
 
 export async function view(pr: Pr): Promise<PrView> {
-  const fields = "title,body,url,author,headRefName,baseRefName,headRefOid,additions,deletions,changedFiles,isDraft,reviewDecision,files";
+  const fields = "title,body,url,author,headRefName,baseRefName,headRefOid,additions,deletions,changedFiles,isDraft,reviewDecision,mergeable,statusCheckRollup,files";
   return JSON.parse(await sh(["gh", "pr", "view", String(pr.number), "-R", pr.repo, "--json", fields]));
 }
 
@@ -106,16 +153,35 @@ export function markdown(pr: Pr, v: PrView): string {
       `+${v.additions} −${v.deletions} in ${v.changedFiles} files`,
       v.isDraft ? "Draft" : "",
       v.reviewDecision ? `Review: ${v.reviewDecision.toLowerCase().replace(/_/g, " ")}` : "",
+      v.mergeable === "CONFLICTING" ? "Merge conflicts" : "",
     ]
       .filter(Boolean)
       .join(" · "),
     "",
     v.body.replace(/\r/g, "").trim() || "_No description._",
     "",
+    ...checks(v),
     "## Files",
     "",
     ...files,
   ].join("\n");
+}
+
+/** A Checks section listing failing and running checks, or one line when all pass. */
+function checks(v: PrView): string[] {
+  const all = (v.statusCheckRollup ?? []).map((c) => ({
+    name: c.name ?? c.context ?? "?",
+    state: (c.conclusion || c.state || c.status || "").toUpperCase(),
+  }));
+  if (!all.length) return [];
+  const bad = all.filter((c) => ["FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED"].includes(c.state));
+  const running = all.filter((c) => ["", "PENDING", "QUEUED", "IN_PROGRESS", "EXPECTED", "WAITING"].includes(c.state));
+  const lines = [
+    ...bad.map((c) => `- ✗ **${c.name}** ${c.state.toLowerCase().replace(/_/g, " ")}`),
+    ...running.map((c) => `- ● ${c.name} running`),
+  ];
+  const ok = all.length - bad.length - running.length;
+  return ["## Checks", "", ...lines, ...(lines.length ? [""] : []), `${ok}/${all.length} passed`, ""];
 }
 
 /** The first Jira key in the PR's title or branch, e.g. FLD-1574. */

@@ -24,7 +24,7 @@ separate from pi's and Claude Code's. The OAuth callback listens on `localhost:3
 ## Keys
 
 Board: type to filter (every word must match), `↑↓` pick, `enter` dispatch, `tab` tickets/PRs, `^o`
-mine (on PRs: review requested), `^a` cycle assignee (on PRs: author), `^u`/`^d` scroll the
+mine (on PRs: cycles review requested, mine, everyone), `^a` cycle assignee (on PRs: author), `^u`/`^d` scroll the
 description, `^b` open in browser, `^r` refresh, `esc` quit.
 
 Dispatch form: `tab`/`↑↓` field, `←→` agent or repo, `space` worktree on/off, type to filter repos
@@ -43,8 +43,11 @@ or write extra context, `enter` dispatch, `esc` back.
 ## Reviews
 
 - The PR view lists open PRs in the GitHub repos checked out under `~/work/code`, from `gh` (its own
-  sign-in), leaving out yours and bots'. PRs that request your review come first, marked
-  `requested`.
+  sign-in), leaving out bots'. PRs that request your review come first, marked `requested`, then
+  yours.
+- Your PRs show their review state (`in review`, `approved`, `changes`, `conflict`, `draft`) and CI
+  (`✓` passed, `✗` failed, `●` running). Red means something needs you; green means approved with CI
+  done. Their detail pane lists the failing and running checks.
 - The review worktree is `<repo>-pr-<n>`, detached at the PR head. Dispatching again moves it to
   the current head, unless it has uncommitted changes.
 - The agent gets the PR description, its file list, the Jira ticket named in the title or branch,

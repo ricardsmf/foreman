@@ -7,7 +7,7 @@ import { connect, signOut } from "./mcp.ts";
 
 // foreman [PROJECT | JQL]: Jira board with assignees over a detail pane; Enter opens a
 // dispatch form that starts pi or Claude Code on the ticket in a git worktree, in a new Rex tab.
-// Tab switches to open PRs in the repos under ~/work/code, where Enter dispatches a review.
+// Tab switches to open PRs in the repos under ~/work/code (mine with review and CI status), where Enter dispatches a review.
 
 const DEFAULT_PROJECT = "FLD";
 
@@ -62,7 +62,7 @@ class Board implements Component {
   private view: "tickets" | "prs" = "tickets";
   private issues: Issue[] = [];
   private prs: Pr[] | undefined;
-  private requestedOnly = false;
+  private prFilter: "all" | "requested" | "mine" = "all";
   private cursor = 0;
   private top = 0;
   private query = "";
@@ -128,7 +128,7 @@ class Board implements Component {
   private visible() {
     const words = this.query.toLowerCase().split(/\s+/).filter(Boolean);
     return this.rows().filter((i) => {
-      if (isPr(i) ? this.requestedOnly && !i.requested : this.mine && i.assignee !== this.me) return false;
+      if (isPr(i) ? (this.prFilter === "requested" && !i.requested) || (this.prFilter === "mine" && !i.mine) : this.mine && i.assignee !== this.me) return false;
       if (this.assigneeFilter !== undefined && i.assignee !== this.assigneeFilter) return false;
       const hay = `${i.key} ${i.status} ${i.assignee || "unassigned"} ${i.summary}`.toLowerCase();
       return words.every((w) => hay.includes(w));
@@ -198,7 +198,7 @@ class Board implements Component {
     const dot = fg("surface", " · ");
     const prs = this.view === "prs";
     const who =
-      prs && this.requestedOnly ? "review requested" : this.mine && !prs ? "mine" : this.assigneeFilter === undefined ? "everyone" : this.assigneeFilter || "unassigned";
+      prs && this.prFilter === "requested" ? "review requested" : prs && this.prFilter === "mine" ? "mine" : this.mine && !prs ? "mine" : this.assigneeFilter === undefined ? "everyone" : this.assigneeFilter || "unassigned";
     return (
       bold(fg("mauve", "foreman")) +
       dot +
@@ -248,8 +248,8 @@ class Board implements Component {
         continue;
       }
       const sel = n === this.cursor;
-      const statusColor: Color = i.category === "In Progress" ? "yellow" : i.category === "Done" ? "green" : "overlay";
-      const whoColor: Color = !i.assignee ? "overlay" : i.assignee === this.me ? "mauve" : "subtext";
+      const statusColor: Color = i.category === "In Progress" ? "yellow" : i.category === "Done" ? "green" : i.category === "Blocked" ? "red" : "overlay";
+      const whoColor: Color = !i.assignee ? "overlay" : i.assignee === this.me || (isPr(i) && i.mine) ? "mauve" : "subtext";
       out.push(
         (sel ? fg("mauve", "▌") : " ") +
           (this.state.dispatched[i.key] ? fg("green", "◆") : " ") +
@@ -273,7 +273,7 @@ class Board implements Component {
     out.push(
       fg(
         "overlay",
-        `↑↓ pick · enter ${prs ? "review" : "dispatch"} · tab ${prs ? "tickets" : "PRs"} · ^o ${prs ? "requested" : "mine"} · ^a ${prs ? "author" : "assignee"} · ^u/^d scroll · ^b browser · ^r refresh · esc quit`,
+        `↑↓ pick · enter ${prs ? "review" : "dispatch"} · tab ${prs ? "tickets" : "PRs"} · ^o ${prs ? "requested/mine" : "mine"} · ^a ${prs ? "author" : "assignee"} · ^u/^d scroll · ^b browser · ^r refresh · esc quit`,
       ),
     );
     return out;
@@ -344,7 +344,7 @@ class Board implements Component {
       move(0);
       if (this.view === "prs" && !this.prs) void this.reload();
     } else if (matchesKey(data, "ctrl+o")) {
-      if (this.view === "prs") this.requestedOnly = !this.requestedOnly;
+      if (this.view === "prs") this.prFilter = ({ all: "requested", requested: "mine", mine: "all" } as const)[this.prFilter];
       else this.mine = !this.mine && !!this.me;
       this.assigneeFilter = undefined;
       move(0);
