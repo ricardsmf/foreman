@@ -5,7 +5,7 @@ it in its own git worktree, in a Rex session of its own. `tab` switches to open 
 the same dispatch starts a review instead. After @almonk's linear-dispatch.
 
 ```
-bun install && bun link     # puts foreman on PATH (~/.bun/bin)
+go build -o ~/.local/bin/foreman .   # puts foreman on PATH
 foreman                     # FLD open tickets
 foreman OO                  # another project
 foreman 'assignee = currentUser() AND statusCategory != Done'
