@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"net"
 	"net/http"
 	"os/exec"
@@ -111,7 +112,7 @@ func (h *oauthHandler) Token() (*oauth2.Token, error) {
 
 func (h *oauthHandler) Authorize(ctx context.Context, req *http.Request, resp *http.Response) error {
 	challenges, _ := oauthex.ParseWWWAuthenticate(resp.Header.Values("WWW-Authenticate"))
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.s.Tokens != nil && h.s.Tokens.RefreshToken != "" && h.refresh(ctx) == nil {
@@ -249,7 +250,7 @@ func (h *oauthHandler) login(ctx context.Context, challenges []oauthex.Challenge
 		}
 		code = r.code
 	case <-ctx.Done():
-		return errors.New("Atlassian sign-in timed out")
+		return errors.New("atlassian sign-in timed out")
 	}
 	tok, err := cfg.Exchange(ctx, code, oauth2.VerifierOption(verifier), oauth2.SetAuthURLParam("resource", serverURL))
 	if err != nil {
@@ -272,39 +273,46 @@ func waitForCode(ctx context.Context, state string) (<-chan codeResult, error) {
 	out := make(chan codeResult, 1)
 	srv := &http.Server{}
 	var once sync.Once
+	finish := func(r codeResult) {
+		once.Do(func() {
+			out <- r
+			go func() { _ = srv.Close() }()
+		})
+	}
 	srv.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/callback" {
 			http.NotFound(w, r)
 			return
 		}
 		q := r.URL.Query()
+		// Only the authorization server's redirect carries our state; any other request, such as a
+		// link opened elsewhere, mustn't end the sign-in.
+		if q.Get("state") != state {
+			http.Error(w, "state mismatch", http.StatusBadRequest)
+			return
+		}
 		code := q.Get("code")
-		msg := q.Get("error_description")
-		if msg == "" {
-			msg = q.Get("error")
+		msg := cmp(q.Get("error_description"), q.Get("error"), "no code returned")
+		w.Header().Set("content-type", "text/html; charset=utf-8")
+		page := "foreman is signed in. You can close this tab."
+		if code == "" {
+			page = "Sign-in failed: " + html.EscapeString(msg)
 		}
-		if code != "" && q.Get("state") != state {
-			code, msg = "", "state mismatch"
-		}
-		w.Header().Set("content-type", "text/html")
+		_, _ = fmt.Fprintf(w, `<p style="font-family:system-ui">%s</p>`, page)
 		if code != "" {
-			fmt.Fprint(w, `<p style="font-family:system-ui">foreman is signed in. You can close this tab.</p>`)
+			finish(codeResult{code: code})
 		} else {
-			fmt.Fprintf(w, `<p style="font-family:system-ui">Sign-in failed: %s</p>`, msg)
+			finish(codeResult{err: fmt.Errorf("atlassian sign-in failed: %s", msg)})
 		}
-		once.Do(func() {
-			if code != "" {
-				out <- codeResult{code: code}
-			} else {
-				out <- codeResult{err: fmt.Errorf("Atlassian sign-in failed: %s", msg)}
-			}
-			go srv.Close()
-		})
 	})
-	go srv.Serve(ln)
+	go func() {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			finish(codeResult{err: fmt.Errorf("sign-in callback server: %w", err)})
+		}
+	}()
 	go func() {
 		<-ctx.Done()
-		srv.Close()
+		_ = srv.Close()
 	}()
 	return out, nil
 }

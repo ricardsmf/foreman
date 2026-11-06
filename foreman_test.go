@@ -1,12 +1,18 @@
 package main
 
 import (
+	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseArgs(t *testing.T) {
@@ -292,5 +298,42 @@ func TestPrepareWorktreeNewBranch(t *testing.T) {
 	}
 	if got, want := git(t, cwd, "rev-parse", "HEAD"), git(t, repo, "rev-parse", "origin/main"); got != want {
 		t.Errorf("new branch starts at %s, want origin/main %s", got, want)
+	}
+}
+
+// TestCallbackServer: requests without the sign-in's state are refused and don't end it; an error
+// from the authorization server is escaped in the page and ends it.
+func TestCallbackServer(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	codes, err := waitForCode(ctx, "s3cret")
+	if err != nil {
+		t.Skipf("callback port busy: %v", err)
+	}
+	get := func(query string) (int, string) {
+		resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/callback?%s", callbackPort, query))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(b)
+	}
+
+	if status, _ := get("error=" + url.QueryEscape("<script>x</script>")); status != http.StatusBadRequest {
+		t.Errorf("no state: status %d, want 400", status)
+	}
+	select {
+	case r := <-codes:
+		t.Fatalf("a request without the state ended the sign-in: %+v", r)
+	default:
+	}
+
+	_, body := get("state=s3cret&error=" + url.QueryEscape("<script>x</script>"))
+	if strings.Contains(body, "<script>") || !strings.Contains(body, "&lt;script&gt;") {
+		t.Errorf("error not escaped: %s", body)
+	}
+	if r := <-codes; r.err == nil || !strings.Contains(r.err.Error(), "<script>x</script>") {
+		t.Errorf("result = %+v, want the error", r)
 	}
 }
