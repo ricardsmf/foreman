@@ -23,21 +23,32 @@ separate from pi's and Claude Code's. The OAuth callback listens on `localhost:3
 
 ## Keys
 
-Board: type to filter (every word must match), `↑↓` pick, `enter` dispatch, `tab` tickets/PRs, `^o`
-mine (on PRs: cycles review requested, mine, everyone), `^a` cycle assignee (on PRs: author), `^u`/`^d` scroll the
-description, `^b` open in browser, `^r` refresh, `esc` quit.
+Board: type or paste to filter (every word must match), `↑↓` pick, `enter` dispatch, `tab`
+tickets/PRs, `^o` mine (on PRs: cycles review requested, mine, everyone), `^a` cycle assignee (on
+PRs: author), `^u`/`^d` scroll the description, `^b` open in browser, `^s` go to the agent's Rex
+session, `^x` clean up worktrees, `^r` refresh, `esc` quit.
 
 Dispatch form: `tab`/`↑↓` field, `←→` agent or repo, `space` worktree on/off, type to filter repos
-or write extra context, `enter` dispatch, `esc` back.
+or write extra context, `alt+enter` new line, paste works, `^e` writes the context in `$VISUAL` /
+`$EDITOR`, `enter` dispatch, `esc` back.
+
+Both views reload when the board regains focus after five minutes or more, and every five minutes.
 
 ## Dispatching
 
 - Repos are the git checkouts directly under `~/work/code` and `~/projects`; the last one used per
   Jira project is preselected.
-- The worktree is `<repo>-<key>`. A remote branch containing the ticket key is checked out;
-  otherwise `rf/<key>-<slug>` is created from `origin/develop`, `main` or `master`.
+- The worktree is `<repo>-<key>`. The most recently committed `origin/` branch containing the
+  ticket key is checked out; a local branch of the same name is used as is, unpushed commits and
+  all. Otherwise `rf/<key>-<slug>` is created from `origin/develop`, else origin's default branch.
+  A failed fetch is reported and the last fetched refs are used.
+- Without a worktree the agent runs in the checkout itself, which must be on a ticket branch, not
+  `develop`, `main`, `master` or a detached HEAD.
 - Each agent starts in a new background Rex session named after the ticket, such as
-  `fld-1671-my-van-always`; switch to it with `cmd+s`. The board stays where it is.
+  `fld-1671-my-van-always`; `^s` on the row, or `cmd+s`, switches to it. The board stays where it
+  is.
+- `◆` marks a dispatched row, coloured by what its agent reports to Rex: yellow working, red
+  waiting for you or failed, green idle or done. `◇` means its session is closed.
 - The agent gets the ticket as markdown, your extra context, and a workflow: understand, implement,
   verify, commit. It is told not to push, open a PR or touch the ticket.
 ## Reviews
@@ -54,7 +65,18 @@ or write extra context, `enter` dispatch, `esc` back.
   and your extra context. It is told to report findings without editing, committing or posting
   anything to GitHub or Jira.
 
+## Cleaning up
+
+`^x` lists the dispatched worktrees whose ticket is Done or whose PR is merged or closed. Those
+with uncommitted changes or a working agent start unticked. `enter` runs `git worktree remove` on
+the ticked ones (never `--force`, so changes stop it); branches and their commits stay.
+
 ## State
 
-- State (repo per project, last agent, dispatched tickets `◆`) is in
-  `~/.local/state/foreman/state.json`.
+- State (repo per project, last agent, dispatched tickets and their sessions) is in
+  `~/.local/state/foreman/state.json`, written atomically. An unreadable file is moved to
+  `state.json.corrupt` rather than overwritten.
+
+## Development
+
+`go test ./...` covers the pure logic and the worktree branch choice against throwaway git repos.

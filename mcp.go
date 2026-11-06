@@ -232,7 +232,8 @@ func (h *oauthHandler) login(ctx context.Context, challenges []oauthex.Challenge
 	state := randomHex(16)
 	authURL := cfg.AuthCodeURL(state, oauth2.S256ChallengeOption(verifier), oauth2.SetAuthURLParam("resource", serverURL))
 
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	// The sign-in gets its own five minutes, not what is left of the Jira call that triggered it.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
 	defer cancel()
 	codes, err := waitForCode(ctx, state)
 	if err != nil {

@@ -14,54 +14,9 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/x/ansi"
 )
 
 const defaultProject = "FLD"
-
-// Catppuccin Macchiato
-type Color string
-
-const (
-	cText    Color = "202;211;245"
-	cSubtext Color = "165;173;203"
-	cOverlay Color = "128;135;162"
-	cSurface Color = "73;77;100"
-	cMauve   Color = "198;160;246"
-	cBlue    Color = "138;173;244"
-	cYellow  Color = "238;212;159"
-	cGreen   Color = "166;218;149"
-	cRed     Color = "237;135;150"
-	cPeach   Color = "245;169;127"
-)
-
-func fg(c Color, s string) string { return "\x1b[38;2;" + string(c) + "m" + s + "\x1b[39m" }
-func bold(s string) string        { return "\x1b[1m" + s + "\x1b[22m" }
-
-func fit(text string, width int) string {
-	if width <= 0 {
-		return ""
-	}
-	cut := ansi.Truncate(text, width, "…")
-	return cut + strings.Repeat(" ", max(0, width-ansi.StringWidth(cut)))
-}
-
-var (
-	subheading = regexp.MustCompile(`^#{2,} `)
-	boldRe     = regexp.MustCompile(`\*\*(.+?)\*\*`)
-	codeRe     = regexp.MustCompile("`([^`]+)`")
-)
-
-func markdownLine(l string) string {
-	if strings.HasPrefix(l, "# ") {
-		return bold(fg(cMauve, l[2:]))
-	}
-	if subheading.MatchString(l) {
-		return bold(fg(cBlue, subheading.ReplaceAllString(l, "")))
-	}
-	l = boldRe.ReplaceAllStringFunc(l, func(m string) string { return bold(m[2 : len(m)-2]) })
-	return codeRe.ReplaceAllStringFunc(l, func(m string) string { return fg(cPeach, m[1:len(m)-1]) })
-}
 
 var projectRe = regexp.MustCompile(`(?i)^[A-Z][A-Z0-9]+$`)
 
@@ -83,6 +38,14 @@ type Row struct {
 	Issue                                    *Issue
 }
 
+// isMine is whether the row is my ticket or my PR.
+func (r Row) isMine() bool {
+	if r.Pr != nil {
+		return r.Pr.Mine
+	}
+	return r.Issue != nil && r.Issue.Mine
+}
+
 func issueRow(i Issue) Row {
 	return Row{i.Key, i.Summary, i.Status, i.Category, i.Assignee, nil, &i}
 }
@@ -96,6 +59,16 @@ type viewKind int
 const (
 	tickets viewKind = iota
 	prs
+)
+
+// How long a background call may take before the board gives up on it. Jira searches page
+// through up to 500 tickets; a PR load runs a git command per repo and up to five GraphQL pages.
+const (
+	jiraTimeout     = 90 * time.Second
+	refreshInterval = 5 * time.Minute
+	agentsInterval  = 5 * time.Second
+	// A dispatch fetches, creates a worktree and starts an agent; the browser sign-in alone may take minutes.
+	dispatchTimeout = 10 * time.Minute
 )
 
 type form struct {
@@ -120,23 +93,39 @@ type (
 	detailMsg     struct {
 		key   string
 		lines []string
+		ok    bool
 	}
 	statusMsg struct {
 		text  string
 		color Color
+		// progress lines come from a running dispatch; a load finishing doesn't clear other text.
+		sticky bool
 	}
 	dispatchedMsg struct {
 		text string
 		err  error
 	}
-	meMsg string
+	refreshTickMsg struct{}
+	agentsTickMsg  struct{}
+	agentsMsg      map[string]string
+	editedMsg      struct {
+		text string
+		err  error
+	}
+	cleanupMsg struct {
+		candidates []cleanupCandidate
+		err        error
+	}
+	cleanedMsg struct {
+		removed []string
+		errs    []string
+	}
 )
 
 type model struct {
 	jira  *Jira
 	jql   string
 	title string
-	me    string
 
 	width, height int
 	view          viewKind
@@ -150,19 +139,24 @@ type model struct {
 	assignee      *string // nil = everyone, "" = unassigned
 	// Views with a load in flight. PRs load in the background from the start, so each view tracks its own.
 	inFlight     map[viewKind]bool
+	lastLoad     map[viewKind]time.Time
 	status       string
 	statusColor  Color
+	statusSticky bool
 	detailScroll int
 	details      map[string][]string // nil value = loading
+	detailOK     map[string]bool     // the cached detail is the real thing, not an error
 	detailSeq    int
 	state        State
+	agents       map[string]string // Rex session label → reported agent state
 	repos        []string
 	form         *form
+	cleanup      *cleanupView
 }
 
 func (m *model) loading() bool { return m.inFlight[m.view] }
 
-func (m *model) say(text string, c Color) { m.status, m.statusColor = text, c }
+func (m *model) say(text string, c Color) { m.status, m.statusColor, m.statusSticky = text, c, false }
 
 func (m *model) rows() []Row {
 	if m.view == prs {
@@ -186,7 +180,9 @@ func (m *model) reload(which viewKind) tea.Cmd {
 			}
 			return loadedMsg{which, rows, err}
 		}
-		list, err := jira.issues(context.Background(), jql)
+		ctx, cancel := context.WithTimeout(context.Background(), jiraTimeout)
+		defer cancel()
+		list, err := jira.issues(ctx, jql)
 		rows := make([]Row, len(list))
 		for n, i := range list {
 			rows[n] = issueRow(i)
@@ -217,17 +213,22 @@ func (m *model) assignees() []string {
 }
 
 func (m *model) visible() []Row {
-	words := strings.Fields(strings.ToLower(m.query))
+	return filterRows(m.rows(), m.query, m.prFilter, m.mine, m.assignee)
+}
+
+// filterRows keeps the rows that pass the view's filters and contain every word of the query.
+func filterRows(rows []Row, query, prFilter string, mine bool, assignee *string) []Row {
+	words := strings.Fields(strings.ToLower(query))
 	var out []Row
-	for _, r := range m.rows() {
+	for _, r := range rows {
 		if r.Pr != nil {
-			if (m.prFilter == "requested" && !r.Pr.Requested) || (m.prFilter == "mine" && !r.Pr.Mine) {
+			if (prFilter == "requested" && !r.Pr.Requested) || (prFilter == "mine" && !r.Pr.Mine) {
 				continue
 			}
-		} else if m.mine && r.Assignee != m.me {
+		} else if mine && !r.isMine() {
 			continue
 		}
-		if m.assignee != nil && r.Assignee != *m.assignee {
+		if assignee != nil && r.Assignee != *assignee {
 			continue
 		}
 		hay := strings.ToLower(fmt.Sprintf("%s %s %s %s", r.Key, r.Status, cmp(r.Assignee, "unassigned"), r.Summary))
@@ -250,7 +251,7 @@ func (m *model) current() (Row, bool) {
 // scheduleDetail debounces loading the selected row's detail, so scrolling through the list doesn't fetch every row.
 func (m *model) scheduleDetail() tea.Cmd {
 	row, ok := m.current()
-	if !ok || m.form != nil {
+	if !ok || m.form != nil || m.cleanup != nil {
 		return nil
 	}
 	if _, cached := m.details[row.Key]; cached {
@@ -273,12 +274,14 @@ func (m *model) fetchDetail(row Row) tea.Cmd {
 				md = prMarkdown(*row.Pr, v)
 			}
 		} else {
-			md, err = jira.detail(context.Background(), row.Key)
+			ctx, cancel := context.WithTimeout(context.Background(), jiraTimeout)
+			defer cancel()
+			md, err = jira.detail(ctx, row.Key)
 		}
 		if err != nil {
-			return detailMsg{row.Key, []string{fg(cRed, fmt.Sprintf("Failed to load %s: %v", row.Key, err))}}
+			return detailMsg{row.Key, []string{fg(cRed, fmt.Sprintf("Failed to load %s: %v", row.Key, err))}, false}
 		}
-		return detailMsg{row.Key, strings.Split(md, "\n")}
+		return detailMsg{row.Key, strings.Split(md, "\n"), true}
 	}
 }
 
@@ -320,22 +323,29 @@ func (m *model) submit() tea.Cmd {
 		return nil
 	}
 	f.busy = true
-	if f.row.Pr == nil {
-		m.state.RepoByProject[project(f.row.Key)] = repo
-	}
 	agent := agents[f.agent].Label
-	m.state.Agent = agent
-	_ = saveState(m.state)
-	progress := func(line string) { prog.Send(statusMsg{line, cSubtext}) }
+	isPr := f.row.Pr != nil
+	m.state, _ = updateState(func(s *State) {
+		if !isPr {
+			s.RepoByProject[project(f.row.Key)] = repo
+		}
+		s.Agent = agent
+	})
+	progress := func(line string) { prog.Send(statusMsg{line, cSubtext, true}) }
 	jira, row, worktree, extra := m.jira, f.row, f.worktree, strings.TrimSpace(f.context)
+	ticket := ""
+	if m.detailOK[row.Key] && row.Pr == nil {
+		ticket = strings.Join(m.details[row.Key], "\n")
+	}
 	return func() tea.Msg {
-		ctx := context.Background()
+		ctx, cancel := context.WithTimeout(context.Background(), dispatchTimeout)
+		defer cancel()
 		var text string
 		var err error
 		if row.Pr != nil {
 			text, err = dispatchReview(ctx, jira, ReviewDispatch{*row.Pr, agent, extra}, progress)
 		} else {
-			text, err = dispatch(ctx, jira, Dispatch{*row.Issue, agent, worktree, repo, extra}, progress)
+			text, err = dispatch(ctx, jira, Dispatch{*row.Issue, agent, worktree, repo, extra, ticket}, progress)
 		}
 		if err != nil {
 			err = fmt.Errorf("%s: %w", row.Key, err)
@@ -344,10 +354,28 @@ func (m *model) submit() tea.Cmd {
 	}
 }
 
+func pollAgents() tea.Msg {
+	states, err := agentStates()
+	if err != nil {
+		return agentsMsg(nil)
+	}
+	return agentsMsg(states)
+}
+
 func (m *model) Init() tea.Cmd {
-	jira := m.jira
-	fetchMe := func() tea.Msg { return meMsg(jira.me(context.Background())) }
-	return tea.Batch(m.reload(tickets), m.reload(prs), fetchMe)
+	return tea.Batch(m.reload(tickets), m.reload(prs), pollAgents,
+		tea.Tick(refreshInterval, func(time.Time) tea.Msg { return refreshTickMsg{} }))
+}
+
+// refreshStale reloads the views whose data is older than the refresh interval.
+func (m *model) refreshStale() tea.Cmd {
+	var cmds []tea.Cmd
+	for _, v := range []viewKind{tickets, prs} {
+		if time.Since(m.lastLoad[v]) >= refreshInterval {
+			cmds = append(cmds, m.reload(v))
+		}
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -364,6 +392,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.say(fmt.Sprintf("%s: %v", name, msg.err), cRed)
 			break
 		}
+		m.lastLoad[msg.which] = time.Now()
 		if msg.which == prs {
 			m.prs, m.prsLoaded = msg.rows, true
 		} else {
@@ -373,9 +402,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for key := range m.details {
 			if strings.Contains(key, "#") == (msg.which == prs) {
 				delete(m.details, key)
+				delete(m.detailOK, key)
 			}
 		}
-		if msg.which == m.view {
+		// Clear the previous error or "loading" note, but not a dispatch's result or progress.
+		if msg.which == m.view && !m.statusSticky {
 			m.say("", cOverlay)
 		}
 	case detailTickMsg:
@@ -388,12 +419,16 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
-	case meMsg:
-		m.me = string(msg)
 	case detailMsg:
 		m.details[msg.key] = msg.lines
+		if msg.ok {
+			m.detailOK[msg.key] = true
+		} else {
+			delete(m.detailOK, msg.key)
+		}
 	case statusMsg:
 		m.say(msg.text, msg.color)
+		m.statusSticky = msg.sticky
 	case dispatchedMsg:
 		if msg.err != nil {
 			if m.form != nil {
@@ -405,11 +440,50 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.form = nil
 			m.say(msg.text, cGreen)
 		}
+		m.statusSticky = true
+		return m, tea.Batch(pollAgents, m.scheduleDetail())
+	case refreshTickMsg:
+		next := tea.Tick(refreshInterval, func(time.Time) tea.Msg { return refreshTickMsg{} })
+		return m, tea.Batch(next, m.refreshStale())
+	case tea.FocusMsg:
+		// Coming back to the board after a while: show what changed since.
+		return m, tea.Batch(m.refreshStale(), pollAgents)
+	case agentsTickMsg:
+		return m, pollAgents
+	case agentsMsg:
+		if msg != nil {
+			m.agents = msg
+		}
+		return m, tea.Tick(agentsInterval, func(time.Time) tea.Msg { return agentsTickMsg{} })
+	case editedMsg:
+		if msg.err != nil {
+			m.say("Editor: "+msg.err.Error(), cRed)
+		} else if m.form != nil {
+			m.form.context = msg.text
+		}
+	case cleanupMsg:
+		m.openCleanup(msg)
+	case cleanedMsg:
+		m.state = loadState()
+		m.cleanup = nil
+		switch {
+		case len(msg.errs) > 0:
+			m.say(fmt.Sprintf("Removed %d worktrees; %s", len(msg.removed), strings.Join(msg.errs, "; ")), cRed)
+		default:
+			m.say(fmt.Sprintf("✓ Removed %d worktrees", len(msg.removed)), cGreen)
+		}
+		m.statusSticky = true
+	case tea.PasteMsg:
+		m.paste(msg.Content)
+		return m, m.scheduleDetail()
 	case tea.KeyPressMsg:
 		var cmd tea.Cmd
-		if m.form != nil {
+		switch {
+		case m.cleanup != nil:
+			cmd = m.cleanupInput(msg)
+		case m.form != nil:
 			cmd = m.formInput(msg)
-		} else {
+		default:
 			cmd = m.boardInput(msg)
 		}
 		return m, tea.Batch(cmd, m.scheduleDetail())
@@ -417,418 +491,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, m.scheduleDetail()
 }
 
-func (m *model) boardInput(msg tea.KeyPressMsg) tea.Cmd {
-	current, ok := m.current()
-	move := func(to int) { m.cursor, m.detailScroll = max(0, to), 0 }
-	text := msg.Key().Text
-	switch k := msg.String(); {
-	case k == "esc":
-		if m.query == "" {
-			return tea.Quit
-		}
-		m.query = ""
-	case k == "ctrl+c":
-		return tea.Quit
-	case k == "up" || k == "ctrl+p":
-		move(m.cursor - 1)
-	case k == "down" || k == "ctrl+n":
-		move(m.cursor + 1)
-	case k == "pgup":
-		move(m.cursor - 10)
-	case k == "pgdown":
-		move(m.cursor + 10)
-	case k == "ctrl+u":
-		m.detailScroll -= 10
-	case k == "ctrl+d":
-		m.detailScroll += 10
-	case k == "tab":
-		m.view = 1 - m.view
-		m.assignee, m.query = nil, ""
-		move(0)
-		if m.view == prs && !m.prsLoaded {
-			return m.reload(prs) // the startup load failed
-		}
-	case k == "ctrl+o":
-		if m.view == prs {
-			m.prFilter = map[string]string{"all": "requested", "requested": "mine", "mine": "all"}[m.prFilter]
-		} else {
-			m.mine = !m.mine && m.me != ""
-		}
-		m.assignee = nil
-		move(0)
-	case k == "ctrl+a":
-		list := append([]*string{nil}, ptrs(m.assignees())...)
-		at := slices.IndexFunc(list, func(s *string) bool {
-			return (s == nil && m.assignee == nil) || (s != nil && m.assignee != nil && *s == *m.assignee)
-		})
-		m.assignee = list[(at+1)%len(list)]
-		m.mine = false
-		move(0)
-	case k == "ctrl+b":
-		if ok {
-			if current.Pr != nil {
-				openURL(current.Pr.URL)
-			} else {
-				openURL(site + "/browse/" + current.Key)
-			}
-		}
-	case k == "ctrl+r":
-		return m.reload(m.view)
-	case k == "enter":
-		if ok {
-			m.openForm(current)
-		}
-	case k == "backspace":
-		m.query = dropLast(m.query)
-		move(0)
-	case text != "":
-		m.query += text
-		move(0)
-	}
-	return nil
-}
-
-func (m *model) formInput(msg tea.KeyPressMsg) tea.Cmd {
-	f := m.form
-	if f.busy {
-		return nil
-	}
-	k := msg.String()
-	text := msg.Key().Text
-	left, right := k == "left", k == "right"
-	isPr := f.row.Pr != nil
-	switch {
-	case k == "esc":
-		m.form = nil
-	case k == "ctrl+c":
-		return tea.Quit
-	case k == "enter":
-		return m.submit()
-	// A review has no options or repo to pick: its fields are agent (0) and context (3).
-	case k == "tab" || (k == "down" && f.field != 2):
-		if isPr {
-			f.field = 3 - f.field
-		} else {
-			f.field = (f.field + 1) % 4
-		}
-	case k == "shift+tab" || (k == "up" && f.field != 2):
-		if isPr {
-			f.field = 3 - f.field
-		} else {
-			f.field = (f.field + 3) % 4
-		}
-	case f.field == 0 && (left || right):
-		if left {
-			f.agent = (f.agent + len(agents) - 1) % len(agents)
-		} else {
-			f.agent = (f.agent + 1) % len(agents)
-		}
-	case f.field == 1 && (k == "space" || left || right):
-		f.worktree = !f.worktree
-	case f.field == 2:
-		switch {
-		case left || k == "up":
-			f.repo = max(0, f.repo-1)
-		case right || k == "down":
-			f.repo++
-		case k == "backspace":
-			f.repoQuery, f.repo = dropLast(f.repoQuery), 0
-		case text != "":
-			f.repoQuery, f.repo = f.repoQuery+text, 0
-		}
-	case f.field == 3:
-		if k == "backspace" {
-			f.context = dropLast(f.context)
-		} else {
-			f.context += text
-		}
-	}
-	return nil
-}
-
-func ptrs(ss []string) []*string {
-	out := make([]*string, len(ss))
-	for n := range ss {
-		out[n] = &ss[n]
-	}
-	return out
-}
-
-func dropLast(s string) string {
-	r := []rune(s)
-	if len(r) == 0 {
-		return s
-	}
-	return string(r[:len(r)-1])
-}
-
-func wrap(s string, width int) []string {
-	return strings.Split(ansi.Wrap(s, max(1, width), ""), "\n")
-}
-
-func (m *model) header(extra string) string {
-	dot := fg(cSurface, " · ")
-	isPrs := m.view == prs
-	who := "everyone"
-	switch {
-	case isPrs && m.prFilter == "requested":
-		who = "review requested"
-	case isPrs && m.prFilter == "mine", m.mine && !isPrs:
-		who = "mine"
-	case m.assignee != nil:
-		who = cmp(*m.assignee, "unassigned")
-	}
-	title := m.title
-	if isPrs {
-		title = "open PRs"
-	}
-	loading := ""
-	if m.loading() {
-		loading = fg(cYellow, "  loading…")
-	}
-	return bold(fg(cMauve, "foreman")) + dot + title + dot + fg(cYellow, who) + dot + fg(cOverlay, extra) + loading
-}
-
-func (m *model) View() tea.View {
-	v := tea.NewView("")
-	v.AltScreen = true
-	if m.width == 0 {
-		return v
-	}
-	const pad = 1
-	inner := m.width - pad*2
-	var body []string
-	if m.form != nil {
-		body = m.renderForm(inner, m.height-1)
-	} else {
-		body = m.renderBoard(inner, m.height-1)
-	}
-	lines := make([]string, 0, len(body)+1)
-	for _, l := range body {
-		lines = append(lines, " "+fit(l, inner))
-	}
-	status := ""
-	if m.status != "" {
-		status = fg(m.statusColor, m.status)
-	}
-	lines = append(lines, " "+fit(status, inner))
-	v.SetContent(strings.Join(lines, "\n"))
-	return v
-}
-
-func (m *model) renderBoard(width, h int) []string {
-	items := m.visible()
-	current, hasCurrent := m.current()
-
-	listRows := max(4, (h-4)*45/100)
-	detailRows := h - listRows - 4
-	if m.cursor < m.top {
-		m.top = m.cursor
-	}
-	if m.cursor >= m.top+listRows {
-		m.top = m.cursor - listRows + 1
-	}
-	m.top = max(0, min(m.top, max(0, len(items)-listRows)))
-
-	isPrs := m.view == prs
-	out := []string{m.header(fmt.Sprintf("%d/%d", len(items), len(m.rows())))}
-	hint := ""
-	if m.query == "" {
-		noun := "tickets"
-		if isPrs {
-			noun = "PRs"
-		}
-		hint = fg(cOverlay, " fuzzy search "+noun+"…")
-	}
-	out = append(out, fg(cMauve, "› ")+m.query+fg(cMauve, "█")+hint)
-
-	keyW, statusW, whoW := 7, 6, 10
-	for _, i := range items {
-		keyW = max(keyW, len(i.Key))
-		statusW = max(statusW, ansi.StringWidth(i.Status))
-		whoW = max(whoW, ansi.StringWidth(cmp(i.Assignee, "unassigned")))
-	}
-	keyW, statusW, whoW = min(24, keyW), min(14, statusW), min(18, whoW)
-	sumW := width - keyW - statusW - whoW - 8
-	for n := m.top; n < m.top+listRows; n++ {
-		if n >= len(items) {
-			empty := ""
-			if n == 0 && !m.loading() {
-				empty = fg(cOverlay, "  no tickets")
-				if isPrs {
-					empty = fg(cOverlay, "  no open PRs")
-				}
-			}
-			out = append(out, empty)
-			continue
-		}
-		i := items[n]
-		sel := n == m.cursor
-		statusColor := cOverlay
-		switch i.Category {
-		case "In Progress":
-			statusColor = cYellow
-		case "Done":
-			statusColor = cGreen
-		case "Blocked":
-			statusColor = cRed
-		}
-		whoColor := cSubtext
-		if i.Assignee == "" {
-			whoColor = cOverlay
-		} else if i.Assignee == m.me || (i.Pr != nil && i.Pr.Mine) {
-			whoColor = cMauve
-		}
-		line := " "
-		if sel {
-			line = fg(cMauve, "▌")
-		}
-		if m.state.Dispatched[i.Key] != "" {
-			line += fg(cGreen, "◆")
-		} else {
-			line += " "
-		}
-		keyColor, summary := cOverlay, fg(cSubtext, fit(i.Summary, sumW))
-		if sel {
-			keyColor, summary = cText, bold(fg(cText, fit(i.Summary, sumW)))
-		}
-		line += strings.Join([]string{
-			fg(keyColor, fit(i.Key, keyW)),
-			fg(statusColor, fit(i.Status, statusW)),
-			fg(whoColor, fit(cmp(i.Assignee, "unassigned"), whoW)),
-			summary,
-		}, "  ")
-		out = append(out, line)
-	}
-
-	out = append(out, fg(cSurface, strings.Repeat("─", width)))
-	var detail []string
-	if hasCurrent {
-		if lines := m.details[current.Key]; lines != nil {
-			detail = lines
-		} else {
-			detail = []string{fmt.Sprintf("# %s: %s", current.Key, current.Summary), "", fg(cOverlay, "Loading…")}
-		}
-	}
-	var wrapped []string
-	for _, l := range detail {
-		if l == "" {
-			wrapped = append(wrapped, "")
-		} else {
-			wrapped = append(wrapped, wrap(markdownLine(l), width)...)
-		}
-	}
-	m.detailScroll = max(0, min(m.detailScroll, len(wrapped)-detailRows))
-	for n := 0; n < detailRows; n++ {
-		if at := m.detailScroll + n; at < len(wrapped) {
-			out = append(out, wrapped[at])
-		} else {
-			out = append(out, "")
-		}
-	}
-
-	if isPrs {
-		out = append(out, fg(cOverlay, "↑↓ pick · enter review · tab tickets · ^o requested/mine · ^a author · ^u/^d scroll · ^b browser · ^r refresh · esc quit"))
-	} else {
-		out = append(out, fg(cOverlay, "↑↓ pick · enter dispatch · tab PRs · ^o mine · ^a assignee · ^u/^d scroll · ^b browser · ^r refresh · esc quit"))
-	}
-	return out
-}
-
-func (m *model) renderForm(width, h int) []string {
-	f := m.form
-	isPr := f.row.Pr != nil
-	verb := "dispatch"
-	if isPr {
-		verb = "review"
-	}
-	out := []string{m.header(verb + " " + f.row.Key)}
-	out = append(out, fg(cMauve, f.row.Key)+" "+bold(`"`+f.row.Summary+`"`), fg(cMauve, strings.Repeat("─", width)))
-	label := func(n int, text string) string {
-		if f.field == n {
-			return fg(cMauve, "› "+text)
-		}
-		return "  " + text
-	}
-	radio := func(on bool) string {
-		if on {
-			return fg(cGreen, "●")
-		}
-		return fg(cOverlay, "○")
-	}
-
-	out = append(out, label(0, bold("Agent")))
-	for n, a := range agents {
-		name := a.Label
-		if n == f.agent {
-			name = bold(name)
-		}
-		out = append(out, "    "+radio(n == f.agent)+" "+fit(name, 16)+fg(cOverlay, a.Note))
-	}
-	if isPr {
-		p := f.row.Pr
-		out = append(out, "", "  "+bold("Checkout"),
-			"    "+fg(cSubtext, tilde(fmt.Sprintf("%s-pr-%d", p.Checkout, p.Number)))+" "+fg(cOverlay, "(worktree at the PR head)"))
-	} else {
-		out = append(out, "", label(1, bold("Options")))
-		box := "[ ]"
-		if f.worktree {
-			box = fg(cGreen, "[x]")
-		}
-		out = append(out, "    "+box+" git worktree "+fg(cOverlay, "(isolated checkout, parallel-safe)"), "")
-		choices := m.repoChoices()
-		f.repo = max(0, min(f.repo, len(choices)-1))
-		filter := fg(cOverlay, "type to filter")
-		if f.repoQuery != "" {
-			filter = fg(cMauve, "/"+f.repoQuery)
-		}
-		out = append(out, label(2, bold("Repo")+" "+filter))
-		const rows = 6
-		start := max(0, min(f.repo-2, len(choices)-rows))
-		for n := start; n < min(len(choices), start+rows); n++ {
-			on := n == f.repo
-			name := fg(cSubtext, tilde(choices[n]))
-			if on {
-				name = bold(tilde(choices[n]))
-			}
-			out = append(out, "    "+radio(on)+" "+name)
-		}
-		if len(choices) == 0 {
-			out = append(out, fg(cRed, "    no repo matches"))
-		}
-	}
-	out = append(out, "", label(3, bold("Extra context")+" "+fg(cOverlay, "(optional)")))
-	if f.context != "" || f.field == 3 {
-		cursor := ""
-		if f.field == 3 {
-			cursor = "█"
-		}
-		for _, l := range wrap(f.context+cursor, width-4) {
-			out = append(out, "    "+l)
-		}
-	} else if isPr {
-		out = append(out, "    "+fg(cOverlay, "What to focus on: risky areas, things you already know, questions to answer…"))
-	} else {
-		out = append(out, "    "+fg(cOverlay, "Anything the ticket doesn't say: approach, files to look at, constraints…"))
-	}
-
-	for len(out) < h-1 {
-		out = append(out, "")
-	}
-	out = out[:max(0, h-1)]
-	if f.busy {
-		out = append(out, fg(cOverlay, "dispatching…"))
-	} else {
-		fieldKeys := []string{"←→ agent", "space toggle", "←→ repo", "type"}[f.field]
-		out = append(out, fg(cOverlay, fmt.Sprintf("tab/↑↓ field · %s · enter %s · esc back", fieldKeys, verb)))
-	}
-	return out
-}
+const usage = `usage: foreman [PROJECT | JQL]
+       foreman --logout   forget the Atlassian sign-in`
 
 func run() error {
 	argv := os.Args[1:]
 	if len(argv) > 0 && (argv[0] == "--help" || argv[0] == "-h") {
-		fmt.Println("usage: foreman [PROJECT | JQL]\n       foreman --logout   forget the Atlassian sign-in")
+		fmt.Println(usage)
 		return nil
 	}
 	if len(argv) > 0 && argv[0] == "--logout" {
@@ -838,7 +507,7 @@ func run() error {
 
 	jql, title := parseArgs(argv)
 	// The board draws at once; Jira connects on the first call, signing in through the browser if needed.
-	jira := &Jira{log: func(l string) { prog.Send(statusMsg{strings.ReplaceAll(l, "\n", " "), cYellow}) }}
+	jira := &Jira{log: func(l string) { prog.Send(statusMsg{strings.ReplaceAll(l, "\n", " "), cYellow, true}) }}
 	defer jira.close()
 
 	m := &model{
@@ -847,9 +516,12 @@ func run() error {
 		title:       title,
 		prFilter:    "all",
 		inFlight:    map[viewKind]bool{},
+		lastLoad:    map[viewKind]time.Time{},
 		statusColor: cOverlay,
 		details:     map[string][]string{},
+		detailOK:    map[string]bool{},
 		state:       loadState(),
+		agents:      map[string]string{},
 		repos:       listRepos(),
 	}
 	prog = tea.NewProgram(m)

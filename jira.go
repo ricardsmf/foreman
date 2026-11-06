@@ -2,10 +2,15 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 const (
@@ -19,6 +24,8 @@ type Issue struct {
 	Status   string
 	Category string
 	Assignee string
+	// Mine is whether Jira says the ticket is assigned to the signed-in user.
+	Mine     bool
 	Priority string
 	Type     string
 }
@@ -58,6 +65,9 @@ func (j *Jira) conn(ctx context.Context) (*Mcp, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if j.mcp == nil {
+		// Connecting may run the browser sign-in, which outlasts a single call's timeout.
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 6*time.Minute)
+		defer cancel()
 		m, err := connect(ctx, j.log)
 		if err != nil {
 			return nil, err
@@ -75,13 +85,39 @@ func (j *Jira) close() {
 	}
 }
 
+// drop forgets a broken connection so the next call opens a new one.
+func (j *Jira) drop(broken *Mcp) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.mcp == broken {
+		_ = j.mcp.close()
+		j.mcp = nil
+	}
+}
+
+// call runs a Jira tool. The board stays open for days, so a session that died (sleep, network
+// change, server restart) is replaced: a closed one at once, a hung one on the next call.
 func (j *Jira) call(ctx context.Context, tool string, args map[string]any, out any) error {
-	m, err := j.conn(ctx)
-	if err != nil {
+	args["cloudId"] = cloudID
+	for attempt := 0; ; attempt++ {
+		m, err := j.conn(ctx)
+		if err != nil {
+			return err
+		}
+		err = m.call(ctx, tool, args, out)
+		switch {
+		case err == nil:
+			return nil
+		case errors.Is(err, mcp.ErrConnectionClosed) || errors.Is(err, mcp.ErrSessionMissing):
+			j.drop(m)
+			if attempt == 0 && ctx.Err() == nil {
+				continue
+			}
+		case errors.Is(err, context.DeadlineExceeded):
+			j.drop(m)
+		}
 		return err
 	}
-	args["cloudId"] = cloudID
-	return m.call(ctx, tool, args, out)
 }
 
 type named struct {
@@ -157,6 +193,10 @@ func (j *Jira) issues(ctx context.Context, jql string) ([]Issue, error) {
 				if f.Status.StatusCategory != nil {
 					is.Category = f.Status.StatusCategory.Name
 				}
+				// Jira's categories are only To Do, In Progress and Done; a blocked status is In Progress.
+				if strings.Contains(strings.ToLower(is.Status), "blocked") {
+					is.Category = "Blocked"
+				}
 			}
 			if f.Assignee != nil {
 				is.Assignee = f.Assignee.DisplayName
@@ -174,6 +214,12 @@ func (j *Jira) issues(ctx context.Context, jql string) ([]Issue, error) {
 			break
 		}
 	}
+	// Without it ^o can't tell mine apart; the board still works, so the error isn't fatal.
+	if mine, err := j.mine(ctx, jql); err == nil {
+		for n := range issues {
+			issues[n].Mine = mine[issues[n].Key]
+		}
+	}
 	slices.SortStableFunc(issues, func(a, b Issue) int {
 		if d := rank(a) - rank(b); d != 0 {
 			return d
@@ -186,15 +232,49 @@ func (j *Jira) issues(ctx context.Context, jql string) ([]Issue, error) {
 	return issues, nil
 }
 
-func (j *Jira) me(ctx context.Context) string {
-	var data searchResult
-	err := j.call(ctx, "searchJiraIssuesUsingJql", map[string]any{
-		"jql": "assignee = currentUser() ORDER BY updated DESC", "maxResults": 1, "fields": []string{"assignee"},
-	}, &data)
-	if err != nil || len(data.Issues) == 0 || data.Issues[0].Fields.Assignee == nil {
+var orderBy = regexp.MustCompile(`(?is)\s+order\s+by\s+.*$`)
+
+// mine is the set of keys the JQL matches that are assigned to the signed-in user. The MCP's
+// issues carry the assignee's name but not their account ID, so Jira itself has to say which.
+func (j *Jira) mine(ctx context.Context, jql string) (map[string]bool, error) {
+	filter := orderBy.ReplaceAllString(strings.TrimSpace(jql), "")
+	if filter == "" {
+		filter = "assignee = currentUser()"
+	} else {
+		filter = "(" + filter + ") AND assignee = currentUser()"
+	}
+	out := map[string]bool{}
+	next := ""
+	for len(out) < 500 {
+		args := map[string]any{"jql": filter, "maxResults": 100, "fields": []string{"summary"}}
+		if next != "" {
+			args["nextPageToken"] = next
+		}
+		var data searchResult
+		if err := j.call(ctx, "searchJiraIssuesUsingJql", args, &data); err != nil {
+			return nil, err
+		}
+		for _, i := range data.Issues {
+			out[i.Key] = true
+		}
+		next = data.NextPageToken
+		if data.IsLast || next == "" {
+			break
+		}
+	}
+	return out, nil
+}
+
+// category is the ticket's status category, or "" when Jira can't say (deleted, no access).
+func (j *Jira) category(ctx context.Context, key string) string {
+	var data struct {
+		Fields issueFields `json:"fields"`
+	}
+	err := j.call(ctx, "getJiraIssue", map[string]any{"issueIdOrKey": key, "fields": []string{"status"}}, &data)
+	if err != nil || data.Fields.Status == nil || data.Fields.Status.StatusCategory == nil {
 		return ""
 	}
-	return data.Issues[0].Fields.Assignee.DisplayName
+	return data.Fields.Status.StatusCategory.Name
 }
 
 // detail is the ticket as markdown: header, description, linked issues.

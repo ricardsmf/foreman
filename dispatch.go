@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +10,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
+	"unicode"
 
 	"golang.org/x/text/unicode/norm"
 )
@@ -29,34 +30,6 @@ var agents = []Agent{
 	{"pi", "pi, default tools"},
 	{"Claude", "claude, default permission prompts"},
 	{"Claude (yolo)", "claude --dangerously-skip-permissions"},
-}
-
-type State struct {
-	RepoByProject map[string]string `json:"repoByProject"`
-	Agent         string            `json:"agent,omitempty"`
-	Dispatched    map[string]string `json:"dispatched"`
-}
-
-func loadState() State {
-	var s State
-	if b, err := os.ReadFile(stateFile); err == nil {
-		_ = json.Unmarshal(b, &s)
-	}
-	if s.RepoByProject == nil {
-		s.RepoByProject = map[string]string{}
-	}
-	if s.Dispatched == nil {
-		s.Dispatched = map[string]string{}
-	}
-	return s
-}
-
-func saveState(s State) error {
-	if err := os.MkdirAll(filepath.Dir(stateFile), 0o755); err != nil {
-		return err
-	}
-	b, _ := json.MarshalIndent(s, "", "  ")
-	return os.WriteFile(stateFile, b, 0o644)
 }
 
 func listRepos() []string {
@@ -87,18 +60,42 @@ func tilde(p string) string { return strings.Replace(p, home, "~", 1) }
 var nonAlnum = regexp.MustCompile(`[^a-z0-9]+`)
 
 func slug(text string) string {
-	s := nonAlnum.ReplaceAllString(norm.NFKD.String(strings.ToLower(text)), "-")
+	// NFKD splits é into e and a combining accent; drop the accent so it doesn't become a dash.
+	plain := strings.Map(func(r rune) rune {
+		if unicode.Is(unicode.Mn, r) {
+			return -1
+		}
+		return r
+	}, norm.NFKD.String(strings.ToLower(text)))
+	s := nonAlnum.ReplaceAllString(plain, "-")
 	parts := strings.Split(strings.Trim(s, "-"), "-")
 	return strings.Join(parts[:min(6, len(parts))], "-")
 }
 
+// Most commands answer in seconds; a fetch of a big repo can take minutes.
+const (
+	shTimeout    = time.Minute
+	fetchTimeout = 3 * time.Minute
+)
+
 // sh runs a command and returns its stdout; a failure carries its stderr.
 func sh(cwd, name string, args ...string) (string, error) {
-	cmd := exec.Command(name, args...)
+	return shFor(shTimeout, cwd, name, args...)
+}
+
+func shFor(timeout time.Duration, cwd, name string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = cwd
+	// Without a delay, a killed git can leave its children holding the pipes open.
+	cmd.WaitDelay = 5 * time.Second
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
+	if ctx.Err() == context.DeadlineExceeded {
+		return string(out), fmt.Errorf("%s %s: timed out after %s", name, strings.Join(args, " "), timeout)
+	}
 	if err != nil {
 		if msg := strings.TrimSpace(stderr.String()); msg != "" {
 			return string(out), errors.New(msg)
@@ -107,6 +104,8 @@ func sh(cwd, name string, args ...string) (string, error) {
 	}
 	return string(out), nil
 }
+
+func short(sha string) string { return sha[:min(8, len(sha))] }
 
 func which(bin string) string {
 	if p, err := exec.LookPath(bin); err == nil {
@@ -126,76 +125,130 @@ type Dispatch struct {
 	Worktree bool
 	Repo     string
 	Context  string
+	// Ticket is the ticket's markdown when the board already has it; empty means fetch it.
+	Ticket string
 }
+
+var defaultBranches = []string{"develop", "main", "master"}
+
+// baseBranch is the branch new work starts from: develop, else origin's HEAD, else main or master.
+func baseBranch(remotes []string, originHead string) string {
+	if slices.Contains(remotes, "origin/develop") {
+		return "origin/develop"
+	}
+	if originHead != "" && slices.Contains(remotes, originHead) {
+		return originHead
+	}
+	for _, b := range []string{"origin/main", "origin/master"} {
+		if slices.Contains(remotes, b) {
+			return b
+		}
+	}
+	return ""
+}
+
+// ticketBranch is the origin branch named after the ticket, e.g. origin/li/FLD-1675-x for FLD-1675.
+// remotes is sorted newest commit first, so an old merged branch loses to the live one.
+func ticketBranch(remotes []string, key string) string {
+	keyRe := regexp.MustCompile(`(^|[^a-z0-9])` + regexp.QuoteMeta(strings.ToLower(key)) + `($|[^0-9])`)
+	for _, b := range remotes {
+		if strings.HasPrefix(b, "origin/") && b != "origin/HEAD" && keyRe.MatchString(strings.ToLower(b)) {
+			return b
+		}
+	}
+	return ""
+}
+
+// prepareWorktree creates `<repo>-<key>` on the ticket's branch, or reuses it, and returns its branch.
+func prepareWorktree(repo, cwd string, issue Issue, progress func(string)) (string, error) {
+	git := func(args ...string) (string, error) { return sh("", "git", append([]string{"-C", repo}, args...)...) }
+	if exists(cwd) {
+		out, err := sh("", "git", "-C", cwd, "branch", "--show-current")
+		if err != nil {
+			return "", err
+		}
+		progress("Reusing worktree " + tilde(cwd))
+		return strings.TrimSpace(out), nil
+	}
+
+	progress("Fetching origin…")
+	if _, err := shFor(fetchTimeout, "", "git", "-C", repo, "fetch", "--quiet", "--prune", "origin"); err != nil {
+		// Carry on from the refs we have, but say so: the branch may start from a stale base.
+		progress("Fetch failed, using the last fetched refs: " + firstLine(err.Error()))
+	}
+	out, err := git("for-each-ref", "--sort=-committerdate", "--format=%(refname:short)", "refs/remotes/origin")
+	if err != nil {
+		return "", err
+	}
+	remotes := strings.Fields(out)
+	originHead, _ := git("symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
+
+	if existing := ticketBranch(remotes, issue.Key); existing != "" {
+		branch := strings.TrimPrefix(existing, "origin/")
+		// A local branch of that name may hold unpushed commits: check it out as is rather than reset it.
+		if _, err := git("rev-parse", "--verify", "--quiet", "refs/heads/"+branch); err == nil {
+			if _, err := git("worktree", "add", cwd, branch); err != nil {
+				return "", err
+			}
+			progress(fmt.Sprintf("Created worktree %s on the local %s", tilde(cwd), branch))
+			return branch, nil
+		}
+		if _, err := git("worktree", "add", "--track", "-b", branch, cwd, existing); err != nil {
+			return "", err
+		}
+		progress(fmt.Sprintf("Created worktree %s on %s", tilde(cwd), branch))
+		return branch, nil
+	}
+
+	base := baseBranch(remotes, strings.TrimSpace(originHead))
+	branch := branchPrefix + strings.ToLower(issue.Key) + "-" + slug(issue.Summary)
+	args := []string{"worktree", "add", "--no-track", "-b", branch, cwd}
+	if base != "" {
+		args = append(args, base)
+	}
+	if _, err := git(args...); err != nil {
+		return "", err
+	}
+	progress(fmt.Sprintf("Created worktree %s on %s from %s", tilde(cwd), branch, cmp(base, "HEAD")))
+	return branch, nil
+}
+
+func firstLine(s string) string { return strings.SplitN(s, "\n", 2)[0] }
 
 // dispatch creates or reuses the ticket's worktree and starts the agent on it in a new Rex session named after the ticket.
 func dispatch(ctx context.Context, jira *Jira, d Dispatch, progress func(string)) (string, error) {
 	issue, repo := d.Issue, d.Repo
 	keyLower := strings.ToLower(issue.Key)
-	git := func(args ...string) (string, error) { return sh("", "git", append([]string{"-C", repo}, args...)...) }
 
 	cwd := repo
-	out, err := git("branch", "--show-current")
-	if err != nil {
-		return "", err
-	}
-	branch := strings.TrimSpace(out)
+	var branch string
 	if d.Worktree {
 		cwd = repo + "-" + keyLower
-		if exists(cwd) {
-			out, err := sh("", "git", "-C", cwd, "branch", "--show-current")
-			if err != nil {
-				return "", err
-			}
-			branch = strings.TrimSpace(out)
-			progress("Reusing worktree " + tilde(cwd))
-		} else {
-			progress("Fetching origin…")
-			_, _ = git("fetch", "--quiet", "origin")
-			out, err := git("branch", "-r", "--format=%(refname:short)")
-			if err != nil {
-				return "", err
-			}
-			remotes := strings.Split(out, "\n")
-			keyRe := regexp.MustCompile(`(^|[^a-z0-9])` + regexp.QuoteMeta(keyLower) + `($|[^0-9])`)
-			existing, base := "", ""
-			for _, b := range remotes {
-				if keyRe.MatchString(strings.ToLower(b)) {
-					existing = b
-					break
-				}
-			}
-			for _, b := range []string{"origin/develop", "origin/main", "origin/master"} {
-				if slices.Contains(remotes, b) {
-					base = b
-					break
-				}
-			}
-			if existing != "" {
-				branch = strings.TrimPrefix(existing, "origin/")
-				if _, err := git("worktree", "add", "-B", branch, cwd, existing); err != nil {
-					return "", err
-				}
-				_, _ = sh("", "git", "-C", cwd, "branch", "--set-upstream-to", existing)
-				progress(fmt.Sprintf("Created worktree %s on %s", tilde(cwd), branch))
-			} else {
-				branch = branchPrefix + keyLower + "-" + slug(issue.Summary)
-				args := []string{"worktree", "add", "--no-track", "-b", branch, cwd}
-				if base != "" {
-					args = append(args, base)
-				}
-				if _, err := git(args...); err != nil {
-					return "", err
-				}
-				progress(fmt.Sprintf("Created worktree %s on %s from %s", tilde(cwd), branch, cmp(base, "HEAD")))
-			}
+		b, err := prepareWorktree(repo, cwd, issue, progress)
+		if err != nil {
+			return "", err
+		}
+		branch = b
+	} else {
+		out, err := sh("", "git", "-C", repo, "branch", "--show-current")
+		if err != nil {
+			return "", err
+		}
+		branch = strings.TrimSpace(out)
+		// The agent is told to commit on the branch it is on; that must not be the shared one.
+		if branch == "" || slices.Contains(defaultBranches, branch) {
+			return "", fmt.Errorf("%s is on %s; check out a ticket branch there or dispatch with a worktree",
+				tilde(repo), cmp(branch, "a detached HEAD"))
 		}
 	}
 
-	progress("Reading the ticket…")
-	ticket, err := jira.detail(ctx, issue.Key)
-	if err != nil {
-		return "", err
+	ticket := d.Ticket
+	if ticket == "" {
+		progress("Reading the ticket…")
+		var err error
+		if ticket, err = jira.detail(ctx, issue.Key); err != nil {
+			return "", err
+		}
 	}
 	note := ""
 	if d.Worktree {
@@ -232,7 +285,7 @@ func dispatch(ctx context.Context, jira *Jira, d Dispatch, progress func(string)
 	if err != nil {
 		return "", err
 	}
-	markDispatched(issue.Key, cwd)
+	markDispatched(issue.Key, cwd, session)
 	return fmt.Sprintf("✓ %s is working on %s in session %s · %s (%s)", d.Agent, issue.Key, session, tilde(cwd), branch), nil
 }
 
@@ -255,10 +308,13 @@ func dispatchReview(ctx context.Context, jira *Jira, d ReviewDispatch, progress 
 
 	progress("Fetching the PR head…")
 	// Naming the base updates origin/<base> too, so the diff's left side is current.
-	if _, err := sh("", "git", "-C", repo, "fetch", "--quiet", "origin", v.BaseRefName, fmt.Sprintf("pull/%d/head", pr.Number)); err != nil {
+	if _, err := shFor(fetchTimeout, "", "git", "-C", repo, "fetch", "--quiet", "origin", v.BaseRefName, fmt.Sprintf("pull/%d/head", pr.Number)); err != nil {
 		return "", err
 	}
 	head := v.HeadRefOid
+	if head == "" {
+		return "", errors.New("GitHub returned no head commit for the PR")
+	}
 	if exists(cwd) {
 		dirty, err := sh("", "git", "-C", cwd, "status", "--porcelain")
 		if err != nil {
@@ -270,12 +326,12 @@ func dispatchReview(ctx context.Context, jira *Jira, d ReviewDispatch, progress 
 		if _, err := sh("", "git", "-C", cwd, "checkout", "--quiet", "--detach", head); err != nil {
 			return "", err
 		}
-		progress(fmt.Sprintf("Updated worktree %s to %s", tilde(cwd), head[:8]))
+		progress(fmt.Sprintf("Updated worktree %s to %s", tilde(cwd), short(head)))
 	} else {
 		if _, err := sh("", "git", "-C", repo, "worktree", "add", "--detach", cwd, head); err != nil {
 			return "", err
 		}
-		progress(fmt.Sprintf("Created worktree %s at %s", tilde(cwd), head[:8]))
+		progress(fmt.Sprintf("Created worktree %s at %s", tilde(cwd), short(head)))
 	}
 
 	key := jiraKey(pr, &v)
@@ -325,7 +381,7 @@ func dispatchReview(ctx context.Context, jira *Jira, d ReviewDispatch, progress 
 	if err != nil {
 		return "", err
 	}
-	markDispatched(pr.Key, cwd)
+	markDispatched(pr.Key, cwd, session)
 	return fmt.Sprintf("✓ %s is reviewing %s in session %s · %s", d.Agent, pr.Key, session, tilde(cwd)), nil
 }
 
@@ -354,32 +410,9 @@ func start(agent, prompt, cwd, label string, progress func(string)) (string, err
 	return session, nil
 }
 
-func markDispatched(key, cwd string) {
-	s := loadState()
-	s.Dispatched[key] = cwd
-	_ = saveState(s)
-}
-
-func freeSessionLabel(base string) (string, error) {
-	out, err := sh("", "rex", "ls", "--json")
-	if err != nil {
-		return "", err
-	}
-	var data struct {
-		Sessions []struct {
-			Label string `json:"label"`
-		} `json:"sessions"`
-	}
-	if err := json.Unmarshal([]byte(out), &data); err != nil {
-		return "", err
-	}
-	taken := map[string]bool{}
-	for _, s := range data.Sessions {
-		taken[s.Label] = true
-	}
-	label := base
-	for n := 2; taken[label]; n++ {
-		label = fmt.Sprintf("%s-%d", base, n)
-	}
-	return label, nil
+func markDispatched(key, cwd, session string) {
+	_, _ = updateState(func(s *State) {
+		s.Dispatched[key] = cwd
+		s.Sessions[key] = session
+	})
 }
