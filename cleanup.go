@@ -84,6 +84,7 @@ func forget(s *State, keys []string) {
 		delete(s.Sessions, k)
 		delete(s.Titles, k)
 		delete(s.Dismissed, k)
+		delete(s.Hidden, k)
 	}
 }
 

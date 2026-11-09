@@ -57,6 +57,17 @@ type queueItem struct {
 	Sig string
 }
 
+// dismissKey is the item's key in State.Dismissed. A review agent and its PR share a key, so the
+// PR's is prefixed: marking one reviewed mustn't overwrite the other's mark.
+func (it queueItem) dismissKey() string {
+	if it.Kind == prItem {
+		return prDismissKey(it.Key)
+	}
+	return it.Key
+}
+
+func prDismissKey(key string) string { return "pr:" + key }
+
 func (it queueItem) review() bool { return strings.Contains(it.Key, "#") }
 
 func (it queueItem) working() bool { return it.Group == working }
@@ -98,6 +109,8 @@ func queueItems(s State, sessions []rexSession, prs []Pr) []queueItem {
 		it := queueItem{Kind: agentItem, Key: key, Title: s.Titles[key], Session: s.Sessions[key], Dir: dir}
 		if rs, ok := findSession(sessions, key, s.Sessions[key]); ok {
 			it.Agent, it.Session = rs.State, rs.ID
+		} else if s.Hidden[key] {
+			continue
 		}
 		ev := evidenceDir(key)
 		if st, err := os.Stat(filepath.Join(ev, "report.md")); err == nil {
@@ -131,7 +144,7 @@ func queueItems(s State, sessions []rexSession, prs []Pr) []queueItem {
 	}
 	for _, p := range prs {
 		// A PR has no session to keep listing: marked reviewed, it goes until its status changes.
-		if p.Mine && p.Category == "Blocked" && s.Dismissed[p.Key] != p.Status {
+		if p.Mine && p.Category == "Blocked" && s.Dismissed[prDismissKey(p.Key)] != p.Status {
 			items = append(items, queueItem{Kind: prItem, Group: needsYou, Key: p.Key, Title: p.Summary, Pr: &p, Sig: p.Status})
 		}
 	}
@@ -169,10 +182,11 @@ func sessionFixes(s State, sessions []rexSession) map[string]string {
 func staleDismissals(s State, prs []Pr) []string {
 	var out []string
 	for key := range s.Dismissed {
-		if _, ok := s.Dispatched[key]; ok {
-			continue
-		}
-		if slices.ContainsFunc(prs, func(p Pr) bool { return p.Key == key && p.Mine && p.Category == "Blocked" }) {
+		if pr, ok := strings.CutPrefix(key, "pr:"); ok {
+			if slices.ContainsFunc(prs, func(p Pr) bool { return p.Key == pr && p.Mine && p.Category == "Blocked" }) {
+				continue
+			}
+		} else if _, ok := s.Dispatched[key]; ok {
 			continue
 		}
 		out = append(out, key)
@@ -479,8 +493,8 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 			q.say(it.Key+" has nothing waiting for you", cOverlay)
 			return nil
 		}
-		key, sig := it.Key, it.Sig
-		q.state, _ = updateState(func(s *State) { s.Dismissed[key] = sig })
+		key, dkey, sig := it.Key, it.dismissKey(), it.Sig
+		q.state, _ = updateState(func(s *State) { s.Dismissed[dkey] = sig })
 		if it.Kind == prItem {
 			q.say("Marked "+key+" reviewed; it comes back when its status changes", cOverlay)
 		} else {
@@ -488,9 +502,12 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 		}
 		return q.rebuild()
 	case "K":
-		if it.Kind == prItem || it.Agent == "" {
-			q.say("No open agent session to close", cOverlay)
+		if it.Kind == prItem {
+			q.say("A PR has no agent session to close", cOverlay)
 			return nil
+		}
+		if it.Agent == "" {
+			return q.hide(it)
 		}
 		// Twice: it ends the agent and whatever else runs in the session.
 		if q.confirmKill != it.Session {
@@ -515,6 +532,22 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 		return tea.Sequence(kill, pollQueue)
 	}
 	return nil
+}
+
+// hide drops a closed agent from the queue after a second K. Its worktree stays dispatched, so the
+// board's ^x can still remove it.
+func (q *queueModel) hide(it queueItem) tea.Cmd {
+	confirm := "hide " + it.Key
+	if q.confirmKill != confirm {
+		q.confirmKill = confirm
+		q.say("K again drops "+it.Key+" from the queue; its worktree and report stay", cYellow)
+		return nil
+	}
+	q.confirmKill = ""
+	key := it.Key
+	q.state, _ = updateState(func(s *State) { s.Hidden[key] = true })
+	q.say("Dropped "+key+"; ^x on the board cleans up its worktree", cOverlay)
+	return q.rebuild()
 }
 
 // openDiff shows the worktree's changes in a pager, suspending the queue: a ticket's against where
@@ -802,7 +835,7 @@ func (q *queueModel) render(width, h int) []string {
 		}
 	}
 
-	keys := "enter go · f reply · v evidence · d diff · x reviewed · K close · o open · ^u/^d scroll"
+	keys := "enter go · f reply · v evidence · d diff · x reviewed · K close/drop · o open · ^u/^d scroll"
 	if q.feedback != nil {
 		keys = "type the reply · enter send · esc cancel"
 	}

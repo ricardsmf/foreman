@@ -83,7 +83,8 @@ grouped most urgent first:
    with their evidence (`▣ 3` screenshots or captures, `▶ video`).
 3. **working**: agents still working (`●` yellow), with the end of their screen, refreshed every poll.
 4. **idle**: agents whose session is open with nothing new for you (`○`), reviewed or without a report.
-5. **closed**: agents whose session is closed (`◇`), until `^x` on the board cleans up their worktree.
+5. **closed**: agents whose session is closed (`◇`), until `K` drops them from the queue or `^x` on
+   the board cleans up their worktree. A dropped agent shows again if its session reopens.
 
 An agent is found by the session ID recorded at dispatch, else by a session whose label still starts
 with its key (`fld-1704`, `review-reports-app-1185`), whose ID is then recorded. It reads the board's
@@ -94,8 +95,9 @@ Keys: `↑↓` pick, `enter` go to the agent's session (a PR opens in the browse
 that is sent to the agent's pane (the one whose program reports a status), `v` open the screenshots
 and videos, `d` the worktree's diff in git's pager, `o` the ticket or PR in the browser, `x` mark
 reviewed (the agent moves to idle or closed until it writes a new report; a PR goes until its status
-changes), `K` twice close the agent's Rex session, `^u`/`^d` scroll, `^r` reload, `q` quit
-(`cmd+alt+j` brings the pane back).
+changes), `K` twice close the agent's Rex session, or on a closed one drop it from the queue (its
+worktree and report stay), `^u`/`^d` scroll, `^r` reload, `q` quit (`cmd+alt+j` brings the pane
+back).
 
 ### Reports and evidence
 

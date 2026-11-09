@@ -362,6 +362,7 @@ func TestQueueItems(t *testing.T) {
 		Sessions:   map[string]string{"FLD-1": "s1", "FLD-2": "s2", "FLD-3": "s3", "FLD-4": "s4", "repo#7": "s7", "FLD-5": "s5"},
 		Titles:     map[string]string{},
 		Dismissed:  map[string]string{},
+		Hidden:     map[string]bool{},
 	}
 	// FLD-2 asks, FLD-3 works, FLD-5 finished without a report, FLD-4's session is closed.
 	sessions := []rexSession{{"s1", "fld-1-a", "done"}, {"s2", "fld-2-b", "blocked"}, {"s3", "fld-3-c", "working"}, {"s7", "review-repo-7", "idle"}, {"s5", "fld-5-e", "done"}}
@@ -408,9 +409,29 @@ func TestQueueItems(t *testing.T) {
 		t.Errorf("FLD-1 with a new report = %v, want review", got)
 	}
 	// A reviewed PR goes until its status changes.
-	s.Dismissed["repo#9"] = "in review ✗"
+	s.Dismissed["pr:repo#9"] = "in review ✗"
 	if _, ok := groups(queueItems(s, sessions, prs))["repo#9"]; ok {
 		t.Error("reviewed repo#9 still listed")
+	}
+
+	// A review agent and its PR share a key; marking the PR reviewed leaves the agent's report.
+	s.Dispatched["repo#9"] = "/w/9"
+	report("repo#9")
+	items = queueItems(s, sessions, prs)
+	pr := queueItem{Kind: prItem, Key: "repo#9"}
+	s.Dismissed[pr.dismissKey()] = "in review ✗"
+	if got := groups(queueItems(s, sessions, prs))["repo#9"]; got != toReview {
+		t.Errorf("repo#9's agent = %v after its PR was marked reviewed, want review", got)
+	}
+
+	// A closed agent can be dropped; it shows again when its session reopens.
+	s.Hidden["FLD-4"] = true
+	if _, ok := groups(queueItems(s, sessions, prs))["FLD-4"]; ok {
+		t.Error("hidden FLD-4 still listed")
+	}
+	sessions = append(sessions, rexSession{"s4", "fld-4-d", "idle"})
+	if _, ok := groups(queueItems(s, sessions, prs))["FLD-4"]; !ok {
+		t.Error("FLD-4 not listed with its session open again")
 	}
 }
 
@@ -463,12 +484,12 @@ func TestAgentsResultDoesNotReschedule(t *testing.T) {
 func TestStaleDismissals(t *testing.T) {
 	s := State{
 		Dispatched: map[string]string{"FLD-1": "/w/1"},
-		Dismissed:  map[string]string{"FLD-1": "a", "FLD-9": "b", "repo#2": "c", "repo#3": "d"},
+		Dismissed:  map[string]string{"FLD-1": "a", "FLD-9": "b", "pr:repo#2": "c", "pr:repo#3": "d", "repo#2": "e"},
 	}
 	prs := []Pr{{Key: "repo#2", Mine: true, Category: "Blocked"}, {Key: "repo#3", Mine: true, Category: "Done"}}
 	got := staleDismissals(s, prs)
 	slices.Sort(got)
-	if !slices.Equal(got, []string{"FLD-9", "repo#3"}) {
+	if !slices.Equal(got, []string{"FLD-9", "pr:repo#3", "repo#2"}) {
 		t.Errorf("staleDismissals = %v", got)
 	}
 }

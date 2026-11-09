@@ -453,6 +453,7 @@ func markDispatched(key, title, cwd, session string) {
 		s.Sessions[key] = session
 		s.Titles[key] = title
 		delete(s.Dismissed, key)
+		delete(s.Hidden, key)
 	})
 }
 
