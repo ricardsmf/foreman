@@ -73,23 +73,29 @@ A search loads at most 500 tickets; past that the count reads `500+` and the sta
 
 ## Queue
 
-`foreman queue` lists what needs you, most urgent first:
+`foreman queue` lists every dispatched agent, whatever its state, and your PRs that need you,
+grouped most urgent first:
 
-1. Agents that stopped to ask something (`●` red), with their report or, without one, the end of
-   their screen.
-2. Your PRs with failed CI, changes requested or a conflict (`✗`).
-3. Agents that finished (`✓`), newest first, with their report and evidence (`▣ 3` screenshots or
-   captures, `▶ video`). A finished agent shows once it has written a report.
-4. Agents still working (`●` yellow), with the end of their screen, refreshed every poll. They don't
-   count as needing you and can't be dismissed.
+1. **needs you**: agents that stopped to ask something or failed (`●` red), with their report or,
+   without one, the end of their screen; then your PRs with failed CI, changes requested or a
+   conflict (`✗`).
+2. **review**: agents that finished with a report you haven't marked reviewed (`✓`), newest first,
+   with their evidence (`▣ 3` screenshots or captures, `▶ video`).
+3. **working**: agents still working (`●` yellow), with the end of their screen, refreshed every poll.
+4. **idle**: agents whose session is open with nothing new for you (`○`), reviewed or without a report.
+5. **closed**: agents whose session is closed (`◇`), until `^x` on the board cleans up their worktree.
 
-It reads the board's state file and the agents' Rex states every few seconds, and your PRs every
-five minutes. Its pane title carries the count of items that need you, `queue (3)`.
+An agent is found by the session ID recorded at dispatch, else by a session whose label still starts
+with its key (`fld-1704`, `review-reports-app-1185`), whose ID is then recorded. It reads the board's
+state file and the Rex sessions every few seconds, and your PRs every five minutes. Its pane title
+carries the count of items in the first two groups, `queue (3)`.
 
 Keys: `↑↓` pick, `enter` go to the agent's session (a PR opens in the browser), `f` type a reply
-that is sent to the agent's pane (the one whose program reports a status), `v` open the screenshots and videos, `d` the worktree's diff in
-git's pager, `o` the ticket or PR in the browser, `x` dismiss (it comes back when its report or
-the PR's status changes), `^u`/`^d` scroll, `^r` reload, `q` quit (`cmd+alt+j` brings the pane back).
+that is sent to the agent's pane (the one whose program reports a status), `v` open the screenshots
+and videos, `d` the worktree's diff in git's pager, `o` the ticket or PR in the browser, `x` mark
+reviewed (the agent moves to idle or closed until it writes a new report; a PR goes until its status
+changes), `K` twice close the agent's Rex session, `^u`/`^d` scroll, `^r` reload, `q` quit
+(`cmd+alt+j` brings the pane back).
 
 ### Reports and evidence
 
@@ -121,8 +127,8 @@ reports, evidence and the agent's Rex session go.
 
 ## State
 
-- State (repo per project, last agent, dispatched tickets with their sessions and titles, dismissed
-  queue items) is in
+- State (repo per project, last agent, dispatched tickets with their sessions and titles, queue items
+  marked reviewed) is in
   `~/.local/state/foreman/state.json`, written atomically. An unreadable file is moved to
   `state.json.corrupt` rather than overwritten.
 

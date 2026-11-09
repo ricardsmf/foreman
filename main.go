@@ -501,7 +501,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 const usage = `usage: foreman [PROJECT | JQL]
-       foreman queue      what needs you: agents that finished or ask something, PRs that need you
+       foreman queue      every dispatched agent by state, and PRs that need you
        foreman --logout   forget the Atlassian sign-in`
 
 func run() error {

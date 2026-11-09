@@ -28,26 +28,41 @@ const (
 	prItem
 )
 
-// A queueItem is one thing waiting for me.
+// A group is where an item sits in the list, most urgent first.
+type group int
+
+const (
+	needsYou group = iota // an agent that asks something or failed, a PR of mine that's blocked
+	toReview              // a finished agent's report I haven't marked reviewed
+	working               // an agent still working
+	idle                  // an agent with an open session and nothing new for me
+	closed                // an agent whose session is closed
+)
+
+// A queueItem is one dispatched agent, or one of my PRs that needs me.
 type queueItem struct {
 	Kind    itemKind
+	Group   group
 	Key     string
 	Title   string
 	Agent   string // the agent's reported state, "" when its session is closed
-	Session string
+	Session string // the open session's ID, else the recorded one
 	Dir     string // the worktree
 	Report  string // report.md's path, "" when the agent wrote none
 	When    time.Time
 	Shots   int // images and terminal captures
 	Videos  int
 	Pr      *Pr
-	// Sig is what the item showed; dismissing it hides it until this changes.
+	// Sig is what the item showed; marking it reviewed holds until this changes.
 	Sig string
 }
 
 func (it queueItem) review() bool { return strings.Contains(it.Key, "#") }
 
-func (it queueItem) working() bool { return it.Kind == agentItem && it.Agent == "working" }
+func (it queueItem) working() bool { return it.Group == working }
+
+// pending is whether the item waits on me: it asks something or has a report to read.
+func (it queueItem) pending() bool { return it.Group == needsYou || it.Group == toReview }
 
 // urgent is whether the item is blocked on me rather than done.
 func (it queueItem) urgent() bool {
@@ -75,30 +90,18 @@ func evidence(dir string) (media, captures []string) {
 	return media, captures
 }
 
-// queueItems builds the queue from the state file, the agents' reported states and my PRs.
-// Blocked agents come first, then my PRs that need me, then finished work, newest first.
-func queueItems(s State, agents map[string]string, prs []Pr) []queueItem {
+// queueItems builds the list from the state file, the open Rex sessions and my PRs: every
+// dispatched agent, whatever its state, and my PRs blocked on me. Within a group, newest report first.
+func queueItems(s State, sessions []rexSession, prs []Pr) []queueItem {
 	var items []queueItem
 	for key, dir := range s.Dispatched {
-		session := s.Sessions[key]
-		state, open := agents[session]
-		if !open {
-			state = ""
-		}
-		it := queueItem{Kind: agentItem, Key: key, Title: s.Titles[key], Agent: state, Session: session, Dir: dir}
-		// A working agent is listed last, to follow along; it doesn't need me, so it can't be dismissed.
-		if it.working() {
-			it.Sig = "working"
-			items = append(items, it)
-			continue
+		it := queueItem{Kind: agentItem, Key: key, Title: s.Titles[key], Session: s.Sessions[key], Dir: dir}
+		if rs, ok := findSession(sessions, key, s.Sessions[key]); ok {
+			it.Agent, it.Session = rs.State, rs.ID
 		}
 		ev := evidenceDir(key)
 		if st, err := os.Stat(filepath.Join(ev, "report.md")); err == nil {
 			it.Report, it.When = filepath.Join(ev, "report.md"), st.ModTime()
-		}
-		// Done work shows only with a report; an agent that stopped to ask shows either way.
-		if it.Report == "" && !it.urgent() {
-			continue
 		}
 		media, captures := evidence(ev)
 		for _, p := range media {
@@ -109,29 +112,35 @@ func queueItems(s State, agents map[string]string, prs []Pr) []queueItem {
 			}
 		}
 		it.Shots += len(captures)
-		// Not the state itself: closing a finished agent's session shouldn't bring its item back.
+		// Not the state itself: closing a finished agent's session shouldn't bring its report back.
 		it.Sig = fmt.Sprintf("%t %d", it.urgent(), it.When.Unix())
+		reviewed := s.Dismissed[key] == it.Sig
+		switch {
+		case it.Agent == "working":
+			it.Group = working
+		case it.urgent() && !reviewed:
+			it.Group = needsYou
+		case it.Report != "" && !reviewed:
+			it.Group = toReview
+		case it.Agent != "":
+			it.Group = idle
+		default:
+			it.Group = closed
+		}
 		items = append(items, it)
 	}
 	for _, p := range prs {
-		if p.Mine && p.Category == "Blocked" {
-			items = append(items, queueItem{Kind: prItem, Key: p.Key, Title: p.Summary, Pr: &p, Sig: p.Status})
+		// A PR has no session to keep listing: marked reviewed, it goes until its status changes.
+		if p.Mine && p.Category == "Blocked" && s.Dismissed[p.Key] != p.Status {
+			items = append(items, queueItem{Kind: prItem, Group: needsYou, Key: p.Key, Title: p.Summary, Pr: &p, Sig: p.Status})
 		}
-	}
-	items = slices.DeleteFunc(items, func(it queueItem) bool { return !it.working() && s.Dismissed[it.Key] == it.Sig })
-	rank := func(it queueItem) int {
-		switch {
-		case it.Kind == agentItem && it.urgent():
-			return 0
-		case it.Kind == prItem:
-			return 1
-		case it.working():
-			return 3
-		}
-		return 2
 	}
 	slices.SortFunc(items, func(a, b queueItem) int {
-		if d := rank(a) - rank(b); d != 0 {
+		if d := int(a.Group) - int(b.Group); d != 0 {
+			return d
+		}
+		// Agents that ask before my PRs.
+		if d := int(a.Kind) - int(b.Kind); d != 0 {
 			return d
 		}
 		if d := b.When.Compare(a.When); d != 0 {
@@ -140,6 +149,18 @@ func queueItems(s State, agents map[string]string, prs []Pr) []queueItem {
 		return strings.Compare(a.Key, b.Key)
 	})
 	return items
+}
+
+// sessionFixes are the keys whose open session is no longer the one recorded, by ID: a label that
+// the agent renamed, or a dispatch from before IDs were kept. Recording the ID lets the board find it too.
+func sessionFixes(s State, sessions []rexSession) map[string]string {
+	fixes := map[string]string{}
+	for key := range s.Dispatched {
+		if rs, ok := findSession(sessions, key, s.Sessions[key]); ok && rs.ID != s.Sessions[key] {
+			fixes[key] = rs.ID
+		}
+	}
+	return fixes
 }
 
 // staleDismissals are the dismissed keys that can't show again: neither a dispatched ticket or
@@ -162,8 +183,9 @@ func staleDismissals(s State, prs []Pr) []string {
 type (
 	queueTickMsg  struct{}
 	queueStateMsg struct {
-		state  State
-		agents map[string]string
+		state    State
+		sessions []rexSession
+		ok       bool // false when listing the sessions failed
 	}
 	queuePrsMsg struct {
 		prs []Pr
@@ -178,7 +200,7 @@ type (
 type queueModel struct {
 	width, height int
 	state         State
-	agents        map[string]string
+	sessions      []rexSession
 	prs           []Pr
 	prsAt         time.Time // the last load attempt, failed or not, so a failing gh isn't retried every poll
 	prsLoading    bool
@@ -187,6 +209,7 @@ type queueModel struct {
 	scroll        int
 	details       map[string][]string // by key + sig
 	feedback      *string             // the reply being typed to the selected agent
+	confirmKill   string              // the session the first K asked to close
 	status        string
 	statusColor   Color
 }
@@ -201,22 +224,25 @@ func (q *queueModel) current() (queueItem, bool) {
 	return q.items[q.cursor], true
 }
 
-// needYou counts the items that wait on me: all but the working agents.
-func (q *queueModel) needYou() int {
+// count is how many items are in the group.
+func (q *queueModel) count(g group) int {
 	n := 0
 	for _, it := range q.items {
-		if !it.working() {
+		if it.Group == g {
 			n++
 		}
 	}
 	return n
 }
 
+// needYou counts the items that wait on me: those that ask and the reports to read.
+func (q *queueModel) needYou() int { return q.count(needsYou) + q.count(toReview) }
+
 func (q *queueModel) say(text string, c Color) { q.status, q.statusColor = text, c }
 
 func pollQueue() tea.Msg {
-	agents, _ := agentStates()
-	return queueStateMsg{loadState(), agents}
+	sessions, err := agentSessions()
+	return queueStateMsg{loadState(), sessions, err == nil}
 }
 
 func (q *queueModel) loadPrs() tea.Cmd {
@@ -240,7 +266,7 @@ func queueTick() tea.Cmd {
 // rebuild recomputes the items, keeping the cursor on the same item when it is still there.
 func (q *queueModel) rebuild() tea.Cmd {
 	prev, had := q.current()
-	q.items = queueItems(q.state, q.agents, q.prs)
+	q.items = queueItems(q.state, q.sessions, q.prs)
 	if had {
 		if n := slices.IndexFunc(q.items, func(it queueItem) bool { return it.Key == prev.Key }); n >= 0 {
 			q.cursor = n
@@ -294,7 +320,7 @@ func itemDetail(it queueItem) []string {
 		out = append(out, "", "## "+filepath.Base(p), "")
 		out = append(out, strings.Split(strings.TrimRight(string(b), "\n"), "\n")...)
 	}
-	if (it.Report == "" || it.working()) && it.Session != "" {
+	if (it.Report == "" || it.working()) && it.Agent != "" {
 		screen, err := sh("", "rex", "capture", "-s", it.Session, "--trim")
 		if len(out) > 0 {
 			out = append(out, "")
@@ -322,8 +348,15 @@ func (q *queueModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return q, tea.Batch(cmds...)
 	case queueStateMsg:
 		q.state = msg.state
-		if msg.agents != nil {
-			q.agents = msg.agents
+		if msg.ok {
+			q.sessions = msg.sessions
+			if fixes := sessionFixes(q.state, q.sessions); len(fixes) > 0 {
+				q.state, _ = updateState(func(s *State) {
+					for k, id := range fixes {
+						s.Sessions[k] = id
+					}
+				})
+			}
 		}
 		return q, q.rebuild()
 	case queuePrsMsg:
@@ -356,6 +389,9 @@ func (q *queueModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		if q.feedback != nil {
 			return q, q.feedbackInput(msg)
+		}
+		if msg.String() != "K" {
+			q.confirmKill = ""
 		}
 		return q, q.input(msg)
 	}
@@ -439,14 +475,44 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 		empty := ""
 		q.feedback = &empty
 	case "x":
-		if it.working() {
-			q.say(it.Key+" is still working; it shows here until it stops", cOverlay)
+		if !it.pending() {
+			q.say(it.Key+" has nothing waiting for you", cOverlay)
 			return nil
 		}
 		key, sig := it.Key, it.Sig
 		q.state, _ = updateState(func(s *State) { s.Dismissed[key] = sig })
-		q.say("Dismissed "+key+"; it comes back when it changes", cOverlay)
+		if it.Kind == prItem {
+			q.say("Marked "+key+" reviewed; it comes back when its status changes", cOverlay)
+		} else {
+			q.say("Marked "+key+" reviewed; it moves up again with a new report", cOverlay)
+		}
 		return q.rebuild()
+	case "K":
+		if it.Kind == prItem || it.Agent == "" {
+			q.say("No open agent session to close", cOverlay)
+			return nil
+		}
+		// Twice: it ends the agent and whatever else runs in the session.
+		if q.confirmKill != it.Session {
+			q.confirmKill = it.Session
+			warn := ""
+			if it.working() {
+				warn = " It is still working."
+			}
+			q.say("K again closes "+it.Key+"'s session."+warn, cYellow)
+			return nil
+		}
+		q.confirmKill = ""
+		session, key := it.Session, it.Key
+		q.say("Closing "+key+"'s session…", cSubtext)
+		kill := func() tea.Msg {
+			if err := killSession(session); err != nil {
+				return statusMsg{text: "Closing " + key + "'s session: " + err.Error(), color: cRed}
+			}
+			return statusMsg{text: "✓ Closed " + key + "'s session", color: cGreen}
+		}
+		// Poll right after, so the row moves to closed now rather than on the next tick.
+		return tea.Sequence(kill, pollQueue)
 	}
 	return nil
 }
@@ -592,7 +658,9 @@ func age(t time.Time) string {
 	return fmt.Sprintf("%dd", int(d.Hours()/24))
 }
 
-// itemLabel is the item's coloured mark and what it is waiting on.
+var groupNames = map[group]string{needsYou: "needs you", toReview: "review", working: "working", idle: "idle", closed: "closed"}
+
+// itemLabel is the item's coloured mark and its state.
 func itemLabel(it queueItem) (string, string) {
 	if it.Kind == prItem {
 		return fg(cRed, "✗"), fg(cRed, it.Pr.Status)
@@ -601,25 +669,36 @@ func itemLabel(it queueItem) (string, string) {
 	if it.review() {
 		what = "reviewed"
 	}
-	switch it.Agent {
-	case "working":
-		return fg(cYellow, "●"), fg(cYellow, "working")
-	case "blocked":
-		return fg(cRed, "●"), fg(cRed, "asks you")
-	case "error":
-		return fg(cRed, "●"), fg(cRed, "failed")
-	case "":
-		return fg(cGreen, "✓"), fg(cGreen, what) + fg(cOverlay, " (closed)")
+	if it.Report == "" {
+		what = "no report"
 	}
-	return fg(cGreen, "✓"), fg(cGreen, what)
+	switch {
+	case it.Agent == "working":
+		return fg(cYellow, "●"), fg(cYellow, "working")
+	case it.Agent == "blocked":
+		return fg(cRed, "●"), fg(cRed, "asks you")
+	case it.Agent == "error":
+		return fg(cRed, "●"), fg(cRed, "failed")
+	case it.Group == toReview && it.Agent == "":
+		return fg(cGreen, "✓"), fg(cGreen, what) + fg(cOverlay, " (closed)")
+	case it.Group == toReview:
+		return fg(cGreen, "✓"), fg(cGreen, what)
+	case it.Group == idle:
+		return fg(cGreen, "○"), fg(cOverlay, what)
+	}
+	return fg(cOverlay, "◇"), fg(cOverlay, what)
 }
 
 func (q *queueModel) render(width, h int) []string {
-	working := len(q.items) - q.needYou()
 	dot := fg(cSurface, " · ")
 	head := bold(fg(cMauve, "queue")) + dot + fmt.Sprintf("%d need you", q.needYou())
-	if working > 0 {
-		head += dot + fg(cYellow, fmt.Sprintf("%d working", working))
+	for _, g := range []struct {
+		g group
+		c Color
+	}{{working, cYellow}, {idle, cGreen}, {closed, cOverlay}} {
+		if n := q.count(g.g); n > 0 {
+			head += dot + fg(g.c, fmt.Sprintf("%d %s", n, groupNames[g.g]))
+		}
 	}
 	if q.prsLoading {
 		head += fg(cYellow, "  loading PRs…")
@@ -645,7 +724,7 @@ func (q *queueModel) render(width, h int) []string {
 		if n >= len(q.items) {
 			empty := ""
 			if n == 0 {
-				empty = fg(cOverlay, "  nothing needs you")
+				empty = fg(cOverlay, "  no agents dispatched")
 			}
 			out = append(out, empty)
 			continue
@@ -656,6 +735,16 @@ func (q *queueModel) render(width, h int) []string {
 		if sel {
 			line = fg(cMauve, "▌")
 		}
+		// The group's name on its first row, and on the top row when the group starts above it.
+		name := ""
+		if n == q.top || q.items[n-1].Group != it.Group {
+			name = groupNames[it.Group]
+		}
+		groupColor := cOverlay
+		if it.pending() {
+			groupColor = cMauve
+		}
+		line += fg(groupColor, fit(name, 9)) + " "
 		mark, what := itemLabel(it)
 		var ev []string
 		if it.Shots > 0 {
@@ -672,6 +761,9 @@ func (q *queueModel) render(width, h int) []string {
 			meta += "  " + fg(cOverlay, a)
 		}
 		keyColor, title := cOverlay, fg(cSubtext, it.Title)
+		if it.Group == closed {
+			title = fg(cOverlay, it.Title)
+		}
 		if sel {
 			keyColor, title = cText, bold(fg(cText, it.Title))
 		}
@@ -710,7 +802,7 @@ func (q *queueModel) render(width, h int) []string {
 		}
 	}
 
-	keys := "enter go · f reply · v evidence · d diff · x dismiss · o open · ^u/^d scroll"
+	keys := "enter go · f reply · v evidence · d diff · x reviewed · K close · o open · ^u/^d scroll"
 	if q.feedback != nil {
 		keys = "type the reply · enter send · esc cancel"
 	}
@@ -719,7 +811,6 @@ func (q *queueModel) render(width, h int) []string {
 
 func runQueue() error {
 	q := &queueModel{
-		agents:      map[string]string{},
 		details:     map[string][]string{},
 		statusColor: cOverlay,
 		state:       loadState(),

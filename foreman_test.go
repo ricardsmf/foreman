@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -363,50 +364,77 @@ func TestQueueItems(t *testing.T) {
 		Dismissed:  map[string]string{},
 	}
 	// FLD-2 asks, FLD-3 works, FLD-5 finished without a report, FLD-4's session is closed.
-	agents := map[string]string{"s1": "done", "s2": "blocked", "s3": "working", "s7": "idle", "s5": "done"}
+	sessions := []rexSession{{"s1", "fld-1-a", "done"}, {"s2", "fld-2-b", "blocked"}, {"s3", "fld-3-c", "working"}, {"s7", "review-repo-7", "idle"}, {"s5", "fld-5-e", "done"}}
 	prs := []Pr{
 		{Key: "repo#9", Mine: true, Category: "Blocked", Status: "in review ✗"},
 		{Key: "repo#10", Mine: true, Category: "Done"},
 		{Key: "repo#11", Category: "Blocked"},
 	}
-	keys := func(items []queueItem) []string {
-		var out []string
+	groups := func(items []queueItem) map[string]group {
+		out := map[string]group{}
 		for _, it := range items {
-			out = append(out, it.Key)
+			out[it.Key] = it.Group
 		}
 		return out
 	}
-	items := queueItems(s, agents, prs)
-	// FLD-3 is listed last, as working.
-	if got := keys(items); !slices.Contains(got, "FLD-1") || got[0] != "FLD-2" || got[1] != "repo#9" ||
-		got[len(got)-1] != "FLD-3" || slices.Contains(got, "FLD-5") || slices.Contains(got, "repo#10") ||
-		slices.Contains(got, "repo#11") || len(got) != 6 {
-		t.Fatalf("items = %v", got)
+	items := queueItems(s, sessions, prs)
+	want := map[string]group{"FLD-2": needsYou, "repo#9": needsYou, "FLD-1": toReview, "FLD-4": toReview, "repo#7": toReview, "FLD-3": working, "FLD-5": idle}
+	if got := groups(items); !maps.Equal(got, want) {
+		t.Fatalf("groups = %v, want %v", got, want)
+	}
+	// Agents that ask come before my PRs.
+	if items[0].Key != "FLD-2" || items[1].Key != "repo#9" || items[len(items)-1].Key != "FLD-5" {
+		t.Errorf("order = %v", items)
 	}
 	first := items[slices.IndexFunc(items, func(it queueItem) bool { return it.Key == "FLD-1" })]
 	if first.Shots != 2 || first.Videos != 1 {
 		t.Errorf("FLD-1 evidence = %d shots, %d videos", first.Shots, first.Videos)
 	}
 
-	s.Dismissed["FLD-3"] = "working"
-	if got := keys(queueItems(s, agents, prs)); !slices.Contains(got, "FLD-3") {
-		t.Errorf("a working agent was dismissed: %v", got)
-	}
+	// Marking reviewed moves a report down to idle, or closed once its session goes; it stays listed.
 	s.Dismissed["FLD-1"] = first.Sig
-	if got := keys(queueItems(s, agents, prs)); slices.Contains(got, "FLD-1") {
-		t.Errorf("dismissed FLD-1 still listed: %v", got)
+	if got := groups(queueItems(s, sessions, prs))["FLD-1"]; got != idle {
+		t.Errorf("reviewed FLD-1 = %v, want idle", got)
 	}
-	// Closing a finished agent's session keeps it dismissed; a new report brings it back.
-	delete(agents, "s1")
-	if got := keys(queueItems(s, agents, prs)); slices.Contains(got, "FLD-1") {
-		t.Errorf("FLD-1 came back when its session closed: %v", got)
+	sessions = slices.DeleteFunc(sessions, func(r rexSession) bool { return r.ID == "s1" })
+	if got, ok := groups(queueItems(s, sessions, prs))["FLD-1"]; !ok || got != closed {
+		t.Errorf("FLD-1 with its session closed = %v (listed %t), want closed", got, ok)
 	}
 	later := time.Now().Add(time.Minute)
 	if err := os.Chtimes(filepath.Join(evidenceDir("FLD-1"), "report.md"), later, later); err != nil {
 		t.Fatal(err)
 	}
-	if got := keys(queueItems(s, agents, prs)); !slices.Contains(got, "FLD-1") {
-		t.Errorf("FLD-1 should come back with a new report: %v", got)
+	if got := groups(queueItems(s, sessions, prs))["FLD-1"]; got != toReview {
+		t.Errorf("FLD-1 with a new report = %v, want review", got)
+	}
+	// A reviewed PR goes until its status changes.
+	s.Dismissed["repo#9"] = "in review ✗"
+	if _, ok := groups(queueItems(s, sessions, prs))["repo#9"]; ok {
+		t.Error("reviewed repo#9 still listed")
+	}
+}
+
+func TestFindSession(t *testing.T) {
+	sessions := []rexSession{
+		{"session:a", "fld-1704", "done"},
+		{"session:b", "review-reports-app-1185-x", "idle"},
+		{"session:c", "fld-17040-other", "working"},
+	}
+	for _, tc := range []struct{ key, recorded, want string }{
+		{"FLD-1704", "session:c", "session:c"},                 // the recorded ID wins
+		{"FLD-1704", "fld-1704-test-work-orders", "session:a"}, // renamed: matched by the key
+		{"reports-app#1185", "gone", "session:b"},
+		{"FLD-170", "", ""}, // a prefix of another key doesn't match
+		{"FLD-1679", "", ""},
+	} {
+		got, _ := findSession(sessions, tc.key, tc.recorded)
+		if got.ID != tc.want {
+			t.Errorf("findSession(%s, %s) = %q, want %q", tc.key, tc.recorded, got.ID, tc.want)
+		}
+	}
+	s := State{Dispatched: map[string]string{"FLD-1704": "/w", "FLD-1679": "/w"}, Sessions: map[string]string{"FLD-1704": "fld-1704-test-work-orders"}}
+	if got := sessionFixes(s, sessions); !maps.Equal(got, map[string]string{"FLD-1704": "session:a"}) {
+		t.Errorf("sessionFixes = %v", got)
 	}
 }
 
@@ -426,8 +454,8 @@ func TestAgentsResultDoesNotReschedule(t *testing.T) {
 	if m.agents["fld-1"] != "working" {
 		t.Errorf("agents = %v", m.agents)
 	}
-	q := &queueModel{agents: map[string]string{}, details: map[string][]string{}}
-	if _, cmd := q.Update(queueStateMsg{State{}, nil}); cmd != nil {
+	q := &queueModel{details: map[string][]string{}}
+	if _, cmd := q.Update(queueStateMsg{State{}, nil, true}); cmd != nil {
 		t.Error("queueStateMsg with no items returned a command")
 	}
 }

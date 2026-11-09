@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 // attachLua attaches the script to a session: without it, listing another session's blocks fails
@@ -14,9 +15,9 @@ local function attach(id)
 end
 `
 
-// agentStatesScript returns, for every session, the states its terminals' programs report over
-// OSC 7501 (pi and Claude Code report working, blocked, done…), keyed by session label.
-const agentStatesScript = attachLua + `
+// agentSessionsScript returns every session with the states its terminals' programs report over
+// OSC 7501 (pi and Claude Code report working, blocked, done…).
+const agentSessionsScript = attachLua + `
 local out = {}
 local list = rex.call("session.list")
 for _, s in ipairs((list or {}).sessions or {}) do
@@ -29,34 +30,89 @@ for _, s in ipairs((list or {}).sessions or {}) do
       for _, r in ipairs(st.records or {}) do table.insert(states, r.state) end
     end
   end
-  -- By ID and by label: the state file holds IDs, and labels for older dispatches.
-  out[s.session_id] = states
-  out[s.label] = states
+  table.insert(out, {id = s.session_id, label = s.label, states = states})
 end
 return out
 `
 
-// agentStates maps each Rex session's ID and label to its most urgent reported state: blocked, error,
-// working, done or idle, or "open" when its programs report nothing.
-func agentStates() (map[string]string, error) {
+// A rexSession is an open Rex session and its most urgent reported state.
+type rexSession struct {
+	ID, Label, State string
+}
+
+// agentSessions lists the open Rex sessions with their most urgent reported state: blocked, error,
+// working, done or idle, or "open" when their programs report nothing.
+func agentSessions() ([]rexSession, error) {
 	// --all: otherwise rex do hears only the session REX_SESSION names, and listing another
 	// session's blocks fails.
-	out, err := sh("", "rex", "do", "--all", "-e", agentStatesScript, "--json")
+	out, err := sh("", "rex", "do", "--all", "-e", agentSessionsScript, "--json")
 	if err != nil {
 		return nil, err
 	}
-	// A Lua table with no entries encodes as {} rather than [], so decode each value loosely.
-	var raw map[string]json.RawMessage
+	// A Lua table with no entries encodes as {} rather than [], so decode the list and states loosely.
+	var raw []struct {
+		ID     string          `json:"id"`
+		Label  string          `json:"label"`
+		States json.RawMessage `json:"states"`
+	}
+	if strings.TrimSpace(out) == "{}" {
+		return nil, nil
+	}
 	if err := json.Unmarshal([]byte(out), &raw); err != nil {
 		return nil, err
 	}
-	states := map[string]string{}
-	for label, v := range raw {
+	sessions := make([]rexSession, 0, len(raw))
+	for _, r := range raw {
 		var list []string
-		_ = json.Unmarshal(v, &list)
-		states[label] = mostUrgent(list)
+		_ = json.Unmarshal(r.States, &list)
+		sessions = append(sessions, rexSession{r.ID, r.Label, mostUrgent(list)})
 	}
-	return states, nil
+	return sessions, nil
+}
+
+// agentStates maps each Rex session's ID and label to its most urgent reported state. By both: the
+// state file holds IDs, and labels for older dispatches.
+func agentStates() (map[string]string, error) {
+	sessions, err := agentSessions()
+	if err != nil {
+		return nil, err
+	}
+	return statesByName(sessions), nil
+}
+
+func statesByName(sessions []rexSession) map[string]string {
+	states := map[string]string{}
+	for _, s := range sessions {
+		states[s.ID] = s.State
+		states[s.Label] = s.State
+	}
+	return states
+}
+
+// findSession is the open session for a dispatched key: the recorded one, given by ID or label, else
+// one whose label still starts with the key, as dispatch names it (fld-1704-…, review-repo-12-…).
+// An agent that renamed a session recorded by label (older dispatches) keeps the key in it.
+func findSession(sessions []rexSession, key, recorded string) (rexSession, bool) {
+	for _, s := range sessions {
+		if recorded != "" && (s.ID == recorded || s.Label == recorded) {
+			return s, true
+		}
+	}
+	k := slug(key)
+	for _, s := range sessions {
+		for _, base := range []string{k, "review-" + k} {
+			if s.Label == base || strings.HasPrefix(s.Label, base+"-") {
+				return s, true
+			}
+		}
+	}
+	return rexSession{}, false
+}
+
+// killSession closes a Rex session, given by ID or label, and everything running in it.
+func killSession(session string) error {
+	_, err := sh("", "rex", "kill", session)
+	return err
 }
 
 func mostUrgent(states []string) string {
