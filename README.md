@@ -20,7 +20,8 @@ session, starting it if it isn't running: the board on the left, the [queue](#qu
 
 It talks to Atlassian's remote MCP (`mcp.atlassian.com/v2/mcp`) with its own OAuth client. The
 first run opens the browser to sign in; tokens live in the macOS Keychain under `foreman`,
-separate from pi's and Claude Code's. The OAuth callback listens on `localhost:3127`.
+separate from pi's and Claude Code's, split across `atlassian-mcp.1`, `.2`… since one Keychain
+write takes at most 4 KB. The OAuth callback listens on `localhost:3127`.
 
 ## Keys
 

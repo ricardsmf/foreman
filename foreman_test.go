@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/zalando/go-keyring"
 )
 
 func TestParseArgs(t *testing.T) {
@@ -536,5 +538,41 @@ func TestAgentCommandPassesThePrompt(t *testing.T) {
 	}
 	if string(out) != prompt {
 		t.Errorf("got %d bytes, want the %d-byte prompt", len(out), len(prompt))
+	}
+}
+
+// Atlassian's tokens are about 9 KB, over what one Keychain write takes, so the sign-in is split.
+func TestStoredSplitsAcrossKeychainItems(t *testing.T) {
+	keyring.MockInit()
+	big := stored{Tokens: &storedTokens{AccessToken: strings.Repeat("a", 4300), RefreshToken: strings.Repeat("r", 3600)}}
+	if err := saveStored(big); err != nil {
+		t.Fatal(err)
+	}
+	if n := storedParts(); n < 4 {
+		t.Fatalf("parts = %d", n)
+	}
+	for n := 1; n <= storedParts(); n++ {
+		if part, _ := keyring.Get(keychainService, partAccount(n)); len(part) > keychainPart {
+			t.Errorf("part %d is %d bytes", n, len(part))
+		}
+	}
+	if got := loadStored(); got.Tokens == nil || got.Tokens.AccessToken != big.Tokens.AccessToken || got.Tokens.RefreshToken != big.Tokens.RefreshToken {
+		t.Fatal("the split sign-in didn't load back")
+	}
+	// A smaller sign-in drops the parts it no longer needs.
+	if err := saveStored(stored{Tokens: &storedTokens{AccessToken: "x"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := keyring.Get(keychainService, partAccount(2)); err == nil {
+		t.Error("part 2 left behind")
+	}
+	if got := loadStored(); got.Tokens == nil || got.Tokens.AccessToken != "x" {
+		t.Errorf("loaded %+v", got.Tokens)
+	}
+	// An entry from before the split, the JSON itself, still loads.
+	signOut()
+	_ = keyring.Set(keychainService, keychainAccount, `{"tokens":{"access_token":"old"}}`)
+	if got := loadStored(); got.Tokens == nil || got.Tokens.AccessToken != "old" {
+		t.Errorf("legacy entry loaded %+v", got.Tokens)
 	}
 }

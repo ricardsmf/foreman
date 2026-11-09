@@ -60,20 +60,81 @@ type stored struct {
 	Verifier string        `json:"verifier,omitempty"`
 }
 
+// go-keyring refuses a macOS Keychain write over 4096 bytes, base64 included, and Atlassian's
+// tokens are about 9 KB. So the entry is split: the main item holds {"parts": n} and the JSON is in
+// items "<account>.1" to "<account>.n". A main item that is the JSON itself (older versions) still loads.
+const keychainPart = 2000
+
+type keychainManifest struct {
+	Parts int `json:"parts"`
+}
+
+func partAccount(n int) string { return fmt.Sprintf("%s.%d", keychainAccount, n) }
+
 func loadStored() stored {
 	var s stored
-	if raw, err := keyring.Get(keychainService, keychainAccount); err == nil {
-		_ = json.Unmarshal([]byte(raw), &s)
+	raw, err := keyring.Get(keychainService, keychainAccount)
+	if err != nil {
+		return s
 	}
+	var m keychainManifest
+	if json.Unmarshal([]byte(raw), &m) == nil && m.Parts > 0 {
+		var sb strings.Builder
+		for n := 1; n <= m.Parts; n++ {
+			part, err := keyring.Get(keychainService, partAccount(n))
+			if err != nil {
+				return s
+			}
+			sb.WriteString(part)
+		}
+		raw = sb.String()
+	}
+	_ = json.Unmarshal([]byte(raw), &s)
 	return s
 }
 
 func saveStored(s stored) error {
-	b, _ := json.Marshal(s)
-	return keyring.Set(keychainService, keychainAccount, string(b))
+	b, err := json.Marshal(s)
+	if err != nil {
+		return err
+	}
+	old := storedParts()
+	n := 0
+	for rest := string(b); rest != ""; {
+		part := rest[:min(keychainPart, len(rest))]
+		rest = rest[len(part):]
+		n++
+		if err := keyring.Set(keychainService, partAccount(n), part); err != nil {
+			return fmt.Errorf("saving the Atlassian sign-in to the Keychain: %w", err)
+		}
+	}
+	// The manifest last: until it is written, a reader still sees the previous sign-in whole,
+	// unless that one was split too and shares the parts just rewritten.
+	mb, _ := json.Marshal(keychainManifest{Parts: n})
+	if err := keyring.Set(keychainService, keychainAccount, string(mb)); err != nil {
+		return fmt.Errorf("saving the Atlassian sign-in to the Keychain: %w", err)
+	}
+	for k := n + 1; k <= old; k++ {
+		_ = keyring.Delete(keychainService, partAccount(k))
+	}
+	return nil
+}
+
+// storedParts is how many parts the current entry has, 0 when it isn't split.
+func storedParts() int {
+	raw, err := keyring.Get(keychainService, keychainAccount)
+	if err != nil {
+		return 0
+	}
+	var m keychainManifest
+	_ = json.Unmarshal([]byte(raw), &m)
+	return m.Parts
 }
 
 func signOut() {
+	for n := storedParts(); n > 0; n-- {
+		_ = keyring.Delete(keychainService, partAccount(n))
+	}
 	_ = keyring.Delete(keychainService, keychainAccount)
 }
 
@@ -161,7 +222,15 @@ func (h *oauthHandler) saveToken(tok *oauth2.Token, issuer string) {
 	}
 	h.s.Tokens = t
 	h.s.Verifier = ""
-	_ = saveStored(h.s)
+	h.save()
+}
+
+// save writes the sign-in to the Keychain. A failure doesn't stop this run, which holds the
+// tokens in memory, but the next one would ask to sign in again, so it is reported.
+func (h *oauthHandler) save() {
+	if err := saveStored(h.s); err != nil {
+		h.log(err.Error())
+	}
 }
 
 // refresh trades the stored refresh token for a new access token. Callers hold h.mu.
@@ -226,13 +295,13 @@ func (h *oauthHandler) login(ctx context.Context, challenges []oauthex.Challenge
 			ClientName:              "foreman",
 			Issuer:                  issuer,
 		}
-		_ = saveStored(h.s)
+		h.save()
 	}
 
 	cfg := h.config(asm, prm.ScopesSupported)
 	verifier := oauth2.GenerateVerifier()
 	h.s.Verifier = verifier
-	_ = saveStored(h.s)
+	h.save()
 	state := randomHex(16)
 	authURL := cfg.AuthCodeURL(state, oauth2.S256ChallengeOption(verifier), oauth2.SetAuthURLParam("resource", serverURL))
 
