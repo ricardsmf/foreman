@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -287,12 +288,12 @@ func dispatch(ctx context.Context, jira *Jira, d Dispatch, progress func(string)
 	if err := resetEvidence(issue.Key); err != nil {
 		return "", err
 	}
-	session, err := start(d.Agent, issue.Key, strings.Join(lines, "\n"), cwd, label, progress)
+	session, name, err := start(d.Agent, issue.Key, strings.Join(lines, "\n"), cwd, label, progress)
 	if err != nil {
 		return "", err
 	}
 	markDispatched(issue.Key, issue.Summary, cwd, session)
-	return fmt.Sprintf("✓ %s is working on %s in session %s · %s (%s)", d.Agent, issue.Key, session, tilde(cwd), branch), nil
+	return fmt.Sprintf("✓ %s is working on %s in session %s · %s (%s)", d.Agent, issue.Key, name, tilde(cwd), branch), nil
 }
 
 type ReviewDispatch struct {
@@ -387,12 +388,12 @@ func dispatchReview(ctx context.Context, jira *Jira, d ReviewDispatch, progress 
 	if err := resetEvidence(pr.Key); err != nil {
 		return "", err
 	}
-	session, err := start(d.Agent, pr.Key, strings.Join(lines, "\n"), cwd, "review-"+slug(pr.Key), progress)
+	session, name, err := start(d.Agent, pr.Key, strings.Join(lines, "\n"), cwd, "review-"+slug(pr.Key), progress)
 	if err != nil {
 		return "", err
 	}
 	markDispatched(pr.Key, v.Title, cwd, session)
-	return fmt.Sprintf("✓ %s is reviewing %s in session %s · %s", d.Agent, pr.Key, session, tilde(cwd)), nil
+	return fmt.Sprintf("✓ %s is reviewing %s in session %s · %s", d.Agent, pr.Key, name, tilde(cwd)), nil
 }
 
 // promptFile is where a dispatch leaves the agent's prompt, beside its report: a new dispatch and
@@ -418,23 +419,32 @@ func agentCommand(agent, file string) []string {
 	return append([]string{"/bin/sh", "-c", `p=$(cat "$0") || exit; exec "$@" "$p"`, file}, cmd...)
 }
 
-func start(agent, key, prompt, cwd, label string, progress func(string)) (string, error) {
+// start returns the new session's ID, to track it by, and its label, to show.
+func start(agent, key, prompt, cwd, label string, progress func(string)) (id, name string, err error) {
 	file := promptFile(key)
 	if err := os.WriteFile(file, []byte(prompt), 0o600); err != nil {
-		return "", err
+		return "", "", err
 	}
 	cmd := agentCommand(agent, file)
 	progress(fmt.Sprintf("Starting %s…", agent))
 	// `rex new` starts the session in the background; the app stays on the board.
 	session, err := freeSessionLabel(label)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	args := append([]string{"new", session, "--cwd", cwd, "--window", agent, "--"}, cmd...)
-	if _, err := sh("", "rex", args...); err != nil {
-		return "", err
+	args := append([]string{"new", session, "--json", "--cwd", cwd, "--window", agent, "--"}, cmd...)
+	out, err := sh("", "rex", args...)
+	if err != nil {
+		return "", "", err
 	}
-	return session, nil
+	// The ID, not the label: an agent may rename its session to describe the work.
+	var made struct {
+		ID string `json:"session_id"`
+	}
+	if json.Unmarshal([]byte(out), &made) == nil && made.ID != "" {
+		return made.ID, session, nil
+	}
+	return session, session, nil
 }
 
 func markDispatched(key, title, cwd, session string) {

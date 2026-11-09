@@ -78,7 +78,7 @@ func (m *model) boardInput(msg tea.KeyPressMsg) tea.Cmd {
 		}
 		return func() tea.Msg {
 			if err := switchTo(session); err != nil {
-				return statusMsg{"Switching to " + session + ": " + err.Error(), cRed, false}
+				return statusMsg{"Switching to " + current.Key + "'s session: " + err.Error(), cRed, false}
 			}
 			return nil
 		}

@@ -29,12 +29,14 @@ for _, s in ipairs((list or {}).sessions or {}) do
       for _, r in ipairs(st.records or {}) do table.insert(states, r.state) end
     end
   end
+  -- By ID and by label: the state file holds IDs, and labels for older dispatches.
+  out[s.session_id] = states
   out[s.label] = states
 end
 return out
 `
 
-// agentStates maps each Rex session label to its most urgent reported state: blocked, error,
+// agentStates maps each Rex session's ID and label to its most urgent reported state: blocked, error,
 // working, done or idle, or "open" when its programs report nothing.
 func agentStates() (map[string]string, error) {
 	// --all: otherwise rex do hears only the session REX_SESSION names, and listing another
@@ -68,17 +70,17 @@ func mostUrgent(states []string) string {
 	return "open"
 }
 
-// switchTo shows the session in the Rex app, as cmd+s would.
+// switchTo shows the session, given by ID or label, in the Rex app, as cmd+s would.
 func switchTo(label string) error {
 	script := fmt.Sprintf(`
 for _, s in ipairs(rex.call("session.list").sessions or {}) do
-  if s.label == %s then
+  if s.session_id == %[1]s or s.label == %[1]s then
     rex.client.queue("session.select", {session_id = s.session_id})
     return s.session_id
   end
 end
-error("no session " .. %s, 0)
-`, strconv.Quote(label), strconv.Quote(label))
+error("no session " .. %[1]s, 0)
+`, strconv.Quote(label))
 	_, err := sh("", "rex", "do", "-e", script)
 	return err
 }

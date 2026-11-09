@@ -12,7 +12,8 @@ type State struct {
 	Agent         string            `json:"agent,omitempty"`
 	// Dispatched maps a ticket or PR key to the directory its agent works in.
 	Dispatched map[string]string `json:"dispatched"`
-	// Sessions maps a ticket or PR key to its agent's latest Rex session label.
+	// Sessions maps a ticket or PR key to its agent's latest Rex session: its ID, which survives a
+	// rename, or for dispatches before IDs were kept, its label.
 	Sessions map[string]string `json:"sessions,omitempty"`
 	// Titles maps a ticket or PR key to its summary, for the queue.
 	Titles map[string]string `json:"titles,omitempty"`

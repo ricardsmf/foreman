@@ -400,7 +400,7 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 		session := it.Session
 		return func() tea.Msg {
 			if err := switchTo(session); err != nil {
-				return statusMsg{text: "Switching to " + session + ": " + err.Error(), color: cRed}
+				return statusMsg{text: "Switching to " + it.Key + "'s session: " + err.Error(), color: cRed}
 			}
 			return nil
 		}
@@ -500,7 +500,7 @@ func (q *queueModel) feedbackInput(msg tea.KeyPressMsg) tea.Cmd {
 		if text == "" || !ok {
 			return nil
 		}
-		q.say("Sending to "+it.Session+"…", cSubtext)
+		q.say("Sending to "+it.Key+"…", cSubtext)
 		return func() tea.Msg {
 			if err := sendToAgent(it.Session, text); err != nil {
 				return statusMsg{text: "Reply to " + it.Key + ": " + err.Error(), color: cRed}
@@ -518,7 +518,7 @@ func (q *queueModel) feedbackInput(msg tea.KeyPressMsg) tea.Cmd {
 const agentBlockScript = attachLua + `
 local label = %s
 for _, s in ipairs(rex.call("session.list").sessions or {}) do
-  if s.label == label then
+  if s.session_id == label or s.label == label then
     attach(s.session_id)
     local first
     for _, b in ipairs((rex.call("session.list_blocks", {session_id = s.session_id}) or {}).blocks or {}) do

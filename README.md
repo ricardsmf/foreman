@@ -49,7 +49,7 @@ A search loads at most 500 tickets; past that the count reads `500+` and the sta
   `develop`, `main`, `master` or a detached HEAD.
 - Each agent starts in a new background Rex session named after the ticket, such as
   `fld-1671-my-van-always`; `^s` on the row, or `cmd+s`, switches to it. The board stays where it
-  is.
+  is. It is tracked by its ID, so an agent renaming its session doesn't lose it.
 - `◆` marks a dispatched row, coloured by what its agent reports to Rex: yellow working, red
   waiting for you or failed, green idle or done. `◇` means its session is closed.
 - The agent gets the ticket as markdown, your extra context, and a workflow: understand, implement,
