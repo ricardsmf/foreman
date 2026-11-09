@@ -102,7 +102,10 @@ func (h *oauthHandler) Token() (*oauth2.Token, error) {
 		return nil, errors.New("not signed in")
 	}
 	if t.ExpiresAt != 0 && time.Now().Add(time.Minute).Unix() >= t.ExpiresAt && t.RefreshToken != "" {
-		if err := h.refresh(context.Background()); err != nil {
+		// Bounded: it runs under h.mu, and a hung refresh would stall every Jira call behind it.
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := h.refresh(ctx); err != nil {
 			return nil, &oauth2.RetrieveError{ErrorCode: "invalid_grant", ErrorDescription: err.Error()}
 		}
 		t = h.s.Tokens

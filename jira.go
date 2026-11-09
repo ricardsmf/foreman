@@ -13,11 +13,6 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const (
-	cloudID = "1eb9eb54-74a9-4d94-8eb1-a1a7696be552" // bloqit.atlassian.net
-	site    = "https://bloqit.atlassian.net"
-)
-
 type Issue struct {
 	Key      string
 	Summary  string
@@ -169,8 +164,11 @@ type searchResult struct {
 	NextPageToken string `json:"nextPageToken"`
 }
 
-func (j *Jira) issues(ctx context.Context, jql string) ([]Issue, error) {
-	var issues []Issue
+// maxIssues bounds a search: past it the board gets slow to load and to filter.
+const maxIssues = 500
+
+// issues runs the search, up to maxIssues tickets; truncated says Jira had more.
+func (j *Jira) issues(ctx context.Context, jql string) (issues []Issue, truncated bool, err error) {
 	next := ""
 	for {
 		args := map[string]any{
@@ -183,7 +181,7 @@ func (j *Jira) issues(ctx context.Context, jql string) ([]Issue, error) {
 		}
 		var data searchResult
 		if err := j.call(ctx, "searchJiraIssuesUsingJql", args, &data); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		for _, i := range data.Issues {
 			f := i.Fields
@@ -210,7 +208,11 @@ func (j *Jira) issues(ctx context.Context, jql string) ([]Issue, error) {
 			issues = append(issues, is)
 		}
 		next = data.NextPageToken
-		if data.IsLast || next == "" || len(issues) >= 500 {
+		if data.IsLast || next == "" {
+			break
+		}
+		if len(issues) >= maxIssues {
+			truncated = true
 			break
 		}
 	}
@@ -229,7 +231,7 @@ func (j *Jira) issues(ctx context.Context, jql string) ([]Issue, error) {
 		}
 		return localeCompare(a.Key, b.Key)
 	})
-	return issues, nil
+	return issues, truncated, nil
 }
 
 var orderBy = regexp.MustCompile(`(?is)\s+order\s+by\s+.*$`)
@@ -245,7 +247,7 @@ func (j *Jira) mine(ctx context.Context, jql string) (map[string]bool, error) {
 	}
 	out := map[string]bool{}
 	next := ""
-	for len(out) < 500 {
+	for len(out) < maxIssues {
 		args := map[string]any{"jql": filter, "maxResults": 100, "fields": []string{"summary"}}
 		if next != "" {
 			args["nextPageToken"] = next

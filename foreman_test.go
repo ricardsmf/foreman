@@ -377,9 +377,10 @@ func TestQueueItems(t *testing.T) {
 		return out
 	}
 	items := queueItems(s, agents, prs)
+	// FLD-3 is listed last, as working.
 	if got := keys(items); !slices.Contains(got, "FLD-1") || got[0] != "FLD-2" || got[1] != "repo#9" ||
-		slices.Contains(got, "FLD-3") || slices.Contains(got, "FLD-5") || slices.Contains(got, "repo#10") ||
-		slices.Contains(got, "repo#11") || len(got) != 5 {
+		got[len(got)-1] != "FLD-3" || slices.Contains(got, "FLD-5") || slices.Contains(got, "repo#10") ||
+		slices.Contains(got, "repo#11") || len(got) != 6 {
 		t.Fatalf("items = %v", got)
 	}
 	first := items[slices.IndexFunc(items, func(it queueItem) bool { return it.Key == "FLD-1" })]
@@ -387,6 +388,10 @@ func TestQueueItems(t *testing.T) {
 		t.Errorf("FLD-1 evidence = %d shots, %d videos", first.Shots, first.Videos)
 	}
 
+	s.Dismissed["FLD-3"] = "working"
+	if got := keys(queueItems(s, agents, prs)); !slices.Contains(got, "FLD-3") {
+		t.Errorf("a working agent was dismissed: %v", got)
+	}
 	s.Dismissed["FLD-1"] = first.Sig
 	if got := keys(queueItems(s, agents, prs)); slices.Contains(got, "FLD-1") {
 		t.Errorf("dismissed FLD-1 still listed: %v", got)
@@ -408,5 +413,79 @@ func TestQueueItems(t *testing.T) {
 func TestEvidenceDir(t *testing.T) {
 	if got := filepath.Base(evidenceDir("Fleet-API#412")); got != "fleet-api-412" {
 		t.Errorf("evidenceDir = %q", got)
+	}
+}
+
+// An agents result must not schedule another poll: focus and dispatch poll too, and each extra
+// reschedule would start another loop of `rex do` calls.
+func TestAgentsResultDoesNotReschedule(t *testing.T) {
+	m := &model{agents: map[string]string{}}
+	if _, cmd := m.Update(agentsMsg{"fld-1": "working"}); cmd != nil {
+		t.Error("agentsMsg returned a command")
+	}
+	if m.agents["fld-1"] != "working" {
+		t.Errorf("agents = %v", m.agents)
+	}
+	q := &queueModel{agents: map[string]string{}, details: map[string][]string{}}
+	if _, cmd := q.Update(queueStateMsg{State{}, nil}); cmd != nil {
+		t.Error("queueStateMsg with no items returned a command")
+	}
+}
+
+func TestStaleDismissals(t *testing.T) {
+	s := State{
+		Dispatched: map[string]string{"FLD-1": "/w/1"},
+		Dismissed:  map[string]string{"FLD-1": "a", "FLD-9": "b", "repo#2": "c", "repo#3": "d"},
+	}
+	prs := []Pr{{Key: "repo#2", Mine: true, Category: "Blocked"}, {Key: "repo#3", Mine: true, Category: "Done"}}
+	got := staleDismissals(s, prs)
+	slices.Sort(got)
+	if !slices.Equal(got, []string{"FLD-9", "repo#3"}) {
+		t.Errorf("staleDismissals = %v", got)
+	}
+}
+
+func TestLoadConfig(t *testing.T) {
+	oldFile, oldSite, oldPrefix, oldProject := configFile, site, branchPrefix, defaultProject
+	t.Cleanup(func() { configFile, site, branchPrefix, defaultProject = oldFile, oldSite, oldPrefix, oldProject })
+	configFile = filepath.Join(t.TempDir(), "config.json")
+	if err := loadConfig(); err != nil || site != oldSite {
+		t.Fatalf("no file: err %v, site %q", err, site)
+	}
+	if err := os.WriteFile(configFile, []byte(`{"site": "https://x.atlassian.net/", "branchPrefix": "me/"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := loadConfig(); err != nil {
+		t.Fatal(err)
+	}
+	if site != "https://x.atlassian.net" || branchPrefix != "me/" || defaultProject != oldProject {
+		t.Errorf("site %q, prefix %q, project %q", site, branchPrefix, defaultProject)
+	}
+	if err := os.WriteFile(configFile, []byte(`{"sit": "typo"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := loadConfig(); err == nil {
+		t.Error("an unknown key should be an error")
+	}
+}
+
+// The prompt reaches the agent as one argument, whatever it holds, from a file larger than Rex's
+// 64 KB request limit.
+func TestAgentCommandPassesThePrompt(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "prompt.md")
+	prompt := "# FLD-1: \"x\" $HOME `y`\n\n" + strings.Repeat("a", 200_000)
+	if err := os.WriteFile(file, []byte(prompt), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := agentCommand("pi", file)
+	// Stand in for pi: print the last argument.
+	cmd[len(cmd)-1] = "/usr/bin/printf"
+	cmd = append(cmd, "%s")
+	out, err := exec.Command(cmd[0], cmd[1:]...).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != prompt {
+		t.Errorf("got %d bytes, want the %d-byte prompt", len(out), len(prompt))
 	}
 }

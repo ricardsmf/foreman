@@ -35,6 +35,8 @@ or write extra context, `alt+enter` new line, paste works, `^e` writes the conte
 
 Both views reload when the board regains focus after five minutes or more, and every five minutes.
 
+A search loads at most 500 tickets; past that the count reads `500+` and the status line says so.
+
 ## Dispatching
 
 - Repos are the git checkouts directly under `~/work/code` and `~/projects`; the last one used per
@@ -52,6 +54,9 @@ Both views reload when the board regains focus after five minutes or more, and e
   waiting for you or failed, green idle or done. `◇` means its session is closed.
 - The agent gets the ticket as markdown, your extra context, and a workflow: understand, implement,
   verify, commit. It is told not to push, open a PR or touch the ticket.
+- The agent's prompt is written to `prompt.md` in its evidence directory and read by a shell in
+  the new session, since Rex caps a request at 64 KB.
+
 ## Reviews
 
 - The PR view lists open PRs in the GitHub repos checked out under `~/work/code`, from `gh` (its own
@@ -75,12 +80,14 @@ Both views reload when the board regains focus after five minutes or more, and e
 2. Your PRs with failed CI, changes requested or a conflict (`✗`).
 3. Agents that finished (`✓`), newest first, with their report and evidence (`▣ 3` screenshots or
    captures, `▶ video`). A finished agent shows once it has written a report.
+4. Agents still working (`●` yellow), with the end of their screen, refreshed every poll. They don't
+   count as needing you and can't be dismissed.
 
 It reads the board's state file and the agents' Rex states every few seconds, and your PRs every
-five minutes. Its pane title carries the count, `queue (3)`.
+five minutes. Its pane title carries the count of items that need you, `queue (3)`.
 
 Keys: `↑↓` pick, `enter` go to the agent's session (a PR opens in the browser), `f` type a reply
-that is sent to the agent's pane, `v` open the screenshots and videos, `d` the worktree's diff in
+that is sent to the agent's pane (the one whose program reports a status), `v` open the screenshots and videos, `d` the worktree's diff in
 git's pager, `o` the ticket or PR in the browser, `x` dismiss (it comes back when its report or
 the PR's status changes), `^u`/`^d` scroll, `^r` reload, `q` quit (`cmd+alt+j` brings the pane back).
 
@@ -97,7 +104,20 @@ attach or link them. A new dispatch empties the directory, and cleaning up a wor
 `^x` lists the dispatched worktrees whose ticket is Done or whose PR is merged or closed. Those
 with uncommitted changes or a working agent start unticked. `enter` runs `git worktree remove` on
 the ticked ones (never `--force`, so changes stop it); branches and their commits stay, and the
-reports and evidence go.
+reports, evidence and the agent's Rex session go.
+
+## Config
+
+`~/.config/foreman/config.json` overrides the defaults, all optional; an unknown key is an error:
+
+```json
+{
+  "site": "https://bloqit.atlassian.net",
+  "cloudId": "1eb9eb54-74a9-4d94-8eb1-a1a7696be552",
+  "defaultProject": "FLD",
+  "branchPrefix": "rf/"
+}
+```
 
 ## State
 

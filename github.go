@@ -83,10 +83,26 @@ func checkouts() map[string]string {
 	return out
 }
 
-var ghLogin = sync.OnceValues(func() (string, error) {
+var (
+	loginMu sync.Mutex
+	login   string
+)
+
+// ghLogin is the signed-in GitHub user. Only success is cached: a board started offline or before
+// `gh auth login` must still load PRs once that is fixed.
+func ghLogin() (string, error) {
+	loginMu.Lock()
+	defer loginMu.Unlock()
+	if login != "" {
+		return login, nil
+	}
 	s, err := sh("", "gh", "api", "user", "-q", ".login")
-	return strings.TrimSpace(s), err
-})
+	if err != nil {
+		return "", err
+	}
+	login = strings.TrimSpace(s)
+	return login, nil
+}
 
 // One GraphQL request carries every search, so review requests and my PRs ride on the first page of
 // all open PRs. Only mine ask for review, CI and merge state: on every PR those fields make the

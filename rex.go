@@ -6,12 +6,21 @@ import (
 	"strconv"
 )
 
+// attachLua attaches the script to a session: without it, listing another session's blocks fails
+// ("stream is not attached to session") and the session looks as if no agent were running there.
+const attachLua = `
+local function attach(id)
+  if rex.session.attach then pcall(rex.session.attach, { session_id = id }) end
+end
+`
+
 // agentStatesScript returns, for every session, the states its terminals' programs report over
 // OSC 7501 (pi and Claude Code report working, blocked, done…), keyed by session label.
-const agentStatesScript = `
+const agentStatesScript = attachLua + `
 local out = {}
 local list = rex.call("session.list")
 for _, s in ipairs((list or {}).sessions or {}) do
+  attach(s.session_id)
   local states = {}
   local blocks = rex.call("session.list_blocks", {session_id = s.session_id})
   for _, b in ipairs((blocks or {}).blocks or {}) do

@@ -16,8 +16,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-const defaultProject = "FLD"
-
 var projectRe = regexp.MustCompile(`(?i)^[A-Z][A-Z0-9]+$`)
 
 func parseArgs(argv []string) (jql, title string) {
@@ -85,9 +83,10 @@ type form struct {
 // Messages from background work.
 type (
 	loadedMsg struct {
-		which viewKind
-		rows  []Row
-		err   error
+		which     viewKind
+		rows      []Row
+		truncated bool // Jira had more tickets than the board loads
+		err       error
 	}
 	detailTickMsg struct{ seq int }
 	detailMsg     struct {
@@ -130,6 +129,7 @@ type model struct {
 	width, height int
 	view          viewKind
 	issues        []Row
+	truncated     bool // the search matched more than maxIssues tickets
 	prs           []Row
 	prsLoaded     bool
 	prFilter      string // "all" | "requested" | "mine"
@@ -178,16 +178,16 @@ func (m *model) reload(which viewKind) tea.Cmd {
 			for n, p := range list {
 				rows[n] = prRow(p)
 			}
-			return loadedMsg{which, rows, err}
+			return loadedMsg{which: which, rows: rows, err: err}
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), jiraTimeout)
 		defer cancel()
-		list, err := jira.issues(ctx, jql)
+		list, truncated, err := jira.issues(ctx, jql)
 		rows := make([]Row, len(list))
 		for n, i := range list {
 			rows[n] = issueRow(i)
 		}
-		return loadedMsg{which, rows, err}
+		return loadedMsg{which, rows, truncated, err}
 	}
 }
 
@@ -363,8 +363,14 @@ func pollAgents() tea.Msg {
 }
 
 func (m *model) Init() tea.Cmd {
-	return tea.Batch(m.reload(tickets), m.reload(prs), pollAgents,
+	return tea.Batch(m.reload(tickets), m.reload(prs), pollAgents, agentsTick(),
 		tea.Tick(refreshInterval, func(time.Time) tea.Msg { return refreshTickMsg{} }))
+}
+
+// agentsTick schedules the next poll. Only agentsTickMsg reschedules it: extra polls (focus, a
+// dispatch) must not each start another loop.
+func agentsTick() tea.Cmd {
+	return tea.Tick(agentsInterval, func(time.Time) tea.Msg { return agentsTickMsg{} })
 }
 
 // refreshStale reloads the views whose data is older than the refresh interval.
@@ -396,7 +402,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.which == prs {
 			m.prs, m.prsLoaded = msg.rows, true
 		} else {
-			m.issues = msg.rows
+			m.issues, m.truncated = msg.rows, msg.truncated
 		}
 		// PR keys hold a `#`, ticket keys don't: keep the other view's cached details.
 		for key := range m.details {
@@ -408,6 +414,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Clear the previous error or "loading" note, but not a dispatch's result or progress.
 		if msg.which == m.view && !m.statusSticky {
 			m.say("", cOverlay)
+			if msg.truncated {
+				m.say(fmt.Sprintf("Showing the first %d tickets; narrow the JQL to see the rest", maxIssues), cYellow)
+			}
 		}
 	case detailTickMsg:
 		if msg.seq != m.detailSeq || m.form != nil {
@@ -449,12 +458,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Coming back to the board after a while: show what changed since.
 		return m, tea.Batch(m.refreshStale(), pollAgents)
 	case agentsTickMsg:
-		return m, pollAgents
+		return m, tea.Batch(pollAgents, agentsTick())
 	case agentsMsg:
 		if msg != nil {
 			m.agents = msg
 		}
-		return m, tea.Tick(agentsInterval, func(time.Time) tea.Msg { return agentsTickMsg{} })
+		return m, nil
 	case editedMsg:
 		if msg.err != nil {
 			m.say("Editor: "+msg.err.Error(), cRed)
@@ -500,6 +509,9 @@ func run() error {
 	if len(argv) > 0 && (argv[0] == "--help" || argv[0] == "-h") {
 		fmt.Println(usage)
 		return nil
+	}
+	if err := loadConfig(); err != nil {
+		return err
 	}
 	if len(argv) > 0 && argv[0] == "queue" {
 		return runQueue()

@@ -126,7 +126,11 @@ func (m *model) renderBoard(width, h int) []string {
 	m.top = max(0, min(m.top, max(0, len(items)-listRows)))
 
 	isPrs := m.view == prs
-	out := []string{m.header(fmt.Sprintf("%d/%d", len(items), len(m.rows())))}
+	total := fmt.Sprint(len(m.rows()))
+	if !isPrs && m.truncated {
+		total += "+"
+	}
+	out := []string{m.header(fmt.Sprintf("%d/%s", len(items), total))}
 	hint := ""
 	if m.query == "" {
 		noun := "tickets"

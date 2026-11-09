@@ -23,7 +23,6 @@ var (
 	// evidenceRoot holds each agent's report and screenshots, outside every repo so a commit can't pick them up.
 	evidenceRoot = filepath.Join(home, ".local", "state", "foreman", "evidence")
 	mcpConfig    = filepath.Join(home, ".config", "mcp", "mcp.json")
-	branchPrefix = "rf/"
 )
 
 type Agent struct{ Label, Note string }
@@ -288,7 +287,7 @@ func dispatch(ctx context.Context, jira *Jira, d Dispatch, progress func(string)
 	if err := resetEvidence(issue.Key); err != nil {
 		return "", err
 	}
-	session, err := start(d.Agent, strings.Join(lines, "\n"), cwd, label, progress)
+	session, err := start(d.Agent, issue.Key, strings.Join(lines, "\n"), cwd, label, progress)
 	if err != nil {
 		return "", err
 	}
@@ -388,7 +387,7 @@ func dispatchReview(ctx context.Context, jira *Jira, d ReviewDispatch, progress 
 	if err := resetEvidence(pr.Key); err != nil {
 		return "", err
 	}
-	session, err := start(d.Agent, strings.Join(lines, "\n"), cwd, "review-"+slug(pr.Key), progress)
+	session, err := start(d.Agent, pr.Key, strings.Join(lines, "\n"), cwd, "review-"+slug(pr.Key), progress)
 	if err != nil {
 		return "", err
 	}
@@ -396,11 +395,18 @@ func dispatchReview(ctx context.Context, jira *Jira, d ReviewDispatch, progress 
 	return fmt.Sprintf("✓ %s is reviewing %s in session %s · %s", d.Agent, pr.Key, session, tilde(cwd)), nil
 }
 
-func start(agent, prompt, cwd, label string, progress func(string)) (string, error) {
+// promptFile is where a dispatch leaves the agent's prompt, beside its report: a new dispatch and
+// a cleanup remove it with the rest.
+func promptFile(key string) string { return filepath.Join(evidenceDir(key), "prompt.md") }
+
+// agentCommand runs the agent with the prompt read from file as its last argument. Rex caps a
+// request at 64 KB, so a ticket with a long description or a PR with many files can't travel
+// inside `rex new`; the shell reads it on the far side, where only ARG_MAX (1 MB) applies.
+func agentCommand(agent, file string) []string {
 	// Absolute paths: the fish `claude` function would otherwise add a second --mcp-config.
 	var cmd []string
 	if agent == "pi" {
-		cmd = []string{which("pi"), prompt}
+		cmd = []string{which("pi")}
 	} else {
 		cmd = []string{which("claude"), "--mcp-config", mcpConfig}
 		if agent == "Claude (yolo)" {
@@ -408,8 +414,16 @@ func start(agent, prompt, cwd, label string, progress func(string)) (string, err
 		}
 		// The report and evidence go outside the working directory.
 		cmd = append(cmd, "--add-dir", evidenceRoot)
-		cmd = append(cmd, prompt)
 	}
+	return append([]string{"/bin/sh", "-c", `p=$(cat "$0") || exit; exec "$@" "$p"`, file}, cmd...)
+}
+
+func start(agent, key, prompt, cwd, label string, progress func(string)) (string, error) {
+	file := promptFile(key)
+	if err := os.WriteFile(file, []byte(prompt), 0o600); err != nil {
+		return "", err
+	}
+	cmd := agentCommand(agent, file)
 	progress(fmt.Sprintf("Starting %s…", agent))
 	// `rex new` starts the session in the background; the app stays on the board.
 	session, err := freeSessionLabel(label)

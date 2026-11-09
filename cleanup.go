@@ -14,12 +14,13 @@ import (
 
 // A cleanupCandidate is a dispatched worktree whose ticket is done or whose PR is closed.
 type cleanupCandidate struct {
-	Key    string
-	Dir    string
-	Repo   string // the main checkout that owns the worktree
-	Reason string // "done", "merged", "closed"
-	Dirty  bool   // uncommitted changes: git refuses to remove it
-	Agent  string // the agent's reported state, if its session is still open
+	Key     string
+	Dir     string
+	Repo    string // the main checkout that owns the worktree
+	Reason  string // "done", "merged", "closed"
+	Dirty   bool   // uncommitted changes: git refuses to remove it
+	Agent   string // the agent's reported state, if its session is still open
+	Session string // the agent's Rex session label
 }
 
 type cleanupView struct {
@@ -41,17 +42,23 @@ func (m *model) findCleanup() tea.Cmd {
 		var out []cleanupCandidate
 		var mu sync.Mutex
 		var wg sync.WaitGroup
+		// Each check is a Jira or GitHub call plus a few git commands; a long-lived board can have
+		// dozens, and all at once trip rate limits.
+		slots := make(chan struct{}, cleanupWorkers)
 		for key, dir := range state.Dispatched {
 			if !exists(dir) {
 				gone = append(gone, key)
 				continue
 			}
 			wg.Go(func() {
+				slots <- struct{}{}
+				defer func() { <-slots }()
 				c, ok := checkCleanup(ctx, jira, key, dir)
 				if !ok {
 					return
 				}
-				if s := agents[state.Sessions[key]]; s != "" {
+				c.Session = state.Sessions[key]
+				if s := agents[c.Session]; s != "" {
 					c.Agent = s
 				}
 				mu.Lock()
@@ -61,17 +68,22 @@ func (m *model) findCleanup() tea.Cmd {
 		}
 		wg.Wait()
 		if len(gone) > 0 {
-			_, _ = updateState(func(s *State) {
-				for _, k := range gone {
-					delete(s.Dispatched, k)
-					delete(s.Sessions, k)
-					delete(s.Titles, k)
-					delete(s.Dismissed, k)
-				}
-			})
+			_, _ = updateState(func(s *State) { forget(s, gone) })
 		}
 		slices.SortFunc(out, func(a, b cleanupCandidate) int { return strings.Compare(a.Dir, b.Dir) })
 		return cleanupMsg{out, ctx.Err()}
+	}
+}
+
+const cleanupWorkers = 8
+
+// forget drops keys from the state with their dismissals.
+func forget(s *State, keys []string) {
+	for _, k := range keys {
+		delete(s.Dispatched, k)
+		delete(s.Sessions, k)
+		delete(s.Titles, k)
+		delete(s.Dismissed, k)
 	}
 }
 
@@ -147,15 +159,13 @@ func (m *model) removeWorktrees() tea.Cmd {
 				continue
 			}
 			removed = append(removed, c.Key)
-		}
-		_, _ = updateState(func(s *State) {
-			for _, k := range removed {
-				delete(s.Dispatched, k)
-				delete(s.Sessions, k)
-				delete(s.Titles, k)
-				delete(s.Dismissed, k)
+			// Its agent's session has nothing left to work on. A failure to close it isn't one
+			// worth reporting: the worktree, which was the point, is gone.
+			if c.Session != "" && c.Agent != "" {
+				_, _ = sh("", "rex", "kill", c.Session)
 			}
-		})
+		}
+		_, _ = updateState(func(s *State) { forget(s, removed) })
 		for _, k := range removed {
 			_ = os.RemoveAll(evidenceDir(k))
 		}
@@ -232,5 +242,5 @@ func (m *model) renderCleanup(width, h int) []string {
 	if v.busy {
 		return append(out, fg(cOverlay, "removing…"))
 	}
-	return append(out, fg(cOverlay, "↑↓ pick · space toggle · a all/none · enter remove (branches stay) · esc back"))
+	return append(out, fg(cOverlay, "↑↓ pick · space toggle · a all/none · enter remove (branches stay; agent sessions close) · esc back"))
 }

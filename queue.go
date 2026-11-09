@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -45,6 +46,8 @@ type queueItem struct {
 }
 
 func (it queueItem) review() bool { return strings.Contains(it.Key, "#") }
+
+func (it queueItem) working() bool { return it.Kind == agentItem && it.Agent == "working" }
 
 // urgent is whether the item is blocked on me rather than done.
 func (it queueItem) urgent() bool {
@@ -82,10 +85,13 @@ func queueItems(s State, agents map[string]string, prs []Pr) []queueItem {
 		if !open {
 			state = ""
 		}
-		if state == "working" {
+		it := queueItem{Kind: agentItem, Key: key, Title: s.Titles[key], Agent: state, Session: session, Dir: dir}
+		// A working agent is listed last, to follow along; it doesn't need me, so it can't be dismissed.
+		if it.working() {
+			it.Sig = "working"
+			items = append(items, it)
 			continue
 		}
-		it := queueItem{Kind: agentItem, Key: key, Title: s.Titles[key], Agent: state, Session: session, Dir: dir}
 		ev := evidenceDir(key)
 		if st, err := os.Stat(filepath.Join(ev, "report.md")); err == nil {
 			it.Report, it.When = filepath.Join(ev, "report.md"), st.ModTime()
@@ -112,13 +118,15 @@ func queueItems(s State, agents map[string]string, prs []Pr) []queueItem {
 			items = append(items, queueItem{Kind: prItem, Key: p.Key, Title: p.Summary, Pr: &p, Sig: p.Status})
 		}
 	}
-	items = slices.DeleteFunc(items, func(it queueItem) bool { return s.Dismissed[it.Key] == it.Sig })
+	items = slices.DeleteFunc(items, func(it queueItem) bool { return !it.working() && s.Dismissed[it.Key] == it.Sig })
 	rank := func(it queueItem) int {
 		switch {
 		case it.Kind == agentItem && it.urgent():
 			return 0
 		case it.Kind == prItem:
 			return 1
+		case it.working():
+			return 3
 		}
 		return 2
 	}
@@ -132,6 +140,23 @@ func queueItems(s State, agents map[string]string, prs []Pr) []queueItem {
 		return strings.Compare(a.Key, b.Key)
 	})
 	return items
+}
+
+// staleDismissals are the dismissed keys that can't show again: neither a dispatched ticket or
+// review nor one of my PRs still blocked on me. Without pruning, every PR I ever dismissed stays
+// in the state file. Called only after a successful PR load, so a failed one prunes nothing.
+func staleDismissals(s State, prs []Pr) []string {
+	var out []string
+	for key := range s.Dismissed {
+		if _, ok := s.Dispatched[key]; ok {
+			continue
+		}
+		if slices.ContainsFunc(prs, func(p Pr) bool { return p.Key == key && p.Mine && p.Category == "Blocked" }) {
+			continue
+		}
+		out = append(out, key)
+	}
+	return out
 }
 
 type (
@@ -155,7 +180,7 @@ type queueModel struct {
 	state         State
 	agents        map[string]string
 	prs           []Pr
-	prsAt         time.Time
+	prsAt         time.Time // the last load attempt, failed or not, so a failing gh isn't retried every poll
 	prsLoading    bool
 	items         []queueItem
 	cursor, top   int
@@ -176,6 +201,17 @@ func (q *queueModel) current() (queueItem, bool) {
 	return q.items[q.cursor], true
 }
 
+// needYou counts the items that wait on me: all but the working agents.
+func (q *queueModel) needYou() int {
+	n := 0
+	for _, it := range q.items {
+		if !it.working() {
+			n++
+		}
+	}
+	return n
+}
+
 func (q *queueModel) say(text string, c Color) { q.status, q.statusColor = text, c }
 
 func pollQueue() tea.Msg {
@@ -194,7 +230,12 @@ func (q *queueModel) loadPrs() tea.Cmd {
 	}
 }
 
-func (q *queueModel) Init() tea.Cmd { return tea.Batch(pollQueue, q.loadPrs()) }
+func (q *queueModel) Init() tea.Cmd { return tea.Batch(pollQueue, queueTick(), q.loadPrs()) }
+
+// queueTick schedules the next poll. Only queueTickMsg reschedules it, so ^r doesn't start another loop.
+func queueTick() tea.Cmd {
+	return tea.Tick(queuePoll, func(time.Time) tea.Msg { return queueTickMsg{} })
+}
 
 // rebuild recomputes the items, keeping the cursor on the same item when it is still there.
 func (q *queueModel) rebuild() tea.Cmd {
@@ -214,10 +255,12 @@ func (q *queueModel) loadDetail() tea.Cmd {
 		return nil
 	}
 	key := detailKey(it)
-	if _, cached := q.details[key]; cached {
+	// A working agent's screen changes, so it is read again on every poll, keeping the old one meanwhile.
+	if _, cached := q.details[key]; cached && !it.working() {
 		return nil
+	} else if !cached {
+		q.details[key] = nil
 	}
-	q.details[key] = nil
 	return func() tea.Msg { return queueDetailMsg{key, itemDetail(it)} }
 }
 
@@ -251,8 +294,11 @@ func itemDetail(it queueItem) []string {
 		out = append(out, "", "## "+filepath.Base(p), "")
 		out = append(out, strings.Split(strings.TrimRight(string(b), "\n"), "\n")...)
 	}
-	if it.Report == "" && it.Session != "" {
+	if (it.Report == "" || it.working()) && it.Session != "" {
 		screen, err := sh("", "rex", "capture", "-s", it.Session, "--trim")
+		if len(out) > 0 {
+			out = append(out, "")
+		}
 		out = append(out, "## Its screen", "")
 		if err != nil {
 			out = append(out, fg(cRed, firstLine(err.Error())))
@@ -269,7 +315,7 @@ func (q *queueModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		q.width, q.height = msg.Width, msg.Height
 	case queueTickMsg:
-		cmds := []tea.Cmd{pollQueue}
+		cmds := []tea.Cmd{pollQueue, queueTick()}
 		if time.Since(q.prsAt) >= refreshInterval {
 			cmds = append(cmds, q.loadPrs())
 		}
@@ -279,14 +325,21 @@ func (q *queueModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.agents != nil {
 			q.agents = msg.agents
 		}
-		return q, tea.Batch(q.rebuild(), tea.Tick(queuePoll, func(time.Time) tea.Msg { return queueTickMsg{} }))
+		return q, q.rebuild()
 	case queuePrsMsg:
-		q.prsLoading = false
+		q.prsLoading, q.prsAt = false, time.Now()
 		if msg.err != nil {
 			q.say("PRs: "+firstLine(msg.err.Error()), cRed)
 			break
 		}
-		q.prs, q.prsAt = msg.prs, time.Now()
+		q.prs = msg.prs
+		if stale := staleDismissals(q.state, q.prs); len(stale) > 0 {
+			q.state, _ = updateState(func(s *State) {
+				for _, k := range stale {
+					delete(s.Dismissed, k)
+				}
+			})
+		}
 		return q, q.rebuild()
 	case queueDetailMsg:
 		q.details[msg.sig] = msg.lines
@@ -386,6 +439,10 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 		empty := ""
 		q.feedback = &empty
 	case "x":
+		if it.working() {
+			q.say(it.Key+" is still working; it shows here until it stops", cOverlay)
+			return nil
+		}
 		key, sig := it.Key, it.Sig
 		q.state, _ = updateState(func(s *State) { s.Dismissed[key] = sig })
 		q.say("Dismissed "+key+"; it comes back when it changes", cOverlay)
@@ -456,31 +513,38 @@ func (q *queueModel) feedbackInput(msg tea.KeyPressMsg) tea.Cmd {
 	return nil
 }
 
+// agentBlockScript finds the session's pane whose program reports a status (pi or Claude Code),
+// else its first placed pane: a session can hold a shell split beside the agent.
+const agentBlockScript = attachLua + `
+local label = %s
+for _, s in ipairs(rex.call("session.list").sessions or {}) do
+  if s.label == label then
+    attach(s.session_id)
+    local first
+    for _, b in ipairs((rex.call("session.list_blocks", {session_id = s.session_id}) or {}).blocks or {}) do
+      if b.placement == "placed" then
+        local ok, st = pcall(rex.call, "block.method", {session_id = s.session_id, block_id = b.block_id, method = "program_status"})
+        if ok and st and #(st.records or {}) > 0 then return b.block_id end
+        first = first or b.block_id
+      end
+    end
+    if first then return first end
+    error("no pane in session " .. label, 0)
+  end
+end
+error("no session " .. label, 0)
+`
+
 // sendToAgent types text into the agent's pane and presses enter, as if I had replied there.
 func sendToAgent(session, text string) error {
-	out, err := sh("", "rex", "block", "ls", "-s", session, "--json")
+	out, err := sh("", "rex", "do", "--all", "-e", fmt.Sprintf(agentBlockScript, strconv.Quote(session)), "--json")
 	if err != nil {
 		return err
 	}
-	var list struct {
-		Blocks []struct {
-			ID        string `json:"block_id"`
-			Placement string `json:"placement"`
-		} `json:"blocks"`
+	var block string
+	if err := json.Unmarshal([]byte(out), &block); err != nil {
+		return fmt.Errorf("finding the agent's pane: %w", err)
 	}
-	if err := json.Unmarshal([]byte(out), &list); err != nil {
-		return err
-	}
-	n := slices.IndexFunc(list.Blocks, func(b struct {
-		ID        string `json:"block_id"`
-		Placement string `json:"placement"`
-	}) bool {
-		return b.Placement == "placed"
-	})
-	if n < 0 {
-		return fmt.Errorf("no pane in session %s", session)
-	}
-	block := list.Blocks[n].ID
 	if _, err := sh("", "rex", "send", "-s", session, "-b", block, text); err != nil {
 		return err
 	}
@@ -495,7 +559,7 @@ func (q *queueModel) View() tea.View {
 	v.AltScreen = true
 	v.ReportFocus = true
 	v.WindowTitle = "queue"
-	if n := len(q.items); n > 0 {
+	if n := q.needYou(); n > 0 {
 		v.WindowTitle = fmt.Sprintf("queue (%d)", n)
 	}
 	if q.width == 0 {
@@ -538,6 +602,8 @@ func itemLabel(it queueItem) (string, string) {
 		what = "reviewed"
 	}
 	switch it.Agent {
+	case "working":
+		return fg(cYellow, "●"), fg(cYellow, "working")
 	case "blocked":
 		return fg(cRed, "●"), fg(cRed, "asks you")
 	case "error":
@@ -549,14 +615,9 @@ func itemLabel(it queueItem) (string, string) {
 }
 
 func (q *queueModel) render(width, h int) []string {
-	working := 0
-	for key := range q.state.Dispatched {
-		if q.agents[q.state.Sessions[key]] == "working" {
-			working++
-		}
-	}
+	working := len(q.items) - q.needYou()
 	dot := fg(cSurface, " · ")
-	head := bold(fg(cMauve, "queue")) + dot + fmt.Sprintf("%d need you", len(q.items))
+	head := bold(fg(cMauve, "queue")) + dot + fmt.Sprintf("%d need you", q.needYou())
 	if working > 0 {
 		head += dot + fg(cYellow, fmt.Sprintf("%d working", working))
 	}
