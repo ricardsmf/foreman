@@ -13,7 +13,8 @@ foreman --logout            # forget the Atlassian sign-in
 ```
 
 In Rex, `cmd+alt+j` (the `foreman` action in `~/.config/rex/init.lua`) goes to the `foreman`
-session, starting it with the board if it isn't running.
+session, starting it if it isn't running: the board on the left, the [queue](#queue)
+(`foreman queue`) on the right. A running session without the queue pane gets one.
 
 ## Jira access
 
@@ -65,15 +66,43 @@ Both views reload when the board regains focus after five minutes or more, and e
   and your extra context. It is told to report findings without editing, committing or posting
   anything to GitHub or Jira.
 
+## Queue
+
+`foreman queue` lists what needs you, most urgent first:
+
+1. Agents that stopped to ask something (`●` red), with their report or, without one, the end of
+   their screen.
+2. Your PRs with failed CI, changes requested or a conflict (`✗`).
+3. Agents that finished (`✓`), newest first, with their report and evidence (`▣ 3` screenshots or
+   captures, `▶ video`). A finished agent shows once it has written a report.
+
+It reads the board's state file and the agents' Rex states every few seconds, and your PRs every
+five minutes. Its pane title carries the count, `queue (3)`.
+
+Keys: `↑↓` pick, `enter` go to the agent's session (a PR opens in the browser), `f` type a reply
+that is sent to the agent's pane, `v` open the screenshots and videos, `d` the worktree's diff in
+git's pager, `o` the ticket or PR in the browser, `x` dismiss (it comes back when its report or
+the PR's status changes), `^u`/`^d` scroll, `^r` reload, `q` quit (`cmd+alt+j` brings the pane back).
+
+### Reports and evidence
+
+Each dispatch tells the agent to write `report.md` and its evidence to
+`~/.local/state/foreman/evidence/<key>/`, outside every repo: screenshots per acceptance criterion
+and a short video of a flow (agent-browser) for web UI, `rex capture` dumps for terminal UI, the
+commands and their output otherwise. They are for you only; the agent is told never to commit,
+attach or link them. A new dispatch empties the directory, and cleaning up a worktree removes it.
+
 ## Cleaning up
 
 `^x` lists the dispatched worktrees whose ticket is Done or whose PR is merged or closed. Those
 with uncommitted changes or a working agent start unticked. `enter` runs `git worktree remove` on
-the ticked ones (never `--force`, so changes stop it); branches and their commits stay.
+the ticked ones (never `--force`, so changes stop it); branches and their commits stay, and the
+reports and evidence go.
 
 ## State
 
-- State (repo per project, last agent, dispatched tickets and their sessions) is in
+- State (repo per project, last agent, dispatched tickets with their sessions and titles, dismissed
+  queue items) is in
   `~/.local/state/foreman/state.json`, written atomically. An unreadable file is moved to
   `state.json.corrupt` rather than overwritten.
 

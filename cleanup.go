@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -64,6 +65,8 @@ func (m *model) findCleanup() tea.Cmd {
 				for _, k := range gone {
 					delete(s.Dispatched, k)
 					delete(s.Sessions, k)
+					delete(s.Titles, k)
+					delete(s.Dismissed, k)
 				}
 			})
 		}
@@ -149,8 +152,13 @@ func (m *model) removeWorktrees() tea.Cmd {
 			for _, k := range removed {
 				delete(s.Dispatched, k)
 				delete(s.Sessions, k)
+				delete(s.Titles, k)
+				delete(s.Dismissed, k)
 			}
 		})
+		for _, k := range removed {
+			_ = os.RemoveAll(evidenceDir(k))
+		}
 		return cleanedMsg{removed, errs}
 	}
 }

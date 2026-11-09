@@ -14,6 +14,11 @@ type State struct {
 	Dispatched map[string]string `json:"dispatched"`
 	// Sessions maps a ticket or PR key to its agent's latest Rex session label.
 	Sessions map[string]string `json:"sessions,omitempty"`
+	// Titles maps a ticket or PR key to its summary, for the queue.
+	Titles map[string]string `json:"titles,omitempty"`
+	// Dismissed maps a queue item to what it showed when dismissed: an agent item comes back when
+	// its report is newer, a PR item when its status changes.
+	Dismissed map[string]string `json:"dismissed,omitempty"`
 }
 
 // stateMu serialises read-modify-write cycles: the board and dispatch goroutines both update the file.
@@ -42,6 +47,12 @@ func readState() State {
 	}
 	if s.Sessions == nil {
 		s.Sessions = map[string]string{}
+	}
+	if s.Titles == nil {
+		s.Titles = map[string]string{}
+	}
+	if s.Dismissed == nil {
+		s.Dismissed = map[string]string{}
 	}
 	return s
 }

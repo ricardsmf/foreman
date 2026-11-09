@@ -28,7 +28,9 @@ return out
 // agentStates maps each Rex session label to its most urgent reported state: blocked, error,
 // working, done or idle, or "open" when its programs report nothing.
 func agentStates() (map[string]string, error) {
-	out, err := sh("", "rex", "do", "-e", agentStatesScript, "--json")
+	// --all: otherwise rex do hears only the session REX_SESSION names, and listing another
+	// session's blocks fails.
+	out, err := sh("", "rex", "do", "--all", "-e", agentStatesScript, "--json")
 	if err != nil {
 		return nil, err
 	}

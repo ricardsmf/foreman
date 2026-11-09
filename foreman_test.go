@@ -337,3 +337,76 @@ func TestCallbackServer(t *testing.T) {
 		t.Errorf("result = %+v, want the error", r)
 	}
 }
+
+func TestQueueItems(t *testing.T) {
+	old := evidenceRoot
+	evidenceRoot = t.TempDir()
+	t.Cleanup(func() { evidenceRoot = old })
+	report := func(key string, files ...string) {
+		dir := evidenceDir(key)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range append(files, "report.md") {
+			if err := os.WriteFile(filepath.Join(dir, f), []byte("# done\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	report("FLD-1", "01-list.png", "demo.webm", "tui.txt")
+	report("repo#7")
+	report("FLD-4")
+	s := State{
+		Dispatched: map[string]string{"FLD-1": "/w/1", "FLD-2": "/w/2", "FLD-3": "/w/3", "FLD-4": "/w/4", "repo#7": "/w/7", "FLD-5": "/w/5"},
+		Sessions:   map[string]string{"FLD-1": "s1", "FLD-2": "s2", "FLD-3": "s3", "FLD-4": "s4", "repo#7": "s7", "FLD-5": "s5"},
+		Titles:     map[string]string{},
+		Dismissed:  map[string]string{},
+	}
+	// FLD-2 asks, FLD-3 works, FLD-5 finished without a report, FLD-4's session is closed.
+	agents := map[string]string{"s1": "done", "s2": "blocked", "s3": "working", "s7": "idle", "s5": "done"}
+	prs := []Pr{
+		{Key: "repo#9", Mine: true, Category: "Blocked", Status: "in review ✗"},
+		{Key: "repo#10", Mine: true, Category: "Done"},
+		{Key: "repo#11", Category: "Blocked"},
+	}
+	keys := func(items []queueItem) []string {
+		var out []string
+		for _, it := range items {
+			out = append(out, it.Key)
+		}
+		return out
+	}
+	items := queueItems(s, agents, prs)
+	if got := keys(items); !slices.Contains(got, "FLD-1") || got[0] != "FLD-2" || got[1] != "repo#9" ||
+		slices.Contains(got, "FLD-3") || slices.Contains(got, "FLD-5") || slices.Contains(got, "repo#10") ||
+		slices.Contains(got, "repo#11") || len(got) != 5 {
+		t.Fatalf("items = %v", got)
+	}
+	first := items[slices.IndexFunc(items, func(it queueItem) bool { return it.Key == "FLD-1" })]
+	if first.Shots != 2 || first.Videos != 1 {
+		t.Errorf("FLD-1 evidence = %d shots, %d videos", first.Shots, first.Videos)
+	}
+
+	s.Dismissed["FLD-1"] = first.Sig
+	if got := keys(queueItems(s, agents, prs)); slices.Contains(got, "FLD-1") {
+		t.Errorf("dismissed FLD-1 still listed: %v", got)
+	}
+	// Closing a finished agent's session keeps it dismissed; a new report brings it back.
+	delete(agents, "s1")
+	if got := keys(queueItems(s, agents, prs)); slices.Contains(got, "FLD-1") {
+		t.Errorf("FLD-1 came back when its session closed: %v", got)
+	}
+	later := time.Now().Add(time.Minute)
+	if err := os.Chtimes(filepath.Join(evidenceDir("FLD-1"), "report.md"), later, later); err != nil {
+		t.Fatal(err)
+	}
+	if got := keys(queueItems(s, agents, prs)); !slices.Contains(got, "FLD-1") {
+		t.Errorf("FLD-1 should come back with a new report: %v", got)
+	}
+}
+
+func TestEvidenceDir(t *testing.T) {
+	if got := filepath.Base(evidenceDir("Fleet-API#412")); got != "fleet-api-412" {
+		t.Errorf("evidenceDir = %q", got)
+	}
+}

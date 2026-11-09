@@ -17,9 +17,11 @@ import (
 )
 
 var (
-	home, _      = os.UserHomeDir()
-	repoRoots    = []string{filepath.Join(home, "work", "code"), filepath.Join(home, "projects")}
-	stateFile    = filepath.Join(home, ".local", "state", "foreman", "state.json")
+	home, _   = os.UserHomeDir()
+	repoRoots = []string{filepath.Join(home, "work", "code"), filepath.Join(home, "projects")}
+	stateFile = filepath.Join(home, ".local", "state", "foreman", "state.json")
+	// evidenceRoot holds each agent's report and screenshots, outside every repo so a commit can't pick them up.
+	evidenceRoot = filepath.Join(home, ".local", "state", "foreman", "evidence")
 	mcpConfig    = filepath.Join(home, ".config", "mcp", "mcp.json")
 	branchPrefix = "rf/"
 )
@@ -275,17 +277,22 @@ func dispatch(ctx context.Context, jira *Jira, d Dispatch, progress func(string)
 		"1. **Understand.** Read the relevant code and the repo's AGENTS.md / CLAUDE.md before changing anything. If the ticket is ambiguous, ask me instead of guessing.",
 		"2. **Implement** to the ticket's acceptance criteria. Keep scope to the ticket; respect its constraints and out-of-scope notes.",
 		"3. **Verify.** Build, and run the tests and linters that cover what you touched.",
-		"4. **Commit** on this branch. Do not push, open a PR, or change the Jira ticket.",
-		"5. **Finish** with a short summary: what changed, how you verified it, and anything left open.",
+		"4. **Show it working.** Capture evidence that the change does what the ticket asks, as described below.",
+		"5. **Commit** on this branch. Do not push, open a PR, or change the Jira ticket.",
+		"6. **Report**: write the report below, then finish with the same summary in your final message.",
 	)
+	lines = append(lines, reportSection(issue.Key, true)...)
 
 	words := strings.Split(slug(issue.Summary), "-")
 	label := keyLower + "-" + strings.Join(words[:min(3, len(words))], "-")
+	if err := resetEvidence(issue.Key); err != nil {
+		return "", err
+	}
 	session, err := start(d.Agent, strings.Join(lines, "\n"), cwd, label, progress)
 	if err != nil {
 		return "", err
 	}
-	markDispatched(issue.Key, cwd, session)
+	markDispatched(issue.Key, issue.Summary, cwd, session)
 	return fmt.Sprintf("✓ %s is working on %s in session %s · %s (%s)", d.Agent, issue.Key, session, tilde(cwd), branch), nil
 }
 
@@ -372,16 +379,20 @@ func dispatchReview(ctx context.Context, jira *Jira, d ReviewDispatch, progress 
 		"1. **Understand.** Read the repo's AGENTS.md / CLAUDE.md, the PR description"+acceptance+", and the code around each change.",
 		"2. **Review** the diff for correctness, missed cases, regressions, security, tests, and fit with the codebase's conventions"+against+".",
 		"3. **Verify** where it helps: run the tests and linters that cover the changed code. Don't edit tracked files.",
-		"4. **Report** in your final message: a verdict, then findings ordered by severity, each with `file:line`, what is wrong and a suggested fix. Separate blocking issues from nits.",
+		"4. **Report**: a verdict, then findings ordered by severity, each with `file:line`, what is wrong and a suggested fix. Separate blocking issues from nits. Write it as described below and end your final message with it.",
 		"",
 		"Do not commit, push, comment on, approve or request changes on the PR, or touch the Jira ticket. I'll post the review myself.",
 	)
+	lines = append(lines, reportSection(pr.Key, false)...)
 
+	if err := resetEvidence(pr.Key); err != nil {
+		return "", err
+	}
 	session, err := start(d.Agent, strings.Join(lines, "\n"), cwd, "review-"+slug(pr.Key), progress)
 	if err != nil {
 		return "", err
 	}
-	markDispatched(pr.Key, cwd, session)
+	markDispatched(pr.Key, v.Title, cwd, session)
 	return fmt.Sprintf("✓ %s is reviewing %s in session %s · %s", d.Agent, pr.Key, session, tilde(cwd)), nil
 }
 
@@ -395,6 +406,8 @@ func start(agent, prompt, cwd, label string, progress func(string)) (string, err
 		if agent == "Claude (yolo)" {
 			cmd = append(cmd, "--dangerously-skip-permissions")
 		}
+		// The report and evidence go outside the working directory.
+		cmd = append(cmd, "--add-dir", evidenceRoot)
 		cmd = append(cmd, prompt)
 	}
 	progress(fmt.Sprintf("Starting %s…", agent))
@@ -410,9 +423,53 @@ func start(agent, prompt, cwd, label string, progress func(string)) (string, err
 	return session, nil
 }
 
-func markDispatched(key, cwd, session string) {
+func markDispatched(key, title, cwd, session string) {
 	_, _ = updateState(func(s *State) {
 		s.Dispatched[key] = cwd
 		s.Sessions[key] = session
+		s.Titles[key] = title
+		delete(s.Dismissed, key)
 	})
+}
+
+// evidenceDir is where the agent on a ticket or PR writes its report and evidence, e.g. …/evidence/fld-1671.
+func evidenceDir(key string) string {
+	return filepath.Join(evidenceRoot, strings.Trim(nonAlnum.ReplaceAllString(strings.ToLower(key), "-"), "-"))
+}
+
+// resetEvidence empties the key's evidence directory, so the queue never shows a previous run's report.
+func resetEvidence(key string) error {
+	dir := evidenceDir(key)
+	if err := os.RemoveAll(dir); err != nil {
+		return err
+	}
+	return os.MkdirAll(dir, 0o755)
+}
+
+// reportSection tells the agent where its report and evidence go and that they are for me alone.
+func reportSection(key string, implementing bool) []string {
+	dir := evidenceDir(key)
+	out := []string{
+		"",
+		"## Report and evidence",
+		"",
+		"My review queue reads your report from `" + dir + "/report.md`. Write it when you finish, and also before you stop to ask me something, so the question is in it. Start it with a `# ` line that states the outcome in one sentence.",
+	}
+	if implementing {
+		out = append(out,
+			"The report says what changed, how you verified it, and anything left open.",
+			"",
+			"Save evidence in the same directory, so I can check the change without running it:",
+			"",
+			"- **Web UI**: a screenshot per acceptance criterion, `agent-browser screenshot "+dir+"/01-<what>.png`. For a flow or an interaction, also a short video: `agent-browser record start "+dir+"/demo.webm <url>`, go through it, then `agent-browser record stop`.",
+			"- **Terminal UI**: the rendered screen, `rex capture -b <block> --trim > "+dir+"/<what>.txt`.",
+			"- **No UI** (API, jobs, libraries): no media; put the commands you ran and their output in the report.",
+		)
+	} else {
+		out = append(out, "If you ran the change to check it, save screenshots or terminal captures in the same directory as well.")
+	}
+	return append(out,
+		"",
+		"That directory is outside the repo and is for me only. Never commit, attach, upload or link these files in a PR, the Jira ticket or a comment.",
+	)
 }

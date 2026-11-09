@@ -492,6 +492,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 const usage = `usage: foreman [PROJECT | JQL]
+       foreman queue      what needs you: agents that finished or ask something, PRs that need you
        foreman --logout   forget the Atlassian sign-in`
 
 func run() error {
@@ -499,6 +500,9 @@ func run() error {
 	if len(argv) > 0 && (argv[0] == "--help" || argv[0] == "-h") {
 		fmt.Println(usage)
 		return nil
+	}
+	if len(argv) > 0 && argv[0] == "queue" {
+		return runQueue()
 	}
 	if len(argv) > 0 && argv[0] == "--logout" {
 		signOut()
