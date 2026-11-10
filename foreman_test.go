@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/zalando/go-keyring"
 )
 
@@ -205,6 +206,35 @@ func TestFilterRows(t *testing.T) {
 	}
 }
 
+// The five-minute refresh reorders the rows under the cursor.
+func TestReloadKeepsTheCursorOnItsRow(t *testing.T) {
+	rows := func(keys ...string) []Row {
+		var out []Row
+		for _, k := range keys {
+			out = append(out, issueRow(Issue{Key: k}))
+		}
+		return out
+	}
+	m := &model{
+		prFilter: "all",
+		inFlight: map[viewKind]bool{},
+		lastLoad: map[viewKind]time.Time{},
+		details:  map[string][]string{},
+		detailOK: map[string]bool{},
+		issues:   rows("FLD-1", "FLD-2", "FLD-3"),
+		cursor:   1,
+	}
+	m.Update(loadedMsg{which: tickets, rows: rows("FLD-4", "FLD-3", "FLD-1", "FLD-2")})
+	if row, _ := m.current(); row.Key != "FLD-2" {
+		t.Errorf("cursor on %s after the reload, want FLD-2", row.Key)
+	}
+	// The other view's reload leaves it alone.
+	m.Update(loadedMsg{which: prs, rows: []Row{prRow(Pr{Key: "app#1"})}})
+	if row, _ := m.current(); row.Key != "FLD-2" {
+		t.Errorf("cursor on %s after the PRs loaded, want FLD-2", row.Key)
+	}
+}
+
 func TestMostUrgent(t *testing.T) {
 	for want, in := range map[string][]string{
 		"blocked": {"working", "blocked", "idle"},
@@ -241,6 +271,59 @@ func TestUpdateState(t *testing.T) {
 	}
 	if !exists(stateFile + ".corrupt") {
 		t.Error("corrupt file should be kept aside")
+	}
+}
+
+// The board and the queue are separate processes that both rewrite the state file: an update one
+// makes between another's read and write must survive.
+func TestUpdateStateAcrossProcesses(t *testing.T) {
+	const writers, each = 4, 50
+	if name := os.Getenv("FOREMAN_TEST_STATE_WRITER"); name != "" {
+		stateFile = os.Getenv("FOREMAN_TEST_STATE_FILE")
+		for n := range each {
+			if _, err := updateState(func(s *State) { s.Dispatched[fmt.Sprintf("%s-%d", name, n)] = "/w" }); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return
+	}
+	old := stateFile
+	stateFile = filepath.Join(t.TempDir(), "state.json")
+	t.Cleanup(func() { stateFile = old })
+
+	var cmds []*exec.Cmd
+	for n := range writers {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestUpdateStateAcrossProcesses$")
+		cmd.Env = append(os.Environ(), fmt.Sprintf("FOREMAN_TEST_STATE_WRITER=W%d", n), "FOREMAN_TEST_STATE_FILE="+stateFile)
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		cmds = append(cmds, cmd)
+	}
+	for _, cmd := range cmds {
+		if err := cmd.Wait(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := len(loadState().Dispatched); got != writers*each {
+		t.Errorf("%d of %d updates survived", got, writers*each)
+	}
+}
+
+// Quitting during the browser sign-in mustn't wait for it: the connect holds the lock throughout.
+func TestJiraCloseDoesNotWaitForConnect(t *testing.T) {
+	j := &Jira{}
+	j.mu.Lock() // a connect in flight
+	defer j.mu.Unlock()
+	done := make(chan struct{})
+	go func() {
+		j.close()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("close waited for the connect")
 	}
 }
 
@@ -419,7 +502,6 @@ func TestQueueItems(t *testing.T) {
 	// A review agent and its PR share a key; marking the PR reviewed leaves the agent's report.
 	s.Dispatched["repo#9"] = "/w/9"
 	report("repo#9")
-	items = queueItems(s, sessions, prs)
 	pr := queueItem{Kind: prItem, Key: "repo#9"}
 	s.Dismissed[pr.dismissKey()] = "in review ✗"
 	if got := groups(queueItems(s, sessions, prs))["repo#9"]; got != toReview {
@@ -434,6 +516,50 @@ func TestQueueItems(t *testing.T) {
 	sessions = append(sessions, rexSession{"s4", "fld-4-d", "idle"})
 	if _, ok := groups(queueItems(s, sessions, prs))["FLD-4"]; !ok {
 		t.Error("FLD-4 not listed with its session open again")
+	}
+}
+
+// The list is rebuilt on every poll while I pick a row or type a reply.
+func TestQueueKeepsItsPlaceAcrossRebuilds(t *testing.T) {
+	old := evidenceRoot
+	evidenceRoot = t.TempDir()
+	t.Cleanup(func() { evidenceRoot = old })
+	q := &queueModel{
+		details: map[string][]string{},
+		state: State{
+			Dispatched: map[string]string{"FLD-1": "/w/1", "FLD-2": "/w/2", "repo#9": "/w/9"},
+			Sessions:   map[string]string{"FLD-1": "s1", "FLD-2": "s2", "repo#9": "s9"},
+		},
+		sessions: []rexSession{{"s1", "fld-1-a", "idle"}, {"s2", "fld-2-b", "idle"}, {"s9", "review-repo-9", "working"}},
+		prs:      []Pr{{Key: "repo#9", Mine: true, Category: "Blocked", Status: "changes"}},
+	}
+	q.rebuild()
+	at := func(key string, kind itemKind) int {
+		return slices.IndexFunc(q.items, func(it queueItem) bool { return it.Key == key && it.Kind == kind })
+	}
+
+	// A review agent shares its key with the PR it reviews, which sorts above it.
+	q.cursor = at("repo#9", agentItem)
+	q.rebuild()
+	if it, _ := q.current(); it.Kind != agentItem || it.Key != "repo#9" {
+		t.Errorf("the cursor moved from repo#9's agent to %+v", it)
+	}
+
+	// A reply started on FLD-1 goes to FLD-1, even if its row is gone by the time it is sent.
+	q.cursor = at("FLD-1", agentItem)
+	q.input(tea.KeyPressMsg{Code: 'f', Text: "f"})
+	q.feedbackInput(tea.KeyPressMsg{Code: 'o', Text: "o"})
+	delete(q.state.Dispatched, "FLD-1")
+	q.rebuild()
+	if it, _ := q.current(); it.Key == "FLD-1" {
+		t.Fatal("FLD-1 is still listed")
+	}
+	if r := q.feedback; r == nil || r.key != "FLD-1" || r.session != "s1" || r.text != "o" {
+		t.Fatalf("reply = %+v, want FLD-1's in s1", r)
+	}
+	q.feedbackInput(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if q.feedback != nil || !strings.Contains(q.status, "FLD-1") {
+		t.Errorf("after enter: reply %+v, status %q", q.feedback, q.status)
 	}
 }
 
@@ -471,15 +597,182 @@ func TestEvidenceDir(t *testing.T) {
 // reschedule would start another loop of `rex do` calls.
 func TestAgentsResultDoesNotReschedule(t *testing.T) {
 	m := &model{agents: map[string]string{}}
-	if _, cmd := m.Update(agentsMsg{"fld-1": "working"}); cmd != nil {
+	if _, cmd := m.Update(agentsMsg{states: map[string]string{"fld-1": "working"}}); cmd != nil {
 		t.Error("agentsMsg returned a command")
 	}
 	if m.agents["fld-1"] != "working" {
 		t.Errorf("agents = %v", m.agents)
 	}
+	// It carries the state file too, which the queue and other boards write; a failed listing of
+	// the sessions keeps the last one.
+	m.Update(agentsMsg{state: State{Dispatched: map[string]string{"FLD-9": "/w"}}})
+	if m.state.Dispatched["FLD-9"] != "/w" || m.agents["fld-1"] != "working" {
+		t.Errorf("state = %+v, agents = %v", m.state, m.agents)
+	}
 	q := &queueModel{details: map[string][]string{}}
 	if _, cmd := q.Update(queueStateMsg{State{}, nil, true}); cmd != nil {
 		t.Error("queueStateMsg with no items returned a command")
+	}
+}
+
+// A Jira or GitHub call that failed isn't a ticket or PR that is still open.
+func TestCleanupReportsWhatItCouldNotCheck(t *testing.T) {
+	old := stateFile
+	stateFile = filepath.Join(t.TempDir(), "state.json")
+	t.Cleanup(func() { stateFile = old })
+	failed := []string{"FLD-1: not signed in", "FLD-2: not signed in"}
+
+	m := &model{}
+	m.openCleanup(cleanupMsg{failed: failed})
+	if m.cleanup != nil || m.statusColor != cRed || !strings.Contains(m.status, "2 of the dispatched worktrees: FLD-1: not signed in") {
+		t.Errorf("nothing found, two unchecked: status %q, view %v", m.status, m.cleanup)
+	}
+	m.openCleanup(cleanupMsg{candidates: []cleanupCandidate{{Key: "FLD-3", Dir: "/w/3"}}, failed: failed})
+	if m.cleanup == nil || !strings.Contains(m.status, "FLD-1: not signed in") {
+		t.Errorf("one found, two unchecked: status %q, view %v", m.status, m.cleanup)
+	}
+	m.openCleanup(cleanupMsg{})
+	if m.statusColor != cGreen {
+		t.Errorf("all checked, nothing found: status %q", m.status)
+	}
+}
+
+// tempState points the state file and the evidence at a temporary directory.
+func tempState(t *testing.T) {
+	t.Helper()
+	oldState, oldEvidence := stateFile, evidenceRoot
+	dir := t.TempDir()
+	stateFile, evidenceRoot = filepath.Join(dir, "state.json"), filepath.Join(dir, "evidence")
+	t.Cleanup(func() { stateFile, evidenceRoot = oldState, oldEvidence })
+}
+
+// dispatched records a dispatch with a report, as one that ran would leave it.
+func dispatched(t *testing.T, key, dir string) {
+	t.Helper()
+	if _, err := updateState(func(s *State) { s.Dispatched[key], s.Titles[key] = dir, key }); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(evidenceDir(key), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(evidenceDir(key), "report.md"), []byte("# done\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Cleaning up removes a worktree, but of a dispatch that ran in the main checkout only the record.
+func TestCleanupKeepsTheMainCheckout(t *testing.T) {
+	tempState(t)
+	root := t.TempDir()
+	repo, worktree := filepath.Join(root, "repo"), filepath.Join(root, "repo-fld-1")
+	git(t, root, "init", "-q", "-b", "main", repo)
+	git(t, repo, "commit", "-q", "--allow-empty", "-m", "base")
+	git(t, repo, "worktree", "add", "-q", worktree)
+
+	for dir, wantMain := range map[string]bool{repo: true, worktree: false} {
+		owns, main, err := owner(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The temporary directory is behind a symlink on macOS.
+		want, _ := filepath.EvalSymlinks(repo)
+		if got, _ := filepath.EvalSymlinks(owns); got != want || main != wantMain {
+			t.Errorf("owner(%s) = %s, main %t; want %s, main %t", dir, got, main, want, wantMain)
+		}
+	}
+
+	dispatched(t, "FLD-1", worktree)
+	dispatched(t, "FLD-2", repo)
+	dispatched(t, "FLD-3", repo)
+	m := &model{cleanup: &cleanupView{
+		items: []cleanupCandidate{
+			{Key: "FLD-1", Dir: worktree, Repo: repo},
+			{Key: "FLD-2", Dir: repo, Repo: repo, Main: true},
+			{Key: "FLD-3", Dir: repo, Repo: repo, Main: true},
+		},
+		picked: map[int]bool{0: true, 1: true},
+	}}
+	msg := m.removeWorktrees()().(cleanedMsg)
+	if msg.removed != 1 || msg.forgotten != 1 || len(msg.errs) != 0 {
+		t.Fatalf("cleaned = %+v", msg)
+	}
+	if exists(worktree) {
+		t.Error("the worktree is still there")
+	}
+	if !exists(filepath.Join(repo, ".git")) {
+		t.Error("the main checkout is gone")
+	}
+	if s := loadState(); !maps.Equal(s.Dispatched, map[string]string{"FLD-3": repo}) {
+		t.Errorf("dispatched = %v, want only the unticked FLD-3", s.Dispatched)
+	}
+	if exists(evidenceDir("FLD-1")) || exists(evidenceDir("FLD-2")) || !exists(evidenceDir("FLD-3")) {
+		t.Error("the reports of the cleaned dispatches should go, FLD-3's stay")
+	}
+}
+
+// A worktree removed by hand has nothing left to list its report.
+func TestCleanupDiscardsGoneWorktrees(t *testing.T) {
+	tempState(t)
+	dispatched(t, "FLD-1", filepath.Join(t.TempDir(), "gone"))
+	m := &model{state: loadState()}
+	if msg := m.findCleanup()().(cleanupMsg); len(msg.candidates) != 0 || len(msg.failed) != 0 || msg.err != nil {
+		t.Fatalf("cleanup = %+v", msg)
+	}
+	if s := loadState(); len(s.Dispatched) != 0 || len(s.Titles) != 0 {
+		t.Errorf("state = %+v", s)
+	}
+	if exists(evidenceDir("FLD-1")) {
+		t.Error("its report is still there")
+	}
+}
+
+// A second agent on a ticket whose first is still open takes a second enter.
+func TestDispatchAsksBeforeASecondAgent(t *testing.T) {
+	tempState(t)
+	m := &model{
+		state:    State{Sessions: map[string]string{"FLD-1": "s1"}, RepoByProject: map[string]string{}},
+		agents:   map[string]string{"s1": "working"},
+		repos:    []string{"/r/one"},
+		details:  map[string][]string{},
+		detailOK: map[string]bool{},
+	}
+	enter, down := tea.KeyPressMsg{Code: tea.KeyEnter}, tea.KeyPressMsg{Code: tea.KeyDown}
+	m.openForm(issueRow(Issue{Key: "FLD-1"}))
+	if cmd := m.formInput(enter); cmd != nil || m.form.busy || !strings.Contains(m.status, "still open (working)") {
+		t.Fatalf("first enter: cmd %v, busy %t, status %q", cmd != nil, m.form.busy, m.status)
+	}
+	// Any other key takes the confirmation back.
+	m.formInput(down)
+	if cmd := m.formInput(enter); cmd != nil || m.form.busy {
+		t.Fatal("enter after another key dispatched")
+	}
+	if cmd := m.formInput(enter); cmd == nil || !m.form.busy {
+		t.Fatal("the second enter didn't dispatch")
+	}
+
+	// A ticket without an open session goes at once.
+	m.openForm(issueRow(Issue{Key: "FLD-2"}))
+	if cmd := m.formInput(enter); cmd == nil || !m.form.busy {
+		t.Fatal("FLD-2 didn't dispatch on the first enter")
+	}
+}
+
+func TestTruncatedPrList(t *testing.T) {
+	m := &model{
+		view: prs, prFilter: "all", width: 80, height: 20,
+		inFlight: map[viewKind]bool{}, lastLoad: map[viewKind]time.Time{},
+		details: map[string][]string{}, detailOK: map[string]bool{},
+	}
+	m.Update(loadedMsg{which: prs, rows: []Row{prRow(Pr{Key: "app#1"})}, truncated: true})
+	if !strings.Contains(m.status, "first 500 open PRs") {
+		t.Errorf("status = %q", m.status)
+	}
+	if header := firstLine(m.View().Content); !strings.Contains(header, "1/1+") {
+		t.Errorf("header = %q", header)
+	}
+	m.Update(loadedMsg{which: prs, rows: []Row{prRow(Pr{Key: "app#1"})}})
+	if header := firstLine(m.View().Content); strings.Contains(header, "+") || m.status != "" {
+		t.Errorf("after a full load: header %q, status %q", header, m.status)
 	}
 }
 

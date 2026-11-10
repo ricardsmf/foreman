@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"fmt"
 	"os"
 	"os/exec"
@@ -104,6 +105,9 @@ func (m *model) formInput(msg tea.KeyPressMsg) tea.Cmd {
 		return nil
 	}
 	k := msg.String()
+	if k != "enter" {
+		f.confirmed = false
+	}
 	text := msg.Key().Text
 	left, right := k == "left", k == "right"
 	isPr := f.row.Pr != nil
@@ -193,7 +197,7 @@ func editContext(text string) tea.Cmd {
 		_ = os.Remove(path)
 		return func() tea.Msg { return editedMsg{err: err} }
 	}
-	editor := cmp(os.Getenv("VISUAL"), os.Getenv("EDITOR"), "nvim")
+	editor := cmp.Or(os.Getenv("VISUAL"), os.Getenv("EDITOR"), "nvim")
 	// Through the shell, so an editor with arguments ("code --wait") works.
 	cmd := exec.Command("sh", "-c", editor+` "$1"`, "sh", path)
 	return tea.ExecProcess(cmd, func(err error) tea.Msg {

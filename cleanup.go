@@ -12,11 +12,12 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-// A cleanupCandidate is a dispatched worktree whose ticket is done or whose PR is closed.
+// A cleanupCandidate is a dispatch whose ticket is done or whose PR is closed.
 type cleanupCandidate struct {
 	Key     string
 	Dir     string
 	Repo    string // the main checkout that owns the worktree
+	Main    bool   // dispatched without a worktree: Dir is the main checkout, which stays
 	Reason  string // "done", "merged", "closed"
 	Dirty   bool   // uncommitted changes: git refuses to remove it
 	Agent   string // the agent's reported state, if its session is still open
@@ -30,15 +31,15 @@ type cleanupView struct {
 	busy   bool
 }
 
-// findCleanup checks every dispatched worktree. Entries whose directory is gone are dropped from
-// the state on the way, since there is nothing left to clean.
+// findCleanup checks every dispatch. Those whose directory is gone are discarded on the way: the
+// worktree was removed by hand, and nothing lists their report any more.
 func (m *model) findCleanup() tea.Cmd {
 	jira, state, agents := m.jira, m.state, m.agents
 	m.say("Checking dispatched worktrees…", cSubtext)
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), jiraTimeout)
 		defer cancel()
-		var gone []string
+		var gone, failed []string
 		var out []cleanupCandidate
 		var mu sync.Mutex
 		var wg sync.WaitGroup
@@ -53,7 +54,12 @@ func (m *model) findCleanup() tea.Cmd {
 			wg.Go(func() {
 				slots <- struct{}{}
 				defer func() { <-slots }()
-				c, ok := checkCleanup(ctx, jira, key, dir)
+				c, ok, err := checkCleanup(ctx, jira, key, dir)
+				if err != nil {
+					mu.Lock()
+					failed = append(failed, key+": "+firstLine(err.Error()))
+					mu.Unlock()
+				}
 				if !ok {
 					return
 				}
@@ -67,15 +73,25 @@ func (m *model) findCleanup() tea.Cmd {
 			})
 		}
 		wg.Wait()
-		if len(gone) > 0 {
-			_, _ = updateState(func(s *State) { forget(s, gone) })
-		}
+		discard(gone)
 		slices.SortFunc(out, func(a, b cleanupCandidate) int { return strings.Compare(a.Dir, b.Dir) })
-		return cleanupMsg{out, ctx.Err()}
+		slices.Sort(failed)
+		return cleanupMsg{out, failed, ctx.Err()}
 	}
 }
 
 const cleanupWorkers = 8
+
+// discard forgets the dispatches and removes their reports and evidence.
+func discard(keys []string) {
+	if len(keys) == 0 {
+		return
+	}
+	_, _ = updateState(func(s *State) { forget(s, keys) })
+	for _, k := range keys {
+		_ = os.RemoveAll(evidenceDir(k))
+	}
+}
 
 // forget drops keys from the state with their dismissals.
 func forget(s *State, keys []string) {
@@ -88,34 +104,57 @@ func forget(s *State, keys []string) {
 	}
 }
 
-func checkCleanup(ctx context.Context, jira *Jira, key, dir string) (cleanupCandidate, bool) {
+// checkCleanup is the worktree as a candidate, when its ticket is done or its PR closed. An error
+// means it couldn't tell: a failed Jira or GitHub call mustn't read as "still open".
+func checkCleanup(ctx context.Context, jira *Jira, key, dir string) (cleanupCandidate, bool, error) {
 	c := cleanupCandidate{Key: key, Dir: dir}
 	if _, num, isPr := strings.Cut(key, "#"); isPr {
 		// gh finds the GitHub repo from the worktree's remote.
 		state, err := sh(dir, "gh", "pr", "view", num, "--json", "state", "-q", ".state")
+		if err != nil {
+			return c, false, err
+		}
 		state = strings.TrimSpace(state)
-		if err != nil || (state != "MERGED" && state != "CLOSED") {
-			return c, false
+		if state != "MERGED" && state != "CLOSED" {
+			return c, false, nil
 		}
 		c.Reason = strings.ToLower(state)
 	} else {
-		if jira.category(ctx, key) != "Done" {
-			return c, false
+		category, err := jira.category(ctx, key)
+		if err != nil {
+			return c, false, err
+		}
+		if category != "Done" {
+			return c, false, nil
 		}
 		c.Reason = "done"
 	}
-	common, err := sh("", "git", "-C", dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
-	if err != nil {
-		return c, false
+	var err error
+	if c.Repo, c.Main, err = owner(dir); err != nil {
+		return c, false, err
 	}
-	c.Repo = filepath.Dir(strings.TrimSpace(common))
-	// Only worktrees: a dispatch without one ran in the main checkout, which stays.
-	if c.Repo == filepath.Clean(dir) {
-		return c, false
+	// A dispatch without a worktree ran in the main checkout, which stays whatever it holds.
+	if c.Main {
+		return c, true, nil
 	}
 	dirty, err := sh("", "git", "-C", dir, "status", "--porcelain")
 	c.Dirty = err != nil || strings.TrimSpace(dirty) != ""
-	return c, true
+	return c, true, nil
+}
+
+// owner is the main checkout that owns dir, and whether dir is that checkout itself rather than a
+// worktree of it.
+func owner(dir string) (repo string, main bool, err error) {
+	out, err := sh("", "git", "-C", dir, "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir")
+	if err != nil {
+		return "", false, err
+	}
+	dirs := strings.Split(strings.TrimSpace(out), "\n")
+	if len(dirs) != 2 {
+		return "", false, fmt.Errorf("git rev-parse in %s: %q", tilde(dir), out)
+	}
+	// A worktree's git directory is its own, under the main checkout's; the main checkout's is the common one.
+	return filepath.Dir(dirs[1]), dirs[0] == dirs[1], nil
 }
 
 func (m *model) openCleanup(msg cleanupMsg) {
@@ -124,8 +163,16 @@ func (m *model) openCleanup(msg cleanupMsg) {
 		m.say("Checking worktrees: "+msg.err.Error(), cRed)
 		return
 	}
+	unchecked := ""
+	if n := len(msg.failed); n > 0 {
+		unchecked = fmt.Sprintf("Couldn't check %d of the dispatched worktrees: %s", n, msg.failed[0])
+	}
 	if len(msg.candidates) == 0 {
-		m.say("No worktrees to clean up: every dispatched ticket and PR is still open", cGreen)
+		if unchecked != "" {
+			m.say(unchecked, cRed)
+		} else {
+			m.say("No worktrees to clean up: every dispatched ticket and PR is still open", cGreen)
+		}
 		return
 	}
 	v := &cleanupView{items: msg.candidates, picked: map[int]bool{}}
@@ -134,7 +181,7 @@ func (m *model) openCleanup(msg cleanupMsg) {
 		v.picked[n] = !c.Dirty && !agentActive(c.Agent)
 	}
 	m.cleanup = v
-	m.say("", cOverlay)
+	m.say(unchecked, cRed)
 }
 
 func agentActive(state string) bool { return state == "working" || state == "blocked" }
@@ -152,25 +199,28 @@ func (m *model) removeWorktrees() tea.Cmd {
 	}
 	v.busy = true
 	return func() tea.Msg {
-		var removed, errs []string
+		var done, errs []string
+		removed, forgotten := 0, 0
 		for _, c := range picked {
-			// Without --force git refuses a worktree with changes; the branch and its commits stay.
-			if _, err := sh("", "git", "-C", c.Repo, "worktree", "remove", c.Dir); err != nil {
-				errs = append(errs, fmt.Sprintf("%s: %s", tilde(c.Dir), firstLine(err.Error())))
-				continue
+			if c.Main {
+				forgotten++
+			} else {
+				// Without --force git refuses a worktree with changes; the branch and its commits stay.
+				if _, err := sh("", "git", "-C", c.Repo, "worktree", "remove", c.Dir); err != nil {
+					errs = append(errs, fmt.Sprintf("%s: %s", tilde(c.Dir), firstLine(err.Error())))
+					continue
+				}
+				removed++
 			}
-			removed = append(removed, c.Key)
+			done = append(done, c.Key)
 			// Its agent's session has nothing left to work on. A failure to close it isn't one
 			// worth reporting: the worktree, which was the point, is gone.
 			if c.Session != "" && c.Agent != "" {
 				_, _ = sh("", "rex", "kill", c.Session)
 			}
 		}
-		_, _ = updateState(func(s *State) { forget(s, removed) })
-		for _, k := range removed {
-			_ = os.RemoveAll(evidenceDir(k))
-		}
-		return cleanedMsg{removed, errs}
+		discard(done)
+		return cleanedMsg{removed, forgotten, errs}
 	}
 }
 
@@ -207,7 +257,7 @@ func (m *model) cleanupInput(msg tea.KeyPressMsg) tea.Cmd {
 func (m *model) renderCleanup(width, h int) []string {
 	v := m.cleanup
 	out := []string{m.header("clean up worktrees"),
-		bold("Worktrees whose ticket is done or PR is closed"),
+		bold("Dispatches whose ticket is done or PR is closed"),
 		fg(cMauve, strings.Repeat("─", width))}
 	for n, c := range v.items {
 		mark := " "
@@ -220,6 +270,9 @@ func (m *model) renderCleanup(width, h int) []string {
 		}
 		var notes []string
 		notes = append(notes, c.Reason)
+		if c.Main {
+			notes = append(notes, "checkout stays")
+		}
 		if c.Dirty {
 			notes = append(notes, fg(cRed, "uncommitted changes"))
 		}

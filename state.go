@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 )
 
 type State struct {
@@ -27,6 +28,24 @@ type State struct {
 
 // stateMu serialises read-modify-write cycles: the board and dispatch goroutines both update the file.
 var stateMu sync.Mutex
+
+// lockState does the same across processes: the board and the queue each rewrite the file, and
+// without the lock one's write drops what the other wrote since its read.
+func lockState() (unlock func(), err error) {
+	if err := os.MkdirAll(filepath.Dir(stateFile), 0o755); err != nil {
+		return func() {}, err
+	}
+	f, err := os.OpenFile(stateFile+".lock", os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return func() {}, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		_ = f.Close()
+		return func() {}, err
+	}
+	// Closing the file releases the lock.
+	return func() { _ = f.Close() }, nil
+}
 
 func loadState() State {
 	stateMu.Lock()
@@ -68,9 +87,11 @@ func readState() State {
 func updateState(change func(*State)) (State, error) {
 	stateMu.Lock()
 	defer stateMu.Unlock()
+	unlock, err := lockState()
+	defer unlock()
 	s := readState()
 	change(&s)
-	if err := os.MkdirAll(filepath.Dir(stateFile), 0o755); err != nil {
+	if err != nil {
 		return s, err
 	}
 	b, err := json.MarshalIndent(s, "", "  ")

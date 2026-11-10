@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -193,14 +194,18 @@ func myStatus(isDraft bool, own prNode) (string, string) {
 	return review + mark, category
 }
 
-// openPrs lists open PRs in repos I have checked out: review requests, then mine with their status, then other humans'.
-func openPrs() ([]Pr, error) {
+// maxPrs bounds the list: a search page holds 100, and each further page is another request.
+const maxPrs = 500
+
+// openPrs lists open PRs in repos I have checked out: review requests, then mine with their status,
+// then other humans'. It loads up to maxPrs; truncated says GitHub had more.
+func openPrs() (prs []Pr, truncated bool, err error) {
 	if _, err := ghLogin(); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	repos := checkouts()
 	if len(repos) == 0 {
-		return nil, nil
+		return nil, false, nil
 	}
 	names := make([]string, 0, len(repos))
 	for r := range repos {
@@ -210,7 +215,7 @@ func openPrs() ([]Pr, error) {
 
 	var nodes, requested, mine []prNode
 	after := ""
-	for page := 0; page < 5; page++ {
+	for page := 0; ; page++ {
 		args := []string{"api", "graphql", "-f", "query=" + prsQuery,
 			"-f", "all=" + scope, "-f", "requested=" + scope + " review-requested:@me", "-f", "mine=" + scope + " author:@me"}
 		if after != "" {
@@ -219,7 +224,7 @@ func openPrs() ([]Pr, error) {
 		args = append(args, "-F", "first="+strconv.FormatBool(page == 0))
 		out, err := sh("", "gh", args...)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		var res struct {
 			Data struct {
@@ -235,13 +240,17 @@ func openPrs() ([]Pr, error) {
 			} `json:"data"`
 		}
 		if err := json.Unmarshal([]byte(out), &res); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		nodes = append(nodes, res.Data.All.Nodes...)
 		if page == 0 {
 			requested, mine = res.Data.Requested.Nodes, res.Data.Mine.Nodes
 		}
 		if !res.Data.All.PageInfo.HasNextPage {
+			break
+		}
+		if len(nodes) >= maxPrs {
+			truncated = true
 			break
 		}
 		after = res.Data.All.PageInfo.EndCursor
@@ -311,11 +320,11 @@ func openPrs() ([]Pr, error) {
 		}
 		return strings.Compare(b.updated, a.updated)
 	})
-	prs := make([]Pr, len(rows))
+	prs = make([]Pr, len(rows))
 	for n, r := range rows {
 		prs[n] = r.pr
 	}
-	return prs, nil
+	return prs, truncated, nil
 }
 
 func viewPr(pr Pr) (PrView, error) {
@@ -365,8 +374,8 @@ func checks(v PrView) []string {
 	runningStates := []string{"", "PENDING", "QUEUED", "IN_PROGRESS", "EXPECTED", "WAITING"}
 	var bad, running []string
 	for _, c := range v.StatusCheckRollup {
-		name := cmp(c.Name, c.Context, "?")
-		state := strings.ToUpper(cmp(c.Conclusion, c.State, c.Status))
+		name := cmp.Or(c.Name, c.Context, "?")
+		state := strings.ToUpper(cmp.Or(c.Conclusion, c.State, c.Status))
 		if slices.Contains(badStates, state) {
 			bad = append(bad, fmt.Sprintf("- ✗ **%s** %s", name, strings.ReplaceAll(strings.ToLower(state), "_", " ")))
 		} else if slices.Contains(runningStates, state) {
@@ -380,16 +389,6 @@ func checks(v PrView) []string {
 		out = append(out, "")
 	}
 	return append(out, fmt.Sprintf("%d/%d passed", ok, len(v.StatusCheckRollup)), "")
-}
-
-// cmp returns the first non-empty string.
-func cmp(s ...string) string {
-	for _, v := range s {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 var jiraKeyRe = regexp.MustCompile(`\b[A-Z][A-Z0-9]+-\d+\b`)

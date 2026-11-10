@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -211,7 +212,7 @@ func prepareWorktree(repo, cwd string, issue Issue, progress func(string)) (stri
 	if _, err := git(args...); err != nil {
 		return "", err
 	}
-	progress(fmt.Sprintf("Created worktree %s on %s from %s", tilde(cwd), branch, cmp(base, "HEAD")))
+	progress(fmt.Sprintf("Created worktree %s on %s from %s", tilde(cwd), branch, cmp.Or(base, "HEAD")))
 	return branch, nil
 }
 
@@ -240,7 +241,7 @@ func dispatch(ctx context.Context, jira *Jira, d Dispatch, progress func(string)
 		// The agent is told to commit on the branch it is on; that must not be the shared one.
 		if branch == "" || slices.Contains(defaultBranches, branch) {
 			return "", fmt.Errorf("%s is on %s; check out a ticket branch there or dispatch with a worktree",
-				tilde(repo), cmp(branch, "a detached HEAD"))
+				tilde(repo), cmp.Or(branch, "a detached HEAD"))
 		}
 	}
 

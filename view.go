@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"fmt"
 	"regexp"
 	"strings"
@@ -57,6 +58,56 @@ func wrap(s string, width int) []string {
 	return strings.Split(ansi.Wrap(s, max(1, width), ""), "\n")
 }
 
+// scrollTo is the list's first row, moved just far enough to show the cursor.
+func scrollTo(top, cursor, rows, total int) int {
+	if cursor < top {
+		top = cursor
+	}
+	if cursor >= top+rows {
+		top = cursor - rows + 1
+	}
+	return max(0, min(top, max(0, total-rows)))
+}
+
+// renderMarkdown styles each line and wraps it to width.
+func renderMarkdown(lines []string, width int) []string {
+	var out []string
+	for _, l := range lines {
+		if l == "" {
+			out = append(out, "")
+		} else {
+			out = append(out, wrap(markdownLine(l), width)...)
+		}
+	}
+	return out
+}
+
+// window is the rows lines from *scroll on, padded with empty ones. It keeps *scroll within the text.
+func window(lines []string, scroll *int, rows int) []string {
+	*scroll = max(0, min(*scroll, len(lines)-rows))
+	var out []string
+	for n := 0; n < rows; n++ {
+		if at := *scroll + n; at < len(lines) {
+			out = append(out, lines[at])
+		} else {
+			out = append(out, "")
+		}
+	}
+	return out
+}
+
+// frame is the screen: the body padded to width, over the status line.
+func frame(body []string, status string, statusColor Color, width int) string {
+	lines := make([]string, 0, len(body)+1)
+	for _, l := range body {
+		lines = append(lines, " "+fit(l, width))
+	}
+	if status != "" {
+		status = fg(statusColor, status)
+	}
+	return strings.Join(append(lines, " "+fit(status, width)), "\n")
+}
+
 func (m *model) header(extra string) string {
 	dot := fg(cSurface, " · ")
 	isPrs := m.view == prs
@@ -67,7 +118,7 @@ func (m *model) header(extra string) string {
 	case isPrs && m.prFilter == "mine", m.mine && !isPrs:
 		who = "mine"
 	case m.assignee != nil:
-		who = cmp(*m.assignee, "unassigned")
+		who = cmp.Or(*m.assignee, "unassigned")
 	}
 	title := m.title
 	if isPrs {
@@ -87,8 +138,7 @@ func (m *model) View() tea.View {
 	if m.width == 0 {
 		return v
 	}
-	const pad = 1
-	inner := m.width - pad*2
+	inner := m.width - 2
 	var body []string
 	switch {
 	case m.cleanup != nil:
@@ -98,16 +148,7 @@ func (m *model) View() tea.View {
 	default:
 		body = m.renderBoard(inner, m.height-1)
 	}
-	lines := make([]string, 0, len(body)+1)
-	for _, l := range body {
-		lines = append(lines, " "+fit(l, inner))
-	}
-	status := ""
-	if m.status != "" {
-		status = fg(m.statusColor, m.status)
-	}
-	lines = append(lines, " "+fit(status, inner))
-	v.SetContent(strings.Join(lines, "\n"))
+	v.SetContent(frame(body, m.status, m.statusColor, inner))
 	return v
 }
 
@@ -117,17 +158,11 @@ func (m *model) renderBoard(width, h int) []string {
 
 	listRows := max(4, (h-4)*45/100)
 	detailRows := h - listRows - 4
-	if m.cursor < m.top {
-		m.top = m.cursor
-	}
-	if m.cursor >= m.top+listRows {
-		m.top = m.cursor - listRows + 1
-	}
-	m.top = max(0, min(m.top, max(0, len(items)-listRows)))
+	m.top = scrollTo(m.top, m.cursor, listRows, len(items))
 
 	isPrs := m.view == prs
 	total := fmt.Sprint(len(m.rows()))
-	if !isPrs && m.truncated {
+	if (isPrs && m.prsTruncated) || (!isPrs && m.truncated) {
 		total += "+"
 	}
 	out := []string{m.header(fmt.Sprintf("%d/%s", len(items), total))}
@@ -145,7 +180,7 @@ func (m *model) renderBoard(width, h int) []string {
 	for _, i := range items {
 		keyW = max(keyW, len(i.Key))
 		statusW = max(statusW, ansi.StringWidth(i.Status))
-		whoW = max(whoW, ansi.StringWidth(cmp(i.Assignee, "unassigned")))
+		whoW = max(whoW, ansi.StringWidth(cmp.Or(i.Assignee, "unassigned")))
 	}
 	keyW, statusW, whoW = min(24, keyW), min(14, statusW), min(18, whoW)
 	sumW := width - keyW - statusW - whoW - 8
@@ -190,7 +225,7 @@ func (m *model) renderBoard(width, h int) []string {
 		line += strings.Join([]string{
 			fg(keyColor, fit(i.Key, keyW)),
 			fg(statusColor, fit(i.Status, statusW)),
-			fg(whoColor, fit(cmp(i.Assignee, "unassigned"), whoW)),
+			fg(whoColor, fit(cmp.Or(i.Assignee, "unassigned"), whoW)),
 			summary,
 		}, "  ")
 		out = append(out, line)
@@ -205,22 +240,7 @@ func (m *model) renderBoard(width, h int) []string {
 			detail = []string{fmt.Sprintf("# %s: %s", current.Key, current.Summary), "", fg(cOverlay, "Loading…")}
 		}
 	}
-	var wrapped []string
-	for _, l := range detail {
-		if l == "" {
-			wrapped = append(wrapped, "")
-		} else {
-			wrapped = append(wrapped, wrap(markdownLine(l), width)...)
-		}
-	}
-	m.detailScroll = max(0, min(m.detailScroll, len(wrapped)-detailRows))
-	for n := 0; n < detailRows; n++ {
-		if at := m.detailScroll + n; at < len(wrapped) {
-			out = append(out, wrapped[at])
-		} else {
-			out = append(out, "")
-		}
-	}
+	out = append(out, window(renderMarkdown(detail, width), &m.detailScroll, detailRows)...)
 
 	if isPrs {
 		out = append(out, fg(cOverlay, "↑↓ pick · enter review · tab tickets · ^o requested/mine · ^a author · ^u/^d scroll · ^b browser · ^s session · ^x clean up · ^r refresh · esc quit"))

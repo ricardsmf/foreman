@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -364,7 +365,7 @@ func waitForCode(ctx context.Context, state string) (<-chan codeResult, error) {
 			return
 		}
 		code := q.Get("code")
-		msg := cmp(q.Get("error_description"), q.Get("error"), "no code returned")
+		msg := cmp.Or(q.Get("error_description"), q.Get("error"), "no code returned")
 		w.Header().Set("content-type", "text/html; charset=utf-8")
 		page := "foreman is signed in. You can close this tab."
 		if code == "" {

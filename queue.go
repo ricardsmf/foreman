@@ -222,10 +222,16 @@ type queueModel struct {
 	cursor, top   int
 	scroll        int
 	details       map[string][]string // by key + sig
-	feedback      *string             // the reply being typed to the selected agent
+	feedback      *reply              // the reply being typed to an agent
 	confirmKill   string              // the session the first K asked to close
 	status        string
 	statusColor   Color
+}
+
+// A reply names its agent itself: the list is rebuilt on every poll, and by the time enter is
+// pressed the row under the cursor may be another agent's.
+type reply struct {
+	key, session, text string
 }
 
 func detailKey(it queueItem) string { return it.Key + " " + it.Sig }
@@ -265,7 +271,7 @@ func (q *queueModel) loadPrs() tea.Cmd {
 	}
 	q.prsLoading = true
 	return func() tea.Msg {
-		prs, err := openPrs()
+		prs, _, err := openPrs()
 		return queuePrsMsg{prs, err}
 	}
 }
@@ -282,7 +288,8 @@ func (q *queueModel) rebuild() tea.Cmd {
 	prev, had := q.current()
 	q.items = queueItems(q.state, q.sessions, q.prs)
 	if had {
-		if n := slices.IndexFunc(q.items, func(it queueItem) bool { return it.Key == prev.Key }); n >= 0 {
+		// The kind too: a review agent and the PR it reviews share a key.
+		if n := slices.IndexFunc(q.items, func(it queueItem) bool { return it.Key == prev.Key && it.Kind == prev.Kind }); n >= 0 {
 			q.cursor = n
 		}
 	}
@@ -398,7 +405,7 @@ func (q *queueModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tea.PasteMsg:
 		if q.feedback != nil {
-			*q.feedback += strings.Join(strings.Fields(msg.Content), " ")
+			q.feedback.text += strings.Join(strings.Fields(msg.Content), " ")
 		}
 	case tea.KeyPressMsg:
 		if q.feedback != nil {
@@ -486,8 +493,7 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 			q.say("No open agent session to reply to", cOverlay)
 			return nil
 		}
-		empty := ""
-		q.feedback = &empty
+		q.feedback = &reply{key: it.Key, session: it.Session}
 	case "x":
 		if !it.pending() {
 			q.say(it.Key+" has nothing waiting for you", cOverlay)
@@ -591,23 +597,23 @@ func (q *queueModel) feedbackInput(msg tea.KeyPressMsg) tea.Cmd {
 	case "ctrl+c":
 		return tea.Quit
 	case "backspace":
-		*q.feedback = dropLast(*q.feedback)
+		q.feedback.text = dropLast(q.feedback.text)
 	case "enter":
-		text := strings.TrimSpace(*q.feedback)
+		r := *q.feedback
 		q.feedback = nil
-		it, ok := q.current()
-		if text == "" || !ok {
+		text := strings.TrimSpace(r.text)
+		if text == "" {
 			return nil
 		}
-		q.say("Sending to "+it.Key+"…", cSubtext)
+		q.say("Sending to "+r.key+"…", cSubtext)
 		return func() tea.Msg {
-			if err := sendToAgent(it.Session, text); err != nil {
-				return statusMsg{text: "Reply to " + it.Key + ": " + err.Error(), color: cRed}
+			if err := sendToAgent(r.session, text); err != nil {
+				return statusMsg{text: "Reply to " + r.key + ": " + err.Error(), color: cRed}
 			}
-			return statusMsg{text: "✓ Sent to " + it.Key, color: cGreen}
+			return statusMsg{text: "✓ Sent to " + r.key, color: cGreen}
 		}
 	default:
-		*q.feedback += msg.Key().Text
+		q.feedback.text += msg.Key().Text
 	}
 	return nil
 }
@@ -644,7 +650,8 @@ func sendToAgent(session, text string) error {
 	if err := json.Unmarshal([]byte(out), &block); err != nil {
 		return fmt.Errorf("finding the agent's pane: %w", err)
 	}
-	if _, err := sh("", "rex", "send", "-s", session, "-b", block, text); err != nil {
+	// After --: a reply that starts with a dash isn't a flag.
+	if _, err := sh("", "rex", "send", "-s", session, "-b", block, "--", text); err != nil {
 		return err
 	}
 	// A separate key press: in one write the agent's editor takes the newline as pasted text.
@@ -665,13 +672,7 @@ func (q *queueModel) View() tea.View {
 		return v
 	}
 	inner := q.width - 2
-	body := q.render(inner, q.height-1)
-	lines := make([]string, 0, len(body)+1)
-	for _, l := range body {
-		lines = append(lines, " "+fit(l, inner))
-	}
-	lines = append(lines, " "+fit(fg(q.statusColor, q.status), inner))
-	v.SetContent(strings.Join(lines, "\n"))
+	v.SetContent(frame(q.render(inner, q.height-1), q.status, q.statusColor, inner))
 	return v
 }
 
@@ -740,13 +741,7 @@ func (q *queueModel) render(width, h int) []string {
 
 	listRows := max(3, min(len(q.items), (h-3)*40/100))
 	detailRows := h - listRows - 3
-	if q.cursor < q.top {
-		q.top = q.cursor
-	}
-	if q.cursor >= q.top+listRows {
-		q.top = q.cursor - listRows + 1
-	}
-	q.top = max(0, min(q.top, max(0, len(q.items)-listRows)))
+	q.top = scrollTo(q.top, q.cursor, listRows, len(q.items))
 
 	keyW := 8
 	for _, it := range q.items {
@@ -808,9 +803,8 @@ func (q *queueModel) render(width, h int) []string {
 
 	var detail []string
 	if q.feedback != nil {
-		it, _ := q.current()
-		detail = append(detail, bold(fg(cMauve, "Reply to "+it.Key)), "")
-		for _, l := range wrap(*q.feedback+"█", width-2) {
+		detail = append(detail, bold(fg(cMauve, "Reply to "+q.feedback.key)), "")
+		for _, l := range wrap(q.feedback.text+"█", width-2) {
 			detail = append(detail, "  "+l)
 		}
 	} else if it, ok := q.current(); ok {
@@ -818,22 +812,9 @@ func (q *queueModel) render(width, h int) []string {
 		if lines == nil {
 			lines = []string{"# " + it.Key + ": " + it.Title, "", fg(cOverlay, "Loading…")}
 		}
-		for _, l := range lines {
-			if l == "" {
-				detail = append(detail, "")
-			} else {
-				detail = append(detail, wrap(markdownLine(l), width)...)
-			}
-		}
+		detail = renderMarkdown(lines, width)
 	}
-	q.scroll = max(0, min(q.scroll, len(detail)-detailRows))
-	for n := 0; n < detailRows; n++ {
-		if at := q.scroll + n; at < len(detail) {
-			out = append(out, detail[at])
-		} else {
-			out = append(out, "")
-		}
-	}
+	out = append(out, window(detail, &q.scroll, detailRows)...)
 
 	keys := "enter go · f reply · v evidence · d diff · x reviewed · K close/drop · o open · ^u/^d scroll"
 	if q.feedback != nil {

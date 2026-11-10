@@ -37,6 +37,7 @@ or write extra context, `alt+enter` new line, paste works, `^e` writes the conte
 Both views reload when the board regains focus after five minutes or more, and every five minutes.
 
 A search loads at most 500 tickets; past that the count reads `500+` and the status line says so.
+The PR view stops at 500 open PRs the same way.
 
 ## Dispatching
 
@@ -51,6 +52,8 @@ A search loads at most 500 tickets; past that the count reads `500+` and the sta
 - Each agent starts in a new background Rex session named after the ticket, such as
   `fld-1671-my-van-always`; `^s` on the row, or `cmd+s`, switches to it. The board stays where it
   is. It is tracked by its ID, so an agent renaming its session doesn't lose it.
+- Dispatching to a ticket or PR whose agent session is still open takes `enter` twice: the second
+  agent would work in the first one's worktree, and the board would track only the new session.
 - `◆` marks a dispatched row, coloured by what its agent reports to Rex: yellow working, red
   waiting for you or failed, green idle or done. `◇` means its session is closed.
 - The agent gets the ticket as markdown, your extra context, and a workflow: understand, implement,
@@ -110,10 +113,16 @@ attach or link them. A new dispatch empties the directory, and cleaning up a wor
 
 ## Cleaning up
 
-`^x` lists the dispatched worktrees whose ticket is Done or whose PR is merged or closed. Those
-with uncommitted changes or a working agent start unticked. `enter` runs `git worktree remove` on
-the ticked ones (never `--force`, so changes stop it); branches and their commits stay, and the
+`^x` lists the dispatches whose ticket is Done or whose PR is merged or closed. Those with
+uncommitted changes or a working agent start unticked. `enter` runs `git worktree remove` on the
+ticked ones (never `--force`, so changes stop it); branches and their commits stay, and the
 reports, evidence and the agent's Rex session go.
+
+- A dispatch that ran without a worktree is listed as `checkout stays`: only its record, reports and
+  session go.
+- A dispatch whose worktree was removed by hand is dropped, with its reports, as soon as `^x` runs.
+- A ticket or PR that couldn't be read (Jira or `gh` failed) is reported in the status line, not
+  taken as still open.
 
 ## Config
 
@@ -132,8 +141,9 @@ reports, evidence and the agent's Rex session go.
 
 - State (repo per project, last agent, dispatched tickets with their sessions and titles, queue items
   marked reviewed) is in
-  `~/.local/state/foreman/state.json`, written atomically. An unreadable file is moved to
-  `state.json.corrupt` rather than overwritten.
+  `~/.local/state/foreman/state.json`, written atomically. The board and the queue both write it,
+  so each write holds `state.json.lock`, and the board re-reads it every few seconds. An unreadable
+  file is moved to `state.json.corrupt` rather than overwritten.
 
 ## Development
 

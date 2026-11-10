@@ -4,6 +4,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"os"
@@ -23,7 +24,7 @@ func parseArgs(argv []string) (jql, title string) {
 	if arg != "" && !projectRe.MatchString(arg) {
 		return arg, "custom JQL"
 	}
-	project := strings.ToUpper(cmp(arg, defaultProject))
+	project := strings.ToUpper(cmp.Or(arg, defaultProject))
 	return fmt.Sprintf("project = %s AND statusCategory != Done ORDER BY updated DESC", project), project + " open tickets"
 }
 
@@ -78,6 +79,8 @@ type form struct {
 	repoQuery string
 	context   string
 	busy      bool
+	// confirmed is set by the first enter on a row whose agent session is still open.
+	confirmed bool
 }
 
 // Messages from background work.
@@ -85,7 +88,7 @@ type (
 	loadedMsg struct {
 		which     viewKind
 		rows      []Row
-		truncated bool // Jira had more tickets than the board loads
+		truncated bool // Jira or GitHub had more than the board loads
 		err       error
 	}
 	detailTickMsg struct{ seq int }
@@ -106,18 +109,22 @@ type (
 	}
 	refreshTickMsg struct{}
 	agentsTickMsg  struct{}
-	agentsMsg      map[string]string
-	editedMsg      struct {
+	agentsMsg      struct {
+		states map[string]string // nil when listing the sessions failed
+		state  State
+	}
+	editedMsg struct {
 		text string
 		err  error
 	}
 	cleanupMsg struct {
 		candidates []cleanupCandidate
+		failed     []string // "KEY: why" for each worktree whose ticket or PR couldn't be checked
 		err        error
 	}
 	cleanedMsg struct {
-		removed []string
-		errs    []string
+		removed, forgotten int // worktrees removed, dispatches without one forgotten
+		errs               []string
 	}
 )
 
@@ -132,6 +139,7 @@ type model struct {
 	truncated     bool // the search matched more than maxIssues tickets
 	prs           []Row
 	prsLoaded     bool
+	prsTruncated  bool   // the repos have more than maxPrs open PRs
 	prFilter      string // "all" | "requested" | "mine"
 	cursor, top   int
 	query         string
@@ -148,7 +156,7 @@ type model struct {
 	detailOK     map[string]bool     // the cached detail is the real thing, not an error
 	detailSeq    int
 	state        State
-	agents       map[string]string // Rex session label → reported agent state
+	agents       map[string]string // Rex session ID or label → reported agent state
 	repos        []string
 	form         *form
 	cleanup      *cleanupView
@@ -173,12 +181,12 @@ func (m *model) reload(which viewKind) tea.Cmd {
 	jira, jql := m.jira, m.jql
 	return func() tea.Msg {
 		if which == prs {
-			list, err := openPrs()
+			list, truncated, err := openPrs()
 			rows := make([]Row, len(list))
 			for n, p := range list {
 				rows[n] = prRow(p)
 			}
-			return loadedMsg{which: which, rows: rows, err: err}
+			return loadedMsg{which, rows, truncated, err}
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), jiraTimeout)
 		defer cancel()
@@ -231,7 +239,7 @@ func filterRows(rows []Row, query, prFilter string, mine bool, assignee *string)
 		if assignee != nil && r.Assignee != *assignee {
 			continue
 		}
-		hay := strings.ToLower(fmt.Sprintf("%s %s %s %s", r.Key, r.Status, cmp(r.Assignee, "unassigned"), r.Summary))
+		hay := strings.ToLower(fmt.Sprintf("%s %s %s %s", r.Key, r.Status, cmp.Or(r.Assignee, "unassigned"), r.Summary))
 		if !slices.ContainsFunc(words, func(w string) bool { return !strings.Contains(hay, w) }) {
 			out = append(out, r)
 		}
@@ -322,6 +330,13 @@ func (m *model) submit() tea.Cmd {
 	if (repo == "" && f.row.Pr == nil) || f.busy {
 		return nil
 	}
+	// A second agent would work in the first one's worktree, and the board would lose track of the first.
+	if session := m.state.Sessions[f.row.Key]; session != "" && m.agents[session] != "" && !f.confirmed {
+		f.confirmed = true
+		m.say(fmt.Sprintf("%s's agent session is still open (%s); enter again starts a second agent", f.row.Key, m.agents[session]), cYellow)
+		m.statusSticky = true
+		return nil
+	}
 	f.busy = true
 	agent := agents[f.agent].Label
 	isPr := f.row.Pr != nil
@@ -354,12 +369,13 @@ func (m *model) submit() tea.Cmd {
 	}
 }
 
+// pollAgents reads the agents' states and the state file: the queue and any other board write it too.
 func pollAgents() tea.Msg {
 	states, err := agentStates()
 	if err != nil {
-		return agentsMsg(nil)
+		states = nil
 	}
-	return agentsMsg(states)
+	return agentsMsg{states, loadState()}
 }
 
 func (m *model) Init() tea.Cmd {
@@ -399,10 +415,19 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			break
 		}
 		m.lastLoad[msg.which] = time.Now()
+		prev, had := m.current()
 		if msg.which == prs {
-			m.prs, m.prsLoaded = msg.rows, true
+			m.prs, m.prsLoaded, m.prsTruncated = msg.rows, true, msg.truncated
 		} else {
 			m.issues, m.truncated = msg.rows, msg.truncated
+		}
+		// A reload reorders the rows; without this the cursor ends up on another ticket.
+		if had && msg.which == m.view {
+			if n := slices.IndexFunc(m.visible(), func(r Row) bool { return r.Key == prev.Key }); n >= 0 {
+				m.cursor = n
+			} else {
+				m.detailScroll = 0
+			}
 		}
 		// PR keys hold a `#`, ticket keys don't: keep the other view's cached details.
 		for key := range m.details {
@@ -414,7 +439,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Clear the previous error or "loading" note, but not a dispatch's result or progress.
 		if msg.which == m.view && !m.statusSticky {
 			m.say("", cOverlay)
-			if msg.truncated {
+			switch {
+			case msg.truncated && msg.which == prs:
+				m.say(fmt.Sprintf("Showing the first %d open PRs; the rest aren't loaded", maxPrs), cYellow)
+			case msg.truncated:
 				m.say(fmt.Sprintf("Showing the first %d tickets; narrow the JQL to see the rest", maxIssues), cYellow)
 			}
 		}
@@ -460,8 +488,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case agentsTickMsg:
 		return m, tea.Batch(pollAgents, agentsTick())
 	case agentsMsg:
-		if msg != nil {
-			m.agents = msg
+		m.state = msg.state
+		if msg.states != nil {
+			m.agents = msg.states
 		}
 		return m, nil
 	case editedMsg:
@@ -475,11 +504,14 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case cleanedMsg:
 		m.state = loadState()
 		m.cleanup = nil
-		switch {
-		case len(msg.errs) > 0:
-			m.say(fmt.Sprintf("Removed %d worktrees; %s", len(msg.removed), strings.Join(msg.errs, "; ")), cRed)
-		default:
-			m.say(fmt.Sprintf("✓ Removed %d worktrees", len(msg.removed)), cGreen)
+		done := fmt.Sprintf("Removed %d worktrees", msg.removed)
+		if msg.forgotten > 0 {
+			done += fmt.Sprintf(", forgot %d dispatches without one", msg.forgotten)
+		}
+		if len(msg.errs) > 0 {
+			m.say(done+"; "+strings.Join(msg.errs, "; "), cRed)
+		} else {
+			m.say("✓ "+done, cGreen)
 		}
 		m.statusSticky = true
 	case tea.PasteMsg:

@@ -73,7 +73,11 @@ func (j *Jira) conn(ctx context.Context) (*Mcp, error) {
 }
 
 func (j *Jira) close() {
-	j.mu.Lock()
+	// A connect in flight holds the lock for as long as the browser sign-in takes. Quitting
+	// mustn't wait for it, and it has no session to close yet.
+	if !j.mu.TryLock() {
+		return
+	}
 	defer j.mu.Unlock()
 	if j.mcp != nil {
 		_ = j.mcp.close()
@@ -267,16 +271,19 @@ func (j *Jira) mine(ctx context.Context, jql string) (map[string]bool, error) {
 	return out, nil
 }
 
-// category is the ticket's status category, or "" when Jira can't say (deleted, no access).
-func (j *Jira) category(ctx context.Context, key string) string {
+// category is the ticket's status category, "" when it has none.
+func (j *Jira) category(ctx context.Context, key string) (string, error) {
 	var data struct {
 		Fields issueFields `json:"fields"`
 	}
 	err := j.call(ctx, "getJiraIssue", map[string]any{"issueIdOrKey": key, "fields": []string{"status"}}, &data)
-	if err != nil || data.Fields.Status == nil || data.Fields.Status.StatusCategory == nil {
-		return ""
+	if err != nil {
+		return "", err
 	}
-	return data.Fields.Status.StatusCategory.Name
+	if data.Fields.Status == nil || data.Fields.Status.StatusCategory == nil {
+		return "", nil
+	}
+	return data.Fields.Status.StatusCategory.Name, nil
 }
 
 // detail is the ticket as markdown: header, description, linked issues.
