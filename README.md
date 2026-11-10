@@ -30,7 +30,7 @@ tickets/PRs, `^o` mine (on PRs: cycles review requested, mine, everyone), `^a` c
 PRs: author), `^u`/`^d` scroll the description, `^b` open in browser, `^s` go to the agent's Rex
 session, `^x` clean up worktrees, `^r` refresh, `esc` quit.
 
-Dispatch form: `tab`/`↑↓` field, `←→` agent or repo, `space` worktree on/off, type to filter repos
+Dispatch form: `tab`/`↑↓` field, `←→` agent or repo, `space` worktree or poteto-mode on/off, type to filter repos
 or write extra context, `alt+enter` new line, paste works, `^e` writes the context in `$VISUAL` /
 `$EDITOR`, `enter` dispatch, `esc` back.
 
@@ -58,6 +58,10 @@ The PR view stops at 500 open PRs the same way.
   waiting for you or failed, green idle or done. `◇` means its session is closed.
 - The agent gets the ticket as markdown, your extra context, and a workflow: understand, implement,
   verify, commit. It is told not to push, open a PR or touch the ticket.
+- With poteto-mode on, the prompt also tells the agent to read pstack's poteto-mode skill and
+  follow it. The workflow still wins: no push, no PR. The skill's path comes from
+  `~/.claude/plugins/installed_plugins.json`, so the dispatch fails if pstack isn't installed
+  there. It is off each time the form opens.
 - The agent's prompt is written to `prompt.md` in its evidence directory and read by a shell in
   the new session, since Rex caps a request at 64 KB.
 

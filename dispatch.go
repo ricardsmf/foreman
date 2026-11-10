@@ -25,6 +25,8 @@ var (
 	// evidenceRoot holds each agent's report and screenshots, outside every repo so a commit can't pick them up.
 	evidenceRoot = filepath.Join(home, ".local", "state", "foreman", "evidence")
 	mcpConfig    = filepath.Join(home, ".config", "mcp", "mcp.json")
+	// installedPlugins is Claude Code's record of its plugins; pi runs pstack from the same copy.
+	installedPlugins = filepath.Join(home, ".claude", "plugins", "installed_plugins.json")
 )
 
 type Agent struct{ Label, Note string }
@@ -126,6 +128,7 @@ type Dispatch struct {
 	Issue    Issue
 	Agent    string
 	Worktree bool
+	Poteto   bool // the agent follows pstack's poteto-mode skill on top of the workflow
 	Repo     string
 	Context  string
 	// Ticket is the ticket's markdown when the board already has it; empty means fetch it.
@@ -222,6 +225,13 @@ func firstLine(s string) string { return strings.SplitN(s, "\n", 2)[0] }
 func dispatch(ctx context.Context, jira *Jira, d Dispatch, progress func(string)) (string, error) {
 	issue, repo := d.Issue, d.Repo
 	keyLower := strings.ToLower(issue.Key)
+	skill := ""
+	if d.Poteto {
+		var err error
+		if skill, err = potetoSkill(); err != nil {
+			return "", err
+		}
+	}
 
 	cwd := repo
 	var branch string
@@ -253,6 +263,23 @@ func dispatch(ctx context.Context, jira *Jira, d Dispatch, progress func(string)
 			return "", err
 		}
 	}
+	words := strings.Split(slug(issue.Summary), "-")
+	label := keyLower + "-" + strings.Join(words[:min(3, len(words))], "-")
+	if err := resetEvidence(issue.Key); err != nil {
+		return "", err
+	}
+	session, name, err := start(d.Agent, issue.Key, ticketPrompt(d, cwd, branch, ticket, skill), cwd, label, progress)
+	if err != nil {
+		return "", err
+	}
+	markDispatched(issue.Key, issue.Summary, cwd, session)
+	return fmt.Sprintf("✓ %s is working on %s in session %s · %s (%s)", d.Agent, issue.Key, name, tilde(cwd), branch), nil
+}
+
+// ticketPrompt is what the agent starts with. skill is the poteto-mode skill's path, or empty to
+// leave the skill out.
+func ticketPrompt(d Dispatch, cwd, branch, ticket, skill string) string {
+	issue := d.Issue
 	note := ""
 	if d.Worktree {
 		note = " (a git worktree created for this ticket)"
@@ -271,6 +298,15 @@ func dispatch(ctx context.Context, jira *Jira, d Dispatch, progress func(string)
 	if d.Context != "" {
 		lines = append(lines, "", "## Extra context from me", "", d.Context)
 	}
+	if skill != "" {
+		lines = append(lines,
+			"",
+			"## Method",
+			"",
+			"Work in poteto-mode: read `"+skill+"` first and follow it, with the playbook that fits this ticket.",
+			"Where it differs from the workflow below, the workflow wins: ask me when the ticket is ambiguous, and end with the commit and the report in place of the Opening a PR playbook.",
+		)
+	}
 	lines = append(lines,
 		"",
 		"## Workflow",
@@ -283,18 +319,30 @@ func dispatch(ctx context.Context, jira *Jira, d Dispatch, progress func(string)
 		"6. **Report**: write the report below, then finish with the same summary in your final message.",
 	)
 	lines = append(lines, reportSection(issue.Key, true)...)
+	return strings.Join(lines, "\n")
+}
 
-	words := strings.Split(slug(issue.Summary), "-")
-	label := keyLower + "-" + strings.Join(words[:min(3, len(words))], "-")
-	if err := resetEvidence(issue.Key); err != nil {
-		return "", err
-	}
-	session, name, err := start(d.Agent, issue.Key, strings.Join(lines, "\n"), cwd, label, progress)
+// potetoSkill is the installed pstack's poteto-mode skill. Its path holds the plugin's version,
+// so each dispatch looks it up.
+func potetoSkill() (string, error) {
+	b, err := os.ReadFile(installedPlugins)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("poteto-mode: %w", err)
 	}
-	markDispatched(issue.Key, issue.Summary, cwd, session)
-	return fmt.Sprintf("✓ %s is working on %s in session %s · %s (%s)", d.Agent, issue.Key, name, tilde(cwd), branch), nil
+	var v struct {
+		Plugins map[string][]struct {
+			InstallPath string `json:"installPath"`
+		} `json:"plugins"`
+	}
+	if err := json.Unmarshal(b, &v); err != nil {
+		return "", fmt.Errorf("poteto-mode: %s: %w", tilde(installedPlugins), err)
+	}
+	for _, p := range v.Plugins["pstack@cursor-plugins"] {
+		if skill := filepath.Join(p.InstallPath, "skills", "poteto-mode", "SKILL.md"); exists(skill) {
+			return skill, nil
+		}
+	}
+	return "", fmt.Errorf("poteto-mode: %s lists no pstack plugin with the skill", tilde(installedPlugins))
 }
 
 type ReviewDispatch struct {

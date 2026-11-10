@@ -869,3 +869,83 @@ func TestStoredSplitsAcrossKeychainItems(t *testing.T) {
 		t.Errorf("legacy entry loaded %+v", got.Tokens)
 	}
 }
+
+// poteto-mode is the second option: off when the form opens, and space on its row turns it on
+// without touching the worktree option.
+func TestFormTogglesPotetoMode(t *testing.T) {
+	m := &model{state: State{RepoByProject: map[string]string{}}, repos: []string{"/r/one"}}
+	tab, space := tea.KeyPressMsg{Code: tea.KeyTab}, tea.KeyPressMsg{Code: tea.KeySpace, Text: " "}
+	m.openForm(issueRow(Issue{Key: "FLD-1"}))
+	f := m.form
+	if f.poteto {
+		t.Fatal("poteto-mode starts on")
+	}
+	m.formInput(tab)
+	m.formInput(tab)
+	m.formInput(space)
+	if !f.poteto || !f.worktree {
+		t.Fatalf("after tab, tab, space: poteto %t, worktree %t", f.poteto, f.worktree)
+	}
+	if form := strings.Join(m.renderForm(100, 40), "\n"); !strings.Contains(form, fg(cGreen, "[x]")+" poteto-mode") {
+		t.Errorf("the form doesn't show poteto-mode ticked:\n%s", form)
+	}
+	// Two more tabs reach the context, where a space is text.
+	m.formInput(tab)
+	m.formInput(tab)
+	m.formInput(space)
+	if f.context != " " || !f.poteto {
+		t.Errorf("context %q, poteto %t", f.context, f.poteto)
+	}
+
+	// A review has no options: tab goes from the agent to the context and back.
+	m.openForm(prRow(Pr{Key: "o/r#1"}))
+	m.formInput(tab)
+	m.formInput(space)
+	m.formInput(tab)
+	if f := m.form; f.context != " " || f.poteto || f.field != fieldAgent {
+		t.Errorf("review form: context %q, poteto %t, field %d", f.context, f.poteto, f.field)
+	}
+}
+
+// The prompt names the skill only when the dispatch asks for it, ahead of the workflow that overrides it.
+func TestTicketPromptNamesPotetoSkill(t *testing.T) {
+	tempState(t)
+	d := Dispatch{Issue: Issue{Key: "FLD-1", Summary: "Thing"}}
+	if p := ticketPrompt(d, "/r/one", "rf/fld-1-thing", "the ticket", ""); strings.Contains(p, "poteto") {
+		t.Errorf("a plain dispatch mentions poteto-mode:\n%s", p)
+	}
+	p := ticketPrompt(d, "/r/one", "rf/fld-1-thing", "the ticket", "/plugins/pstack/1.0/skills/poteto-mode/SKILL.md")
+	skill, workflow := strings.Index(p, "read `/plugins/pstack/1.0/skills/poteto-mode/SKILL.md`"), strings.Index(p, "## Workflow")
+	if skill < 0 || workflow < skill {
+		t.Errorf("skill at %d, workflow at %d:\n%s", skill, workflow, p)
+	}
+}
+
+// The skill's path follows whichever pstack version Claude Code has installed.
+func TestPotetoSkillFromInstalledPlugins(t *testing.T) {
+	old := installedPlugins
+	t.Cleanup(func() { installedPlugins = old })
+	dir := t.TempDir()
+	installedPlugins = filepath.Join(dir, "installed_plugins.json")
+	if _, err := potetoSkill(); err == nil {
+		t.Error("no error without installed_plugins.json")
+	}
+	install := filepath.Join(dir, "pstack", "2.0")
+	record := fmt.Sprintf(`{"version":2,"plugins":{"pstack@cursor-plugins":[{"installPath":%q}]}}`, install)
+	if err := os.WriteFile(installedPlugins, []byte(record), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := potetoSkill(); err == nil {
+		t.Error("no error when the listed install has no skill")
+	}
+	want := filepath.Join(install, "skills", "poteto-mode", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(want), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(want, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := potetoSkill(); got != want || err != nil {
+		t.Errorf("potetoSkill() = %q, %v; want %q", got, err, want)
+	}
+}

@@ -272,7 +272,7 @@ func (m *model) renderForm(width, h int) []string {
 		return fg(cOverlay, "○")
 	}
 
-	out = append(out, label(0, bold("Agent")))
+	out = append(out, label(fieldAgent, bold("Agent")))
 	for n, a := range agents {
 		name := a.Label
 		if n == f.agent {
@@ -285,19 +285,26 @@ func (m *model) renderForm(width, h int) []string {
 		out = append(out, "", "  "+bold("Checkout"),
 			"    "+fg(cSubtext, tilde(fmt.Sprintf("%s-pr-%d", p.Checkout, p.Number)))+" "+fg(cOverlay, "(worktree at the PR head)"))
 	} else {
-		out = append(out, "", label(1, bold("Options")))
-		box := "[ ]"
-		if f.worktree {
-			box = fg(cGreen, "[x]")
+		option := func(n int, on bool, name, note string) string {
+			mark, box := "    ", "[ ]"
+			if f.field == n {
+				mark = "  " + fg(cMauve, "› ")
+			}
+			if on {
+				box = fg(cGreen, "[x]")
+			}
+			return mark + box + " " + name + " " + fg(cOverlay, note)
 		}
-		out = append(out, "    "+box+" git worktree "+fg(cOverlay, "(isolated checkout, parallel-safe)"), "")
+		out = append(out, "", "  "+bold("Options"),
+			option(fieldWorktree, f.worktree, "git worktree", "(isolated checkout, parallel-safe)"),
+			option(fieldPoteto, f.poteto, "poteto-mode", "(pstack playbooks and subagents: slower, more tokens)"), "")
 		choices := m.repoChoices()
 		f.repo = max(0, min(f.repo, len(choices)-1))
 		filter := fg(cOverlay, "type to filter")
 		if f.repoQuery != "" {
 			filter = fg(cMauve, "/"+f.repoQuery)
 		}
-		out = append(out, label(2, bold("Repo")+" "+filter))
+		out = append(out, label(fieldRepo, bold("Repo")+" "+filter))
 		const rows = 6
 		start := max(0, min(f.repo-2, len(choices)-rows))
 		for n := start; n < min(len(choices), start+rows); n++ {
@@ -312,10 +319,10 @@ func (m *model) renderForm(width, h int) []string {
 			out = append(out, fg(cRed, "    no repo matches"))
 		}
 	}
-	out = append(out, "", label(3, bold("Extra context")+" "+fg(cOverlay, "(optional)")))
-	if f.context != "" || f.field == 3 {
+	out = append(out, "", label(fieldContext, bold("Extra context")+" "+fg(cOverlay, "(optional)")))
+	if f.context != "" || f.field == fieldContext {
 		cursor := ""
-		if f.field == 3 {
+		if f.field == fieldContext {
 			cursor = "█"
 		}
 		var lines []string
@@ -342,7 +349,7 @@ func (m *model) renderForm(width, h int) []string {
 	if f.busy {
 		out = append(out, fg(cOverlay, "dispatching…"))
 	} else {
-		fieldKeys := []string{"←→ agent", "space toggle", "←→ repo", "type · alt+enter newline"}[f.field]
+		fieldKeys := []string{"←→ agent", "space toggle", "space toggle", "←→ repo", "type · alt+enter newline"}[f.field]
 		fieldKeys += " · ^e editor"
 		out = append(out, fg(cOverlay, fmt.Sprintf("tab/↑↓ field · %s · enter %s · esc back", fieldKeys, verb)))
 	}

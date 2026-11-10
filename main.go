@@ -70,11 +70,22 @@ const (
 	dispatchTimeout = 10 * time.Minute
 )
 
+// The dispatch form's fields, in tab order. A review has only the agent and the context.
+const (
+	fieldAgent = iota
+	fieldWorktree
+	fieldPoteto
+	fieldRepo
+	fieldContext
+	fieldCount
+)
+
 type form struct {
 	row       Row
 	field     int
 	agent     int
 	worktree  bool
+	poteto    bool
 	repo      int
 	repoQuery string
 	context   string
@@ -347,7 +358,7 @@ func (m *model) submit() tea.Cmd {
 		s.Agent = agent
 	})
 	progress := func(line string) { prog.Send(statusMsg{line, cSubtext, true}) }
-	jira, row, worktree, extra := m.jira, f.row, f.worktree, strings.TrimSpace(f.context)
+	jira, row, worktree, poteto, extra := m.jira, f.row, f.worktree, f.poteto, strings.TrimSpace(f.context)
 	ticket := ""
 	if m.detailOK[row.Key] && row.Pr == nil {
 		ticket = strings.Join(m.details[row.Key], "\n")
@@ -360,7 +371,7 @@ func (m *model) submit() tea.Cmd {
 		if row.Pr != nil {
 			text, err = dispatchReview(ctx, jira, ReviewDispatch{*row.Pr, agent, extra}, progress)
 		} else {
-			text, err = dispatch(ctx, jira, Dispatch{*row.Issue, agent, worktree, repo, extra, ticket}, progress)
+			text, err = dispatch(ctx, jira, Dispatch{Issue: *row.Issue, Agent: agent, Worktree: worktree, Poteto: poteto, Repo: repo, Context: extra, Ticket: ticket}, progress)
 		}
 		if err != nil {
 			err = fmt.Errorf("%s: %w", row.Key, err)

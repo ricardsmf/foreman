@@ -119,30 +119,32 @@ func (m *model) formInput(msg tea.KeyPressMsg) tea.Cmd {
 	case k == "enter":
 		return m.submit()
 	case k == "ctrl+e":
-		f.field = 3
+		f.field = fieldContext
 		return editContext(f.context)
-	// A review has no options or repo to pick: its fields are agent (0) and context (3).
-	case k == "tab" || (k == "down" && f.field != 2):
+	// A review has no options or repo to pick: its fields are the agent, which is 0, and the context.
+	case k == "tab" || (k == "down" && f.field != fieldRepo):
 		if isPr {
-			f.field = 3 - f.field
+			f.field = fieldContext - f.field
 		} else {
-			f.field = (f.field + 1) % 4
+			f.field = (f.field + 1) % fieldCount
 		}
-	case k == "shift+tab" || (k == "up" && f.field != 2):
+	case k == "shift+tab" || (k == "up" && f.field != fieldRepo):
 		if isPr {
-			f.field = 3 - f.field
+			f.field = fieldContext - f.field
 		} else {
-			f.field = (f.field + 3) % 4
+			f.field = (f.field + fieldCount - 1) % fieldCount
 		}
-	case f.field == 0 && (left || right):
+	case f.field == fieldAgent && (left || right):
 		if left {
 			f.agent = (f.agent + len(agents) - 1) % len(agents)
 		} else {
 			f.agent = (f.agent + 1) % len(agents)
 		}
-	case f.field == 1 && (k == "space" || left || right):
+	case f.field == fieldWorktree && (k == "space" || left || right):
 		f.worktree = !f.worktree
-	case f.field == 2:
+	case f.field == fieldPoteto && (k == "space" || left || right):
+		f.poteto = !f.poteto
+	case f.field == fieldRepo:
 		switch {
 		case left || k == "up":
 			f.repo = max(0, f.repo-1)
@@ -153,7 +155,7 @@ func (m *model) formInput(msg tea.KeyPressMsg) tea.Cmd {
 		case text != "":
 			f.repoQuery, f.repo = f.repoQuery+text, 0
 		}
-	case f.field == 3:
+	case f.field == fieldContext:
 		switch k {
 		case "backspace":
 			f.context = dropLast(f.context)
@@ -171,9 +173,9 @@ func (m *model) paste(text string) {
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	if f := m.form; f != nil && !f.busy {
 		switch f.field {
-		case 2:
+		case fieldRepo:
 			f.repoQuery, f.repo = f.repoQuery+strings.Join(strings.Fields(text), " "), 0
-		case 3:
+		case fieldContext:
 			f.context += text
 		}
 		return
