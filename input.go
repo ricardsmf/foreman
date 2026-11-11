@@ -140,6 +140,7 @@ func (m *model) formInput(msg tea.KeyPressMsg) tea.Cmd {
 		} else {
 			f.agent = (f.agent + 1) % len(agents)
 		}
+		f.agentPicked = true
 	case f.field == fieldWorktree && (k == "space" || left || right):
 		f.worktree = !f.worktree
 	case f.field == fieldPoteto && (k == "space" || left || right):
@@ -155,6 +156,7 @@ func (m *model) formInput(msg tea.KeyPressMsg) tea.Cmd {
 		case text != "":
 			f.repoQuery, f.repo = f.repoQuery+text, 0
 		}
+		m.followRepo()
 	case f.field == fieldContext:
 		switch k {
 		case "backspace":

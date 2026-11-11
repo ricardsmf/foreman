@@ -32,8 +32,8 @@ var (
 type Agent struct{ Label, Note string }
 
 var agents = []Agent{
-	{"pi", "pi, default tools"},
-	{"Claude", "claude, default permission prompts"},
+	{agentPi, "pi, default tools"},
+	{agentClaude, "claude, default permission prompts"},
 	{"Claude (yolo)", "claude --dangerously-skip-permissions"},
 }
 
@@ -298,6 +298,7 @@ func ticketPrompt(d Dispatch, cwd, branch, ticket, skill string) string {
 	if d.Context != "" {
 		lines = append(lines, "", "## Extra context from me", "", d.Context)
 	}
+	lines = append(lines, skillsSection(d.Agent, cwd)...)
 	if skill != "" {
 		lines = append(lines,
 			"",
@@ -417,6 +418,7 @@ func dispatchReview(ctx context.Context, jira *Jira, d ReviewDispatch, progress 
 	if d.Context != "" {
 		lines = append(lines, "", "## Extra context from me", "", d.Context)
 	}
+	lines = append(lines, skillsSection(d.Agent, cwd)...)
 	acceptance, against := "", ""
 	if ticket != "" {
 		acceptance, against = ", the ticket's acceptance criteria", "; check it against the ticket"
@@ -455,7 +457,7 @@ func promptFile(key string) string { return filepath.Join(evidenceDir(key), "pro
 func agentCommand(agent, file string) []string {
 	// Absolute paths: the fish `claude` function would otherwise add a second --mcp-config.
 	var cmd []string
-	if agent == "pi" {
+	if agent == agentPi {
 		cmd = []string{which("pi")}
 	} else {
 		cmd = []string{which("claude"), "--mcp-config", mcpConfig}

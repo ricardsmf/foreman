@@ -3,6 +3,7 @@ package main
 import (
 	"cmp"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -279,6 +280,13 @@ func (m *model) renderForm(width, h int) []string {
 			name = bold(name)
 		}
 		out = append(out, "    "+radio(n == f.agent)+" "+fit(name, 16)+fg(cOverlay, a.Note))
+	}
+	if repo := m.formRepo(); hasSkills(repo) {
+		note, color := "ships Claude Code skills", cOverlay
+		if agents[f.agent].Label == agentPi {
+			note, color = note+", which pi doesn't load", cYellow
+		}
+		out = append(out, "    "+fg(color, filepath.Base(repo)+" "+note))
 	}
 	if isPr {
 		p := f.row.Pr

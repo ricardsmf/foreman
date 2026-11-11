@@ -10,7 +10,8 @@ import (
 
 type State struct {
 	RepoByProject map[string]string `json:"repoByProject"`
-	Agent         string            `json:"agent,omitempty"`
+	// AgentByRepo maps a repo's main checkout to the agent last dispatched there.
+	AgentByRepo map[string]string `json:"agentByRepo,omitempty"`
 	// Dispatched maps a ticket or PR key to the directory its agent works in.
 	Dispatched map[string]string `json:"dispatched"`
 	// Sessions maps a ticket or PR key to its agent's latest Rex session: its ID, which survives a
@@ -64,6 +65,9 @@ func readState() State {
 	}
 	if s.RepoByProject == nil {
 		s.RepoByProject = map[string]string{}
+	}
+	if s.AgentByRepo == nil {
+		s.AgentByRepo = map[string]string{}
 	}
 	if s.Dispatched == nil {
 		s.Dispatched = map[string]string{}

@@ -53,6 +53,8 @@ type queueItem struct {
 	Shots   int // images and terminal captures
 	Videos  int
 	Pr      *Pr
+	// Watcher marks a watcher's session rather than a dispatched agent's.
+	Watcher bool
 	// Sig is what the item showed; marking it reviewed holds until this changes.
 	Sig string
 }
@@ -141,6 +143,9 @@ func queueItems(s State, sessions []rexSession, prs []Pr) []queueItem {
 			it.Group = closed
 		}
 		items = append(items, it)
+	}
+	for _, w := range watchers {
+		items = append(items, watcherItem(w, sessions))
 	}
 	for _, p := range prs {
 		// A PR has no session to keep listing: marked reviewed, it goes until its status changes.
@@ -450,6 +455,15 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 			openURL(it.Pr.URL)
 			return nil
 		}
+		if it.Agent == "" && it.Watcher {
+			q.say("Starting "+it.Key+"…", cSubtext)
+			return func() tea.Msg {
+				if _, err := startWatchers(); err != nil {
+					return statusMsg{text: err.Error(), color: cRed}
+				}
+				return pollQueue()
+			}
+		}
 		if it.Agent == "" {
 			q.say("Its session is closed", cOverlay)
 			return nil
@@ -479,6 +493,7 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 		}
 	case "o":
 		switch {
+		case it.Watcher:
 		case it.Pr != nil:
 			openURL(it.Pr.URL)
 		case it.review():
@@ -513,6 +528,10 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 			return nil
 		}
 		if it.Agent == "" {
+			if it.Watcher {
+				q.say(it.Key+" isn't running; it stays listed while the config names it", cOverlay)
+				return nil
+			}
 			return q.hide(it)
 		}
 		// Twice: it ends the agent and whatever else runs in the session.
@@ -705,6 +724,12 @@ func itemLabel(it queueItem) (string, string) {
 	}
 	if it.Report == "" {
 		what = "no report"
+	}
+	if it.Watcher {
+		what = "between passes"
+		if it.Agent == "" {
+			what = "not running, enter starts it"
+		}
 	}
 	switch {
 	case it.Agent == "working":

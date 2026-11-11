@@ -25,6 +25,8 @@ type config struct {
 	CloudID        *string `json:"cloudId"`
 	DefaultProject *string `json:"defaultProject"`
 	BranchPrefix   *string `json:"branchPrefix"`
+	// Watchers replaces the default list; an empty one turns them off.
+	Watchers *[]Watcher `json:"watchers"`
 }
 
 // loadConfig applies the config file, if there is one, over the defaults.
@@ -52,6 +54,18 @@ func loadConfig() error {
 	set(&cloudID, c.CloudID)
 	set(&defaultProject, c.DefaultProject)
 	set(&branchPrefix, c.BranchPrefix)
+	if c.Watchers != nil {
+		watchers = nil
+		for _, w := range *c.Watchers {
+			if w.Name == "" || w.Dir == "" || w.Prompt == "" {
+				return fmt.Errorf("%s: a watcher needs a name, a dir and a prompt", tilde(configFile))
+			}
+			if rest, ok := strings.CutPrefix(w.Dir, "~/"); ok {
+				w.Dir = filepath.Join(home, rest)
+			}
+			watchers = append(watchers, w)
+		}
+	}
 	site = strings.TrimRight(site, "/")
 	return nil
 }

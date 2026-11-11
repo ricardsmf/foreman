@@ -949,3 +949,161 @@ func TestPotetoSkillFromInstalledPlugins(t *testing.T) {
 		t.Errorf("potetoSkill() = %q, %v; want %q", got, err, want)
 	}
 }
+
+// skillRepo is a checkout with the given skills; a name ending in ! is one only I can invoke.
+func skillRepo(t *testing.T, skills ...string) string {
+	t.Helper()
+	repo := t.TempDir()
+	for _, s := range skills {
+		head := "---\nname: " + strings.TrimSuffix(s, "!") + "\n"
+		if strings.HasSuffix(s, "!") {
+			head += "disable-model-invocation: true\n"
+		}
+		dir := filepath.Join(repo, ".claude", "skills", strings.TrimSuffix(s, "!"))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		// The body repeats the key: only the frontmatter counts.
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(head+"---\n\ndisable-model-invocation: true\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return repo
+}
+
+// A repo with Claude Code skills starts on Claude, any other on pi, until I dispatch there with
+// another agent.
+func TestDefaultAgentFollowsTheRepo(t *testing.T) {
+	skilled, plain := skillRepo(t, "fld-watch!"), skillRepo(t)
+	s := State{AgentByRepo: map[string]string{}}
+	if a := defaultAgent(s, skilled); a != agentClaude {
+		t.Errorf("a repo with skills starts on %s", a)
+	}
+	if a := defaultAgent(s, plain); a != agentPi {
+		t.Errorf("a repo without skills starts on %s", a)
+	}
+	s.AgentByRepo[skilled], s.AgentByRepo[plain] = agentPi, "gone"
+	if a := defaultAgent(s, skilled); a != agentPi {
+		t.Errorf("the last agent used there lost to %s", a)
+	}
+	if a := defaultAgent(s, plain); a != agentPi {
+		t.Errorf("an agent that no longer exists gave %s", a)
+	}
+}
+
+// The form's agent follows the repo I move to, until I pick one myself.
+func TestFormAgentFollowsTheRepo(t *testing.T) {
+	skilled, plain := skillRepo(t, "fld-tdd"), skillRepo(t)
+	m := &model{state: State{RepoByProject: map[string]string{}, AgentByRepo: map[string]string{}}, repos: []string{plain, skilled}}
+	tab, right, left := tea.KeyPressMsg{Code: tea.KeyTab}, tea.KeyPressMsg{Code: tea.KeyRight}, tea.KeyPressMsg{Code: tea.KeyLeft}
+	agent := func() string { return agents[m.form.agent].Label }
+
+	m.openForm(issueRow(Issue{Key: "FLD-1"}))
+	if agent() != agentPi {
+		t.Fatalf("the form opens on %s for a repo without skills", agent())
+	}
+	for range fieldRepo {
+		m.formInput(tab)
+	}
+	m.formInput(right)
+	if agent() != agentClaude {
+		t.Fatalf("on the repo with skills the agent is %s", agent())
+	}
+	if form := strings.Join(m.renderForm(100, 40), "\n"); !strings.Contains(form, "ships Claude Code skills") {
+		t.Errorf("the form doesn't say why:\n%s", form)
+	}
+	m.formInput(left)
+	if agent() != agentPi {
+		t.Fatalf("back on the plain repo the agent is %s", agent())
+	}
+
+	// Picked by hand, it stays.
+	m.openForm(issueRow(Issue{Key: "FLD-1"}))
+	m.formInput(right)
+	picked := agent()
+	for range fieldRepo {
+		m.formInput(tab)
+	}
+	m.formInput(right)
+	if agent() != picked {
+		t.Errorf("moving repo changed the agent I picked, %s, to %s", picked, agent())
+	}
+
+	// A review takes its agent from the PR's checkout.
+	m.openForm(prRow(Pr{Key: "o/r#1", Checkout: skilled}))
+	if agent() != agentClaude {
+		t.Errorf("a review in a repo with skills opens on %s", agent())
+	}
+}
+
+// Claude is told the repo's skills it can invoke; pi, which can't load them, is not.
+func TestTicketPromptNamesRepoSkills(t *testing.T) {
+	tempState(t)
+	cwd := skillRepo(t, "fld-verify", "fld-tdd", "fld-watch!")
+	d := Dispatch{Issue: Issue{Key: "FLD-1", Summary: "Thing"}, Agent: agentClaude}
+	p := ticketPrompt(d, cwd, "rf/fld-1-thing", "the ticket", "")
+	skills, workflow := strings.Index(p, "its own skills: `fld-tdd`, `fld-verify`."), strings.Index(p, "## Workflow")
+	if skills < 0 || workflow < skills || strings.Contains(p, "fld-watch") {
+		t.Errorf("skills at %d, workflow at %d:\n%s", skills, workflow, p)
+	}
+	d.Agent = agentPi
+	if p := ticketPrompt(d, cwd, "rf/fld-1-thing", "the ticket", ""); strings.Contains(p, "Repo skills") {
+		t.Errorf("pi's prompt names the repo's skills:\n%s", p)
+	}
+}
+
+// The other tests' queues hold only what they dispatch.
+func init() { watchers = nil }
+
+// A watcher is always listed: by its session's state when it runs, as not running otherwise. One
+// that waits on a permission prompt needs me, since nothing moves until I answer.
+func TestQueueListsWatchers(t *testing.T) {
+	t.Cleanup(func() { watchers = nil })
+	watchers = []Watcher{{"fld-pr-watch", "/r/watch", "/loop 10m /fld-watch"}}
+	s := State{}
+	for state, want := range map[string]group{"blocked": needsYou, "working": working, "idle": idle, "done": idle} {
+		items := queueItems(s, []rexSession{{ID: "s1", Label: "fld-pr-watch", State: state}}, nil)
+		if len(items) != 1 || items[0].Group != want || items[0].Session != "s1" || !items[0].Watcher {
+			t.Errorf("%s: %+v", state, items)
+		}
+	}
+	items := queueItems(s, []rexSession{{ID: "s2", Label: "other"}}, nil)
+	if len(items) != 1 || items[0].Group != closed || items[0].Agent != "" {
+		t.Fatalf("no session: %+v", items)
+	}
+	if _, label := itemLabel(items[0]); !strings.Contains(label, "not running") {
+		t.Errorf("label %q", label)
+	}
+}
+
+// The watcher runs Claude Code asking before each tool call, whatever my settings default to.
+func TestWatcherCommand(t *testing.T) {
+	cmd := watcherCommand(Watcher{"w", "/r/watch", "/loop 10m /fld-watch"})
+	if got := strings.Join(cmd[1:], " "); got != "--permission-mode manual /loop 10m /fld-watch" {
+		t.Errorf("command: %s", got)
+	}
+}
+
+func TestConfigReplacesWatchers(t *testing.T) {
+	oldFile := configFile
+	t.Cleanup(func() { configFile, watchers = oldFile, nil })
+	configFile = filepath.Join(t.TempDir(), "config.json")
+	write := func(body string) error {
+		if err := os.WriteFile(configFile, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return loadConfig()
+	}
+	if err := write(`{"watchers": [{"name": "w", "dir": "~/x/y", "prompt": "/loop 5m /z"}]}`); err != nil {
+		t.Fatal(err)
+	}
+	if len(watchers) != 1 || watchers[0].Dir != filepath.Join(home, "x", "y") {
+		t.Errorf("watchers %+v", watchers)
+	}
+	if err := write(`{"watchers": []}`); err != nil || len(watchers) != 0 {
+		t.Errorf("an empty list: err %v, watchers %+v", err, watchers)
+	}
+	if err := write(`{"watchers": [{"name": "w"}]}`); err == nil {
+		t.Error("a watcher without a dir and a prompt should be an error")
+	}
+}

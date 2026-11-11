@@ -81,15 +81,17 @@ const (
 )
 
 type form struct {
-	row       Row
-	field     int
-	agent     int
-	worktree  bool
-	poteto    bool
-	repo      int
-	repoQuery string
-	context   string
-	busy      bool
+	row   Row
+	field int
+	agent int
+	// agentPicked is set once I choose the agent by hand; until then it follows the repo.
+	agentPicked bool
+	worktree    bool
+	poteto      bool
+	repo        int
+	repoQuery   string
+	context     string
+	busy        bool
 	// confirmed is set by the first enter on a row whose agent session is still open.
 	confirmed bool
 }
@@ -323,9 +325,30 @@ func project(key string) string { return strings.SplitN(key, "-", 2)[0] }
 func (m *model) openForm(row Row) {
 	m.form = &form{
 		row:      row,
-		agent:    max(0, slices.IndexFunc(agents, func(a Agent) bool { return a.Label == m.state.Agent })),
 		worktree: true,
 		repo:     max(0, slices.Index(m.repos, m.state.RepoByProject[project(row.Key)])),
+	}
+	m.followRepo()
+}
+
+// formRepo is the main checkout the form would dispatch in: the PR's, or the picked repo.
+func (m *model) formRepo() string {
+	f := m.form
+	if f.row.Pr != nil {
+		return f.row.Pr.Checkout
+	}
+	choices := m.repoChoices()
+	if len(choices) == 0 {
+		return ""
+	}
+	return choices[max(0, min(f.repo, len(choices)-1))]
+}
+
+// followRepo puts the form on its repo's default agent, unless I picked one.
+func (m *model) followRepo() {
+	if f := m.form; !f.agentPicked {
+		want := defaultAgent(m.state, m.formRepo())
+		f.agent = max(0, slices.IndexFunc(agents, func(a Agent) bool { return a.Label == want }))
 	}
 }
 
@@ -350,12 +373,12 @@ func (m *model) submit() tea.Cmd {
 	}
 	f.busy = true
 	agent := agents[f.agent].Label
-	isPr := f.row.Pr != nil
+	isPr, agentRepo := f.row.Pr != nil, m.formRepo()
 	m.state, _ = updateState(func(s *State) {
 		if !isPr {
 			s.RepoByProject[project(f.row.Key)] = repo
 		}
-		s.Agent = agent
+		s.AgentByRepo[agentRepo] = agent
 	})
 	progress := func(line string) { prog.Send(statusMsg{line, cSubtext, true}) }
 	jira, row, worktree, poteto, extra := m.jira, f.row, f.worktree, f.poteto, strings.TrimSpace(f.context)
@@ -584,6 +607,15 @@ func run() error {
 		repos:       listRepos(),
 	}
 	prog = tea.NewProgram(m)
+	go func() {
+		started, err := startWatchers()
+		switch {
+		case err != nil:
+			prog.Send(statusMsg{err.Error(), cRed, true})
+		case len(started) > 0:
+			prog.Send(statusMsg{"Started " + strings.Join(started, ", "), cSubtext, false})
+		}
+	}()
 	_, err := prog.Run()
 	return err
 }

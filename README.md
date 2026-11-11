@@ -43,6 +43,12 @@ The PR view stops at 500 open PRs the same way.
 
 - Repos are the git checkouts directly under `~/work/code` and `~/projects`; the last one used per
   Jira project is preselected.
+- The agent starts on the one last dispatched in that repo. A repo never dispatched in starts on
+  Claude when it ships Claude Code skills (`.claude/skills/*/SKILL.md`), which pi doesn't load, and
+  on pi otherwise. It follows the repo as you move through the list, until you pick one yourself.
+- Claude's prompt names the repo's skills it can invoke (those without
+  `disable-model-invocation`) and tells it to use them for the steps they cover, minus any part
+  that pushes or posts. A review gets the same.
 - The worktree is `<repo>-<key>`. The most recently committed `origin/` branch containing the
   ticket key is checked out; a local branch of the same name is used as is, unpushed commits and
   all. Otherwise `rf/<key>-<slug>` is created from `origin/develop`, else origin's default branch.
@@ -115,6 +121,23 @@ and a short video of a flow (agent-browser) for web UI, `rex capture` dumps for 
 commands and their output otherwise. They are for you only; the agent is told never to commit,
 attach or link them. A new dispatch empties the directory, and cleaning up a worktree removes it.
 
+## Watchers
+
+A watcher is a Claude Code session that keeps running one of a repo's skills. Mine is
+`fld-pr-watch`: `/loop 10m /fld-watch` in `~/work/code/reports-app-watch`, which reviews the PRs
+that request my review and posts the result under my account.
+
+- The board starts each watcher that has no open Rex session named after it, in the background.
+  A session started by hand under that name counts as the watcher.
+- It runs `claude --permission-mode manual <prompt>`: only the commands its checkout's
+  `.claude/settings.local.json` allows run unasked. The skill's own file lists them.
+- The queue always lists it: with **needs you** when it waits on a permission prompt or failed (a
+  pass stalls until you answer), else **working**, **idle** between passes, or **closed** when it
+  isn't running, where `enter` starts it. `K` twice stops it.
+- Its checkout is a worktree nobody works in, detached at `origin/develop`. The skills run from
+  it, so move it forward when they change: `git -C <dir> fetch origin develop && git -C <dir>
+  checkout --detach origin/develop`.
+
 ## Cleaning up
 
 `^x` lists the dispatches whose ticket is Done or whose PR is merged or closed. Those with
@@ -137,13 +160,16 @@ reports, evidence and the agent's Rex session go.
   "site": "https://bloqit.atlassian.net",
   "cloudId": "1eb9eb54-74a9-4d94-8eb1-a1a7696be552",
   "defaultProject": "FLD",
-  "branchPrefix": "rf/"
+  "branchPrefix": "rf/",
+  "watchers": [{ "name": "fld-pr-watch", "dir": "~/work/code/reports-app-watch", "prompt": "/loop 10m /fld-watch" }]
 }
 ```
 
+`"watchers": []` turns them off.
+
 ## State
 
-- State (repo per project, last agent, dispatched tickets with their sessions and titles, queue items
+- State (repo per project, last agent per repo, dispatched tickets with their sessions and titles, queue items
   marked reviewed) is in
   `~/.local/state/foreman/state.json`, written atomically. The board and the queue both write it,
   so each write holds `state.json.lock`, and the board re-reads it every few seconds. An unreadable
