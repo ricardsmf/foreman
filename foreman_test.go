@@ -834,6 +834,16 @@ func TestAgentCommandPassesThePrompt(t *testing.T) {
 	}
 }
 
+// Claude's --add-dir and --mcp-config take lists: the prompt after them would be read as one more.
+func TestAgentCommandEndsClaudeOptions(t *testing.T) {
+	for _, agent := range []string{agentClaude, "Claude (yolo)"} {
+		cmd := agentCommand(agent, "prompt.md")
+		if cmd[len(cmd)-1] != "--" {
+			t.Errorf("%s: %q should end with --", agent, cmd)
+		}
+	}
+}
+
 // Atlassian's tokens are about 9 KB, over what one Keychain write takes, so the sign-in is split.
 func TestStoredSplitsAcrossKeychainItems(t *testing.T) {
 	keyring.MockInit()

@@ -465,7 +465,8 @@ func agentCommand(agent, file string) []string {
 			cmd = append(cmd, "--dangerously-skip-permissions")
 		}
 		// The report and evidence go outside the working directory.
-		cmd = append(cmd, "--add-dir", evidenceRoot)
+		// --add-dir takes a list, so without `--` it swallows the prompt as a second directory.
+		cmd = append(cmd, "--add-dir", evidenceRoot, "--")
 	}
 	return append([]string{"/bin/sh", "-c", `p=$(cat "$0") || exit; exec "$@" "$p"`, file}, cmd...)
 }
