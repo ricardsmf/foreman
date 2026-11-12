@@ -414,6 +414,83 @@ func TestPrepareWorktreeReusesTheBranchsWorktree(t *testing.T) {
 	}
 }
 
+// A dispatch that reuses a ticket branch diffs from where it started, leaving out the branch's
+// earlier commits; a review records no start.
+func TestDiffFromReusedBranch(t *testing.T) {
+	tempState(t)
+	root := t.TempDir()
+	origin, repo := filepath.Join(root, "origin"), filepath.Join(root, "repo")
+	git(t, root, "init", "-q", "-b", "develop", origin)
+	git(t, origin, "commit", "-q", "--allow-empty", "-m", "base")
+	git(t, origin, "branch", "rf/fld-5-thing")
+	git(t, root, "clone", "-q", origin, repo)
+	// A previous dispatch's unpushed commit on the local ticket branch.
+	git(t, repo, "checkout", "-q", "-b", "rf/fld-5-thing", "origin/rf/fld-5-thing")
+	writeFile(t, filepath.Join(repo, "earlier.txt"), "a previous agent's\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-q", "-m", "earlier work")
+	git(t, repo, "checkout", "-q", "develop")
+
+	cwd, _, err := prepareWorktree(repo, repo+"-fld-5", Issue{Key: "FLD-5", Summary: "Thing"}, func(string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := headCommit(cwd)
+	markDispatched("FLD-5", "Thing", cwd, "s", agentPi, start)
+	writeFile(t, filepath.Join(cwd, "mine.txt"), "this agent's\n")
+	git(t, cwd, "add", ".")
+	git(t, cwd, "commit", "-q", "-m", "my work")
+
+	recorded := loadState().StartedFrom["FLD-5"]
+	if recorded != start || start == "" {
+		t.Fatalf("recorded %q, want the dispatch's HEAD %q", recorded, start)
+	}
+	from := diffFrom(cwd, false, recorded)
+	if from != start {
+		t.Errorf("diffFrom = %s, want the recorded %s", from, start)
+	}
+	if files := git(t, cwd, "diff", "--name-only", from); files != "mine.txt" {
+		t.Errorf("diff shows %q, want only this agent's mine.txt", files)
+	}
+	// What the merge-base alone would show, for a dispatch recorded before starts were.
+	if files := git(t, cwd, "diff", "--name-only", diffFrom(cwd, false, "")); files != "earlier.txt\nmine.txt" {
+		t.Errorf("fallback diff shows %q, want the earlier commit too", files)
+	}
+
+	// Dispatching again, as a review would, records no start and drops the old one.
+	markDispatched("FLD-5", "Thing", cwd, "s", agentPi, "")
+	if got, ok := loadState().StartedFrom["FLD-5"]; ok {
+		t.Errorf("a dispatch without a start kept %q", got)
+	}
+}
+
+// Without a recorded start, from before they were recorded or one the repo no longer has, the
+// diff starts where the branch forked from its upstream, as before.
+func TestDiffFromFallsBackToTheMergeBase(t *testing.T) {
+	root := t.TempDir()
+	origin, repo := filepath.Join(root, "origin"), filepath.Join(root, "repo")
+	git(t, root, "init", "-q", "-b", "develop", origin)
+	git(t, origin, "commit", "-q", "--allow-empty", "-m", "base")
+	git(t, origin, "branch", "rf/fld-6-thing")
+	git(t, origin, "commit", "-q", "--allow-empty", "-m", "develop moves on")
+	git(t, root, "clone", "-q", origin, repo)
+	cwd, _, err := prepareWorktree(repo, repo+"-fld-6", Issue{Key: "FLD-6", Summary: "Thing"}, func(string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fork := git(t, cwd, "rev-parse", "HEAD")
+	git(t, cwd, "commit", "-q", "--allow-empty", "-m", "work")
+
+	for name, started := range map[string]string{
+		"none recorded": "",
+		"gone":          "0123456789abcdef0123456789abcdef01234567",
+	} {
+		if got := diffFrom(cwd, false, started); got != fork {
+			t.Errorf("%s: diffFrom = %s, want the merge-base with the upstream %s", name, got, fork)
+		}
+	}
+}
+
 func TestErrorLinesPutsTheFailureFirst(t *testing.T) {
 	got := errorLines("Preparing worktree (checking out 'b')\nfatal: 'b' is already used by worktree at '/w'")
 	if firstLine(got) != "fatal: 'b' is already used by worktree at '/w'" {
@@ -1789,7 +1866,7 @@ func TestAskWithoutOrchestrator(t *testing.T) {
 func TestAskWithdrawn(t *testing.T) {
 	tempState(t)
 	dispatched(t, "FLD-1", "/w/app-fld-1")
-	sleep := func(time.Duration) { markDispatched("FLD-1", "t", "/w/app-fld-1", "s2", agentPi) }
+	sleep := func(time.Duration) { markDispatched("FLD-1", "t", "/w/app-fld-1", "s2", agentPi, "") }
 	if _, err := ask("FLD-1", "?", time.Minute, time.Second, sleep, func(string, string) error { return nil }); err == nil || !strings.Contains(err.Error(), "withdrawn") {
 		t.Errorf("err = %v", err)
 	}
@@ -2137,5 +2214,12 @@ func TestFixKey(t *testing.T) {
 	m.state.Dispatched["app#5"] = "/w/app-pr-5"
 	if got := m.agentKey("app#5"); got != "app#5" {
 		t.Errorf("agentKey with a review = %q", got)
+	}
+}
+
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -110,6 +110,7 @@ func forget(s *State, keys []string) {
 		delete(s.Dispatched, k)
 		delete(s.Sessions, k)
 		delete(s.Titles, k)
+		delete(s.StartedFrom, k)
 		delete(s.Questions, k)
 		delete(s.Dismissed, k)
 		delete(s.Hidden, k)

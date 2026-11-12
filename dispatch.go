@@ -380,6 +380,7 @@ func dispatch(ctx context.Context, jira *Jira, d Dispatch, progress func(string)
 			return "", err
 		}
 	}
+	from := headCommit(cwd)
 	label := sessionLabel(issue.Key, issue.Summary)
 	if err := resetEvidence(issue.Key); err != nil {
 		return "", err
@@ -388,7 +389,7 @@ func dispatch(ctx context.Context, jira *Jira, d Dispatch, progress func(string)
 	if err != nil {
 		return "", err
 	}
-	markDispatched(issue.Key, issue.Summary, cwd, session, d.Agent)
+	markDispatched(issue.Key, issue.Summary, cwd, session, d.Agent, from)
 	return fmt.Sprintf("✓ %s is working on %s in session %s · %s (%s)", d.Agent, issue.Key, name, tilde(cwd), branch), nil
 }
 
@@ -486,12 +487,13 @@ func dispatchTask(d TaskDispatch, progress func(string)) (string, error) {
 	if err := resetEvidence(key); err != nil {
 		return "", err
 	}
+	from := headCommit(cwd)
 	prompt := taskPrompt(key, title, task, d.Agent, cwd, branch, d.Worktree, skill)
 	session, name, err := start(d.Agent, key, prompt, cwd, sessionLabel(key, title), progress)
 	if err != nil {
 		return "", err
 	}
-	markDispatched(key, title, cwd, session, d.Agent)
+	markDispatched(key, title, cwd, session, d.Agent, from)
 	return fmt.Sprintf("✓ %s is working on %s in session %s · %s (%s)", d.Agent, key, name, tilde(cwd), branch), nil
 }
 
@@ -737,7 +739,8 @@ func dispatchReview(ctx context.Context, jira *Jira, d PrDispatch, progress func
 	if err != nil {
 		return "", err
 	}
-	markDispatched(pr.Key, v.Title, cwd, session, d.Agent)
+	// A review changes no code, so it has no work to diff from a start.
+	markDispatched(pr.Key, v.Title, cwd, session, d.Agent, "")
 	return fmt.Sprintf("✓ %s is reviewing %s in session %s · %s", d.Agent, pr.Key, name, tilde(cwd)), nil
 }
 
@@ -775,12 +778,13 @@ func dispatchFix(ctx context.Context, jira *Jira, d PrDispatch, progress func(st
 	if err := resetEvidence(key); err != nil {
 		return "", err
 	}
+	from := headCommit(cwd)
 	prompt := fixPrompt(d, v, discussionMarkdown(discussion), ticketKey, ticket, cwd, reused)
 	session, name, err := start(d.Agent, key, prompt, cwd, sessionLabel(key, title), progress)
 	if err != nil {
 		return "", err
 	}
-	markDispatched(key, title, cwd, session, d.Agent)
+	markDispatched(key, title, cwd, session, d.Agent, from)
 	return fmt.Sprintf("✓ %s is fixing %s in session %s · %s (%s)", d.Agent, pr.Key, name, tilde(cwd), v.HeadRefName), nil
 }
 
@@ -954,9 +958,24 @@ func newSession(label, cwd, window string, cmd []string) (id, name string, err e
 	return session, session, nil
 }
 
-func markDispatched(key, title, cwd, session, agent string) {
+// headCommit is the commit dir is on, "" when git can't tell (a repo with no commits yet).
+func headCommit(dir string) string {
+	out, err := sh(dir, "git", "rev-parse", "--verify", "--quiet", "HEAD")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
+// markDispatched records the dispatch. from is the commit the agent starts from, "" for none.
+func markDispatched(key, title, cwd, session, agent, from string) {
 	_, _ = updateState(func(s *State) {
 		s.Dispatched[key] = cwd
+		if from != "" {
+			s.StartedFrom[key] = from
+		} else {
+			delete(s.StartedFrom, key)
+		}
 		s.Sessions[key] = session
 		s.Agents[key] = agent
 		s.Titles[key] = title

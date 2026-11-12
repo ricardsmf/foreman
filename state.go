@@ -23,6 +23,9 @@ type State struct {
 	Agents map[string]string `json:"agents,omitempty"`
 	// Titles maps a ticket or PR key to its summary, for the queue.
 	Titles map[string]string `json:"titles,omitempty"`
+	// StartedFrom maps a ticket, task or fix key to the commit its worktree was on at dispatch: the
+	// board diffs the agent's work from there, leaving out a reused branch's earlier commits.
+	StartedFrom map[string]string `json:"startedFrom,omitempty"`
 	// Dismissed maps a queue item to what it showed when marked reviewed: an agent item, by its key,
 	// moves up again when its report is newer; a PR item, by "pr:" and its key, when its status changes.
 	Dismissed map[string]string `json:"dismissed,omitempty"`
@@ -104,6 +107,9 @@ func readState() State {
 	}
 	if s.Titles == nil {
 		s.Titles = map[string]string{}
+	}
+	if s.StartedFrom == nil {
+		s.StartedFrom = map[string]string{}
 	}
 	if s.Dismissed == nil {
 		s.Dismissed = map[string]string{}
