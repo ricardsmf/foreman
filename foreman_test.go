@@ -1432,3 +1432,123 @@ func TestTaskForm(t *testing.T) {
 		t.Errorf("state = %+v", s)
 	}
 }
+
+// wait returns once a working agent stops; one that isn't working gets the settle time to start,
+// so a reply sent just before isn't missed.
+func TestWaitIdle(t *testing.T) {
+	run := func(states ...string) (queueItem, time.Duration, error) {
+		n := 0
+		look := func() (queueItem, error) {
+			it := queueItem{Key: "FLD-1", Agent: states[min(n, len(states)-1)]}
+			n++
+			return it, nil
+		}
+		var slept time.Duration
+		it, err := waitIdle(look, time.Minute, 10*time.Second, 2*time.Second, func(d time.Duration) { slept += d })
+		return it, slept, err
+	}
+	if it, slept, err := run("done", "working", "working", "blocked"); err != nil || it.Agent != "blocked" || slept != 6*time.Second {
+		t.Errorf("a reply that starts work: %q after %s, %v", it.Agent, slept, err)
+	}
+	if it, slept, err := run("idle"); err != nil || it.Agent != "idle" || slept != 10*time.Second {
+		t.Errorf("an agent that never starts: %q after %s, %v", it.Agent, slept, err)
+	}
+	if it, _, err := run("working", ""); err != nil || it.Agent != "" {
+		t.Errorf("a session that closes: %q, %v", it.Agent, err)
+	}
+	if _, slept, err := run("working"); err == nil || !strings.Contains(err.Error(), "still working after 1m0s") || slept != time.Minute {
+		t.Errorf("an agent that keeps working: after %s, %v", slept, err)
+	}
+}
+
+func TestReplyAllowed(t *testing.T) {
+	for _, tc := range []struct {
+		agent string
+		now   bool
+		ok    bool
+	}{
+		{"blocked", false, true},
+		{"done", false, true},
+		{"working", false, false},
+		{"working", true, true},
+		{"", true, false},
+	} {
+		if err := replyAllowed(queueItem{Key: "FLD-1", Agent: tc.agent}, tc.now); (err == nil) != tc.ok {
+			t.Errorf("reply to %q, now %t: %v", tc.agent, tc.now, err)
+		}
+	}
+}
+
+// The agents command reports what the queue shows, by key in any case, watchers included.
+func TestAgentsCommand(t *testing.T) {
+	tempState(t)
+	dispatched(t, "task:foreman-1", "/w/foreman-task-1")
+	dispatched(t, "FLD-2", "/w/app-fld-2")
+	_, _ = updateState(func(s *State) {
+		s.Sessions["task:foreman-1"], s.Agents["task:foreman-1"] = "s1", agentPi
+		s.Titles["task:foreman-1"] = "Add a flag"
+	})
+	old := watchers
+	watchers = []Watcher{{Name: "fld-pr-watch", Dir: "/w/watch", Prompt: "/loop"}}
+	t.Cleanup(func() { watchers = old })
+	s := loadState()
+	items := queueItems(s, []rexSession{{ID: "s1", Label: "task-foreman-1-add-a-flag", State: "blocked"}}, nil)
+
+	it, err := findItem(items, "TASK:Foreman-1")
+	if err != nil || it.Agent != "blocked" {
+		t.Fatalf("findItem = %+v, %v", it, err)
+	}
+	if _, err := findItem(items, "fld-pr-watch"); err != nil {
+		t.Errorf("watcher: %v", err)
+	}
+	if _, err := findItem(items, "FLD-9"); err == nil {
+		t.Error("found an agent that was never dispatched")
+	}
+
+	a := agentInfoOf(it, s)
+	if a.Kind != "task" || a.Group != "needs you" || a.State != "blocked" || a.Agent != agentPi || a.ReportAt == nil || a.Title != "Add a flag" {
+		t.Errorf("agentInfo = %+v", a)
+	}
+	var infos []agentInfo
+	for _, it := range items {
+		infos = append(infos, agentInfoOf(it, s))
+	}
+	var out strings.Builder
+	if err := writeAgents(&out, infos); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"needs you  task:foreman-1  blocked   Add a flag  report", "review     FLD-2           closed", "closed     fld-pr-watch    closed    /loop"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("agents output lacks %q:\n%s", want, out.String())
+		}
+	}
+}
+
+// cleanup with no keys takes what ^x ticks; with keys, only those, and only when they're ready.
+func TestPickCandidates(t *testing.T) {
+	all := []cleanupCandidate{
+		{Key: "FLD-1"},
+		{Key: "FLD-2", Dirty: true},
+		{Key: "task:app-1", Agent: "working"},
+	}
+	if got, _ := pickCandidates(all, nil); len(got) != 1 || got[0].Key != "FLD-1" {
+		t.Errorf("default = %+v", got)
+	}
+	if got, err := pickCandidates(all, []string{"fld-2"}); err != nil || len(got) != 1 || got[0].Key != "FLD-2" {
+		t.Errorf("by key = %+v, %v", got, err)
+	}
+	if _, err := pickCandidates(all, []string{"FLD-9"}); err == nil {
+		t.Error("picked a dispatch that isn't a candidate")
+	}
+}
+
+func TestCommandArgs(t *testing.T) {
+	if err := parseFlags(newFlags("report"), nil, 1); err == nil || !strings.Contains(err.Error(), "takes 1 argument") {
+		t.Errorf("report without a key: %v", err)
+	}
+	fs := newFlags("screen")
+	lines := fs.Int("lines", 40, "")
+	if err := parseFlags(fs, []string{"--lines", "0", "FLD-1"}, 1); err != nil || *lines != 0 || fs.Arg(0) != "FLD-1" {
+		t.Errorf("screen: %v, lines %d", err, *lines)
+	}
+}

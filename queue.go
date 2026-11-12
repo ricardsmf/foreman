@@ -737,15 +737,24 @@ end
 error("no session " .. label, 0)
 `
 
-// sendToAgent types text into the agent's pane and presses enter, as if I had replied there.
-func sendToAgent(session, text string) error {
+// agentBlock is the session's pane where the agent runs.
+func agentBlock(session string) (string, error) {
 	out, err := sh("", "rex", "do", "--all", "-e", fmt.Sprintf(agentBlockScript, strconv.Quote(session)), "--json")
 	if err != nil {
-		return err
+		return "", err
 	}
 	var block string
 	if err := json.Unmarshal([]byte(out), &block); err != nil {
-		return fmt.Errorf("finding the agent's pane: %w", err)
+		return "", fmt.Errorf("finding the agent's pane: %w", err)
+	}
+	return block, nil
+}
+
+// sendToAgent types text into the agent's pane and presses enter, as if I had replied there.
+func sendToAgent(session, text string) error {
+	block, err := agentBlock(session)
+	if err != nil {
+		return err
 	}
 	// After --: a reply that starts with a dash isn't a flag.
 	if _, err := sh("", "rex", "send", "-s", session, "-b", block, "--", text); err != nil {

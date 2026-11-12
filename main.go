@@ -650,6 +650,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 const usage = `usage: foreman [PROJECT | JQL]
        foreman queue      every dispatched agent by state, and PRs that need you
        foreman dispatch   start an agent on a task, a ticket or a PR (--help for its options)
+       foreman agents | report | screen | reply | wait | cleanup
+                          read and steer the agents from scripts (--help for each)
        foreman --logout   forget the Atlassian sign-in`
 
 func run() error {
@@ -664,8 +666,29 @@ func run() error {
 	if len(argv) > 0 && argv[0] == "queue" {
 		return runQueue()
 	}
-	if len(argv) > 0 && argv[0] == "dispatch" {
-		return runDispatch(argv[1:])
+	if len(argv) > 0 {
+		rest := argv[1:]
+		help := len(rest) > 0 && (rest[0] == "--help" || rest[0] == "-h")
+		if help && argv[0] != "dispatch" && argv[0] != "queue" {
+			fmt.Println(commandsUsage)
+			return nil
+		}
+		switch argv[0] {
+		case "dispatch":
+			return runDispatch(rest)
+		case "agents":
+			return runAgents(rest, os.Stdout)
+		case "report":
+			return runReport(rest, os.Stdout)
+		case "screen":
+			return runScreen(rest, os.Stdout)
+		case "reply":
+			return runReply(rest, os.Stdin, os.Stdout)
+		case "wait":
+			return runWait(rest, os.Stdout)
+		case "cleanup":
+			return runCleanup(rest, os.Stdout)
+		}
 	}
 	if len(argv) > 0 && argv[0] == "--logout" {
 		signOut()

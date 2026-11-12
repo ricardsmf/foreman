@@ -40,46 +40,56 @@ func (m *model) findCleanup() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), jiraTimeout)
 		defer cancel()
-		var gone, failed []string
-		var out []cleanupCandidate
-		var mu sync.Mutex
-		var wg sync.WaitGroup
-		// Each check is a Jira or GitHub call plus a few git commands; a long-lived board can have
-		// dozens, and all at once trip rate limits.
-		slots := make(chan struct{}, cleanupWorkers)
-		for key, dir := range state.Dispatched {
-			if !exists(dir) {
-				gone = append(gone, key)
-				continue
-			}
-			wg.Go(func() {
-				slots <- struct{}{}
-				defer func() { <-slots }()
-				c, ok, err := checkCleanup(ctx, jira, key, dir, agents[state.Sessions[key]] != "")
-				if err != nil {
-					mu.Lock()
-					failed = append(failed, key+": "+firstLine(err.Error()))
-					mu.Unlock()
-				}
-				if !ok {
-					return
-				}
-				c.Session = state.Sessions[key]
-				if s := agents[c.Session]; s != "" {
-					c.Agent = s
-				}
-				mu.Lock()
-				out = append(out, c)
-				mu.Unlock()
-			})
-		}
-		wg.Wait()
-		discard(gone)
-		slices.SortFunc(out, func(a, b cleanupCandidate) int { return strings.Compare(a.Dir, b.Dir) })
-		slices.Sort(failed)
-		return cleanupMsg{out, failed, ctx.Err()}
+		return cleanupCandidates(ctx, jira, state, agents)
 	}
 }
+
+// cleanupCandidates checks every dispatch against Jira, GitHub and its session. agents maps Rex
+// session IDs and labels to their reported states.
+func cleanupCandidates(ctx context.Context, jira *Jira, state State, agents map[string]string) cleanupMsg {
+	var gone, failed []string
+	var out []cleanupCandidate
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	// Each check is a Jira or GitHub call plus a few git commands; a long-lived board can have
+	// dozens, and all at once trip rate limits.
+	slots := make(chan struct{}, cleanupWorkers)
+	for key, dir := range state.Dispatched {
+		if !exists(dir) {
+			gone = append(gone, key)
+			continue
+		}
+		wg.Go(func() {
+			slots <- struct{}{}
+			defer func() { <-slots }()
+			c, ok, err := checkCleanup(ctx, jira, key, dir, agents[state.Sessions[key]] != "")
+			if err != nil {
+				mu.Lock()
+				failed = append(failed, key+": "+firstLine(err.Error()))
+				mu.Unlock()
+			}
+			if !ok {
+				return
+			}
+			c.Session = state.Sessions[key]
+			if s := agents[c.Session]; s != "" {
+				c.Agent = s
+			}
+			mu.Lock()
+			out = append(out, c)
+			mu.Unlock()
+		})
+	}
+	wg.Wait()
+	discard(gone)
+	slices.SortFunc(out, func(a, b cleanupCandidate) int { return strings.Compare(a.Dir, b.Dir) })
+	slices.Sort(failed)
+	return cleanupMsg{out, failed, ctx.Err()}
+}
+
+// defaultPicked is whether cleanup ticks the candidate unasked: a running agent may still be
+// writing there, and git refuses a worktree with changes anyway.
+func defaultPicked(c cleanupCandidate) bool { return !c.Dirty && !agentActive(c.Agent) }
 
 const cleanupWorkers = 8
 
@@ -185,8 +195,7 @@ func (m *model) openCleanup(msg cleanupMsg) {
 	}
 	v := &cleanupView{items: msg.candidates, picked: map[int]bool{}}
 	for n, c := range v.items {
-		// A running agent may still be writing there; leave it unless picked by hand.
-		v.picked[n] = !c.Dirty && !agentActive(c.Agent)
+		v.picked[n] = defaultPicked(c)
 	}
 	m.cleanup = v
 	m.say(unchecked, cRed)
@@ -206,30 +215,34 @@ func (m *model) removeWorktrees() tea.Cmd {
 		return nil
 	}
 	v.busy = true
-	return func() tea.Msg {
-		var done, errs []string
-		removed, forgotten := 0, 0
-		for _, c := range picked {
-			if c.Main {
-				forgotten++
-			} else {
-				// Without --force git refuses a worktree with changes; the branch and its commits stay.
-				if _, err := sh("", "git", "-C", c.Repo, "worktree", "remove", c.Dir); err != nil {
-					errs = append(errs, fmt.Sprintf("%s: %s", tilde(c.Dir), firstLine(err.Error())))
-					continue
-				}
-				removed++
+	return func() tea.Msg { return removeCandidates(picked) }
+}
+
+// removeCandidates removes the candidates' worktrees, without --force, closes their agents'
+// sessions and forgets them with their reports.
+func removeCandidates(picked []cleanupCandidate) cleanedMsg {
+	var done, errs []string
+	removed, forgotten := 0, 0
+	for _, c := range picked {
+		if c.Main {
+			forgotten++
+		} else {
+			// Without --force git refuses a worktree with changes; the branch and its commits stay.
+			if _, err := sh("", "git", "-C", c.Repo, "worktree", "remove", c.Dir); err != nil {
+				errs = append(errs, fmt.Sprintf("%s: %s", tilde(c.Dir), firstLine(err.Error())))
+				continue
 			}
-			done = append(done, c.Key)
-			// Its agent's session has nothing left to work on. A failure to close it isn't one
-			// worth reporting: the worktree, which was the point, is gone.
-			if c.Session != "" && c.Agent != "" {
-				_, _ = sh("", "rex", "kill", c.Session)
-			}
+			removed++
 		}
-		discard(done)
-		return cleanedMsg{removed, forgotten, errs}
+		done = append(done, c.Key)
+		// Its agent's session has nothing left to work on. A failure to close it isn't one
+		// worth reporting: the worktree, which was the point, is gone.
+		if c.Session != "" && c.Agent != "" {
+			_, _ = sh("", "rex", "kill", c.Session)
+		}
 	}
+	discard(done)
+	return cleanedMsg{removed, forgotten, errs}
 }
 
 func (m *model) cleanupInput(msg tea.KeyPressMsg) tea.Cmd {

@@ -101,6 +101,29 @@ foreman dispatch --pr reports-app#1185 [--agent claude] ['what to focus on']
 `-` as the text reads it from stdin. A ticket without `--repo` goes to its project's last repo. A
 ticket or PR whose agent session is still open needs `--again`, like the board's second `enter`.
 
+### Reading and steering agents
+
+What the queue shows and does, as commands. KEY is a dispatch's key (`FLD-1700`,
+`reports-app#1185`, `task:foreman-3`) or a watcher's name, in any case.
+
+```
+foreman agents [--json] [--prs]     every agent and watcher by queue group; --prs adds my PRs that need me
+foreman report KEY                  the report and the paths of its evidence; fails when there is none
+foreman screen [--lines N] KEY      the end of the agent's pane, 40 lines (0: all)
+foreman reply [--now] KEY TEXT|-    type TEXT into the agent's pane and press enter, as the queue's f
+foreman wait [--timeout D] KEY      block until the agent stops working (default 30m), print its state
+foreman cleanup [--dry-run] [KEY…]  list finished dispatches and remove what ^x ticks, or only KEY…
+```
+
+- `agents --json` gives each one's `key`, `kind` (ticket, review, task, watcher, pr), `group`,
+  `state` as the agent reports it to Rex (working, blocked, error, done, idle, open) or `closed`,
+  `title`, `agent`, `session`, `dir`, `report` and `reportAt`, and evidence counts.
+- `reply` refuses a closed session, and a working agent unless `--now`: pi and Claude Code each
+  handle text typed mid-turn their own way.
+- `wait` gives an agent that isn't working ten seconds to start, so `reply` then `wait` waits for the
+  answer rather than returning at once.
+- `cleanup` never forces: git refuses a worktree with changes, and branches stay.
+
 ## Reviews
 
 - The PR view lists open PRs in the GitHub repos checked out under `~/work/code`, from `gh` (its own
