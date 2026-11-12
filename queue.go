@@ -74,7 +74,7 @@ func (it queueItem) dismissKey() string {
 
 func prDismissKey(key string) string { return "pr:" + key }
 
-func (it queueItem) review() bool { return strings.Contains(it.Key, "#") }
+func (it queueItem) review() bool { return strings.Contains(it.Key, "#") && !isFix(it.Key) }
 
 func (it queueItem) working() bool { return it.Group == working }
 
@@ -538,8 +538,8 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 			q.say("A task has no ticket or PR to open", cOverlay)
 		case it.Pr != nil:
 			openURL(it.Pr.URL)
-		case it.review():
-			if n := slices.IndexFunc(q.prs, func(p Pr) bool { return p.Key == it.Key }); n >= 0 {
+		case it.review(), isFix(it.Key):
+			if n := slices.IndexFunc(q.prs, func(p Pr) bool { return p.Key == strings.TrimPrefix(it.Key, fixPrefix) }); n >= 0 {
 				openURL(q.prs[n].URL)
 			}
 		default:
@@ -601,10 +601,14 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 	return nil
 }
 
-// prAgent is the agent dispatched on the PR's ticket, found by the Jira key in its title or branch.
+// prAgent is the agent fixing the PR, else the one dispatched on its ticket, found by the Jira key in
+// its title or branch.
 // One I dropped from the queue isn't listed, but it is closed, so it is built from the state.
 func (q *queueModel) prAgent(p Pr) (queueItem, bool) {
-	key := jiraKey(p, nil)
+	key := fixKey(p.Key)
+	if _, fixing := q.state.Dispatched[key]; !fixing {
+		key = jiraKey(p, nil)
+	}
 	dir, ok := q.state.Dispatched[key]
 	if key == "" || !ok {
 		return queueItem{}, false

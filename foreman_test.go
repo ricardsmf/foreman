@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -600,13 +601,15 @@ func TestFindSession(t *testing.T) {
 	sessions := []rexSession{
 		{"session:a", "fld-1704", "done", nil},
 		{"session:b", "review-reports-app-1185-x", "idle", nil},
+		{"session:d", "fix-reports-app-1185-address-review", "idle", nil},
 		{"session:c", "fld-17040-other", "working", nil},
 	}
 	for _, tc := range []struct{ key, recorded, want string }{
 		{"FLD-1704", "session:c", "session:c"},                 // the recorded ID wins
 		{"FLD-1704", "fld-1704-test-work-orders", "session:a"}, // renamed: matched by the key
 		{"reports-app#1185", "gone", "session:b"},
-		{"FLD-170", "", ""}, // a prefix of another key doesn't match
+		{"fix:reports-app#1185", "gone", "session:d"}, // a fix's session isn't its review's
+		{"FLD-170", "", ""},                           // a prefix of another key doesn't match
 		{"FLD-1679", "", ""},
 	} {
 		got, _ := findSession(sessions, tc.key, tc.recorded)
@@ -940,13 +943,35 @@ func TestFormTogglesPotetoMode(t *testing.T) {
 		t.Errorf("context %q, poteto %t", f.context, f.poteto)
 	}
 
-	// A review has no options: tab goes from the agent to the context and back.
+	// A PR's one option is fix: tab goes from the agent to it, to the context and back.
 	m.openForm(prRow(Pr{Key: "o/r#1"}))
+	m.formInput(tab)
 	m.formInput(tab)
 	m.formInput(space)
 	m.formInput(tab)
-	if f := m.form; f.context != " " || f.poteto || f.field != fieldAgent {
-		t.Errorf("review form: context %q, poteto %t, field %d", f.context, f.poteto, f.field)
+	if f := m.form; f.context != " " || f.poteto || f.fix || f.field != fieldAgent {
+		t.Errorf("review form: context %q, poteto %t, fix %t, field %d", f.context, f.poteto, f.fix, f.field)
+	}
+}
+
+// fix it on a PR's form turns the review into a fix, on the PR's branch.
+func TestFormTogglesFix(t *testing.T) {
+	m := &model{state: State{RepoByProject: map[string]string{}}, repos: []string{"/r/one"}}
+	tab, space := tea.KeyPressMsg{Code: tea.KeyTab}, tea.KeyPressMsg{Code: tea.KeySpace, Text: " "}
+	m.openForm(prRow(Pr{Key: "app#1", Checkout: "/w/app", Number: 1, Branch: "li/fld-1-x"}))
+	if form := strings.Join(m.renderForm(140, 40), "\n"); !strings.Contains(form, "/w/app-pr-1") || !strings.Contains(form, "enter review") {
+		t.Errorf("a review form:\n%s", form)
+	}
+	m.formInput(tab)
+	m.formInput(space)
+	if !m.form.fix || m.form.worktree != true {
+		t.Fatalf("after tab, space: fix %t", m.form.fix)
+	}
+	form := strings.Join(m.renderForm(140, 40), "\n")
+	for _, want := range []string{fg(cGreen, "[x]") + " fix it", "li/fld-1-x", "/w/app-fix-1", "enter fix"} {
+		if !strings.Contains(form, want) {
+			t.Errorf("the fix form lacks %q:\n%s", want, form)
+		}
 	}
 }
 
@@ -1153,9 +1178,10 @@ func TestConfigReplacesWatchers(t *testing.T) {
 
 func TestSessionLabel(t *testing.T) {
 	for key, want := range map[[2]string]string{
-		{"FLD-1671", "My van, always late"}: "fld-1671-my-van-always",
-		{"FLD-9", ""}:                       "fld-9",
-		{"reports-app#1185", "Anything"}:    "review-reports-app-1185",
+		{"FLD-1671", "My van, always late"}:                 "fld-1671-my-van-always",
+		{"FLD-9", ""}:                                       "fld-9",
+		{"reports-app#1185", "Anything"}:                    "review-reports-app-1185",
+		{"fix:reports-app#1260", "Address review comments"}: "fix-reports-app-1260-address-review-comments",
 	} {
 		if got := sessionLabel(key[0], key[1]); got != want {
 			t.Errorf("sessionLabel(%q, %q) = %q, want %q", key[0], key[1], got, want)
@@ -1275,7 +1301,11 @@ func TestParseDispatchArgs(t *testing.T) {
 		{"--repo", "foreman"},                  // a task without text
 		{"--ticket", "FLD-1", "--pr", "app#1"}, // both
 		{"--pr", "app#1", "--repo", "foreman"}, // a review has its checkout
-		{"--ticket", "FLD-1", "--title", "t"},  // a ticket has its summary
+		{"--pr", "app#1", "--title", "t"},      // a review has its PR's title
+		{"--fix", "app#1"},                     // a fix is of a PR
+		{"--pr", "app#1", "--fix", "--no-worktree"},
+		{"--pr", "app#1", "--fix", "--repo", "foreman"},
+		{"--ticket", "FLD-1", "--title", "t"}, // a ticket has its summary
 		{"--nope"},
 	} {
 		if _, err := parseDispatchArgs(argv, nil); err == nil {
@@ -1814,5 +1844,227 @@ func TestFindWatcherAfterARename(t *testing.T) {
 	o := rexSession{ID: "o1", Label: "renamed", Procs: []rexProc{{Cmd: "claude", Dir: orchestratorDir}}}
 	if s, ok := findOrchestrator([]rexSession{o}, ""); !ok || s.ID != "o1" {
 		t.Errorf("orchestrator by its directory: %+v, %t", s, ok)
+	}
+}
+
+func TestParseDispatchArgsFix(t *testing.T) {
+	a, err := parseDispatchArgs([]string{"--pr", "app#1", "--fix", "--title", "Comments", "--agent", "pi", "the", "nits"}, nil)
+	if err != nil || !a.fix || a.pr != "app#1" || a.title != "Comments" || a.text != "the nits" {
+		t.Errorf("fix: %+v, %v", a, err)
+	}
+	if a, err := parseDispatchArgs([]string{"--pr", "app#1"}, nil); err != nil || a.fix {
+		t.Errorf("review: %+v, %v", a, err)
+	}
+}
+
+// fixRepo is a clone of an origin with the PR branch feature/x, which gets a commit after the clone.
+func fixRepo(t *testing.T) (root, repo, head string) {
+	root = t.TempDir()
+	origin := filepath.Join(root, "origin")
+	repo = filepath.Join(root, "repo")
+	git(t, root, "init", "-q", "-b", "develop", origin)
+	git(t, origin, "commit", "-q", "--allow-empty", "-m", "base")
+	git(t, origin, "checkout", "-q", "-b", "feature/x")
+	git(t, origin, "commit", "-q", "--allow-empty", "-m", "pr work")
+	git(t, origin, "checkout", "-q", "develop")
+	git(t, root, "clone", "-q", origin, repo)
+	pushed := git(t, origin, "commit-tree", "feature/x^{tree}", "-p", "feature/x", "-m", "pushed after the clone")
+	git(t, origin, "update-ref", "refs/heads/feature/x", pushed)
+	return root, repo, git(t, origin, "rev-parse", "feature/x")
+}
+
+// A PR branch nobody has checked out gets a new worktree on a local branch tracking origin's, at
+// origin's newest commit.
+func TestPrepareFixWorktreeNewTrackingBranch(t *testing.T) {
+	_, repo, head := fixRepo(t)
+	cwd := repo + "-fix-7"
+	dir, reused, err := prepareFixWorktree(repo, cwd, "feature/x", "develop", func(string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dir != cwd || reused {
+		t.Errorf("got %s, reused %t; want a new %s", dir, reused, cwd)
+	}
+	if got := git(t, cwd, "branch", "--show-current"); got != "feature/x" {
+		t.Errorf("branch = %q, want feature/x", got)
+	}
+	if got := git(t, cwd, "rev-parse", "--abbrev-ref", "@{upstream}"); got != "origin/feature/x" {
+		t.Errorf("upstream = %q", got)
+	}
+	if got := git(t, cwd, "rev-parse", "HEAD"); got != head {
+		t.Errorf("HEAD = %s, want origin's current %s", got, head)
+	}
+}
+
+// A PR branch checked out in a worktree, say the ticket's, is fixed there, whatever it holds, and
+// gets origin's branch as its upstream when it has none.
+func TestPrepareFixWorktreeReusesTheBranchsWorktree(t *testing.T) {
+	root, repo, _ := fixRepo(t)
+	byHand := filepath.Join(root, "repo-fld-1786")
+	git(t, repo, "worktree", "add", "-q", "--no-track", "-b", "feature/x", byHand, "origin/feature/x")
+	if err := os.WriteFile(filepath.Join(byHand, "wip.txt"), []byte("wip"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dir, reused, err := prepareFixWorktree(repo, repo+"-fix-7", "feature/x", "develop", func(string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := filepath.EvalSymlinks(byHand)
+	if got, _ := filepath.EvalSymlinks(dir); got != want || !reused {
+		t.Errorf("got %s, reused %t; want %s", dir, reused, byHand)
+	}
+	if exists(repo + "-fix-7") {
+		t.Error("created a second worktree")
+	}
+	if !exists(filepath.Join(byHand, "wip.txt")) {
+		t.Error("the reused worktree lost its uncommitted file")
+	}
+	if got := git(t, byHand, "rev-parse", "--abbrev-ref", "@{upstream}"); got != "origin/feature/x" {
+		t.Errorf("upstream = %q", got)
+	}
+}
+
+// A local PR branch that isn't checked out is used as is: it may hold unpushed commits.
+func TestPrepareFixWorktreeKeepsLocalCommits(t *testing.T) {
+	_, repo, _ := fixRepo(t)
+	git(t, repo, "branch", "--no-track", "feature/x", "origin/feature/x")
+	git(t, repo, "checkout", "-q", "feature/x")
+	git(t, repo, "commit", "-q", "--allow-empty", "-m", "unpushed")
+	unpushed := git(t, repo, "rev-parse", "HEAD")
+	git(t, repo, "checkout", "-q", "develop")
+
+	cwd := repo + "-fix-7"
+	if _, _, err := prepareFixWorktree(repo, cwd, "feature/x", "develop", func(string) {}); err != nil {
+		t.Fatal(err)
+	}
+	if got := git(t, cwd, "rev-parse", "HEAD"); got != unpushed {
+		t.Errorf("HEAD = %s, want the unpushed %s", got, unpushed)
+	}
+	if got := git(t, cwd, "rev-parse", "--abbrev-ref", "@{upstream}"); got != "origin/feature/x" {
+		t.Errorf("upstream = %q", got)
+	}
+}
+
+func TestPrepareFixWorktreeRefusesAnotherCheckoutInItsPlace(t *testing.T) {
+	_, repo, _ := fixRepo(t)
+	cwd := repo + "-fix-7"
+	git(t, repo, "worktree", "add", "-q", "--detach", cwd, "origin/develop")
+	if _, _, err := prepareFixWorktree(repo, cwd, "feature/x", "develop", func(string) {}); err == nil || !strings.Contains(err.Error(), "isn't on feature/x") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func testDiscussion(t *testing.T) PrDiscussion {
+	var d PrDiscussion
+	err := json.Unmarshal([]byte(`{
+	  "reviews": {"totalCount": 3, "nodes": [
+	    {"author": {"login": "ana"}, "state": "CHANGES_REQUESTED", "body": "Needs tests.\n\n## Also\nrename it", "submittedAt": "2026-11-10"},
+	    {"author": {"login": "ana"}, "state": "COMMENTED", "body": "", "submittedAt": "2026-11-10"},
+	    {"author": {"login": "bo"}, "state": "APPROVED", "body": "", "submittedAt": "2026-11-11"}
+	  ]},
+	  "comments": {"totalCount": 1, "nodes": [{"author": null, "body": "ping", "createdAt": "2026-11-11"}]},
+	  "reviewThreads": {"totalCount": 3, "nodes": [
+	    {"isResolved": false, "isOutdated": false, "path": "src/a.ts", "line": 12,
+	     "comments": {"totalCount": 2, "nodes": [{"author": {"login": "ana"}, "body": "Off by one", "createdAt": "d1"}, {"author": {"login": "li"}, "body": "Why?", "createdAt": "d2"}]}},
+	    {"isResolved": false, "isOutdated": true, "path": "src/b.ts", "line": 0, "originalLine": 4,
+	     "comments": {"totalCount": 1, "nodes": [{"author": {"login": "ana"}, "body": "Drop this", "createdAt": "d3"}]}},
+	    {"isResolved": true, "path": "src/c.ts", "line": 1,
+	     "comments": {"totalCount": 1, "nodes": [{"author": {"login": "ana"}, "body": "Done already", "createdAt": "d4"}]}}
+	  ]}
+	}`), &d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
+func TestDiscussionMarkdown(t *testing.T) {
+	md := discussionMarkdown(testDiscussion(t))
+	for _, want := range []string{
+		"**ana** (2026-11-10), changes requested:\n\n> Needs tests.\n>\n> ## Also\n> rename it",
+		"### `src/a.ts:12`\n\n**ana** (d1):\n\n> Off by one\n\n**li** (d2):\n\n> Why?",
+		"### `src/b.ts:4` (outdated: the code moved since)",
+		"_1 resolved threads left out._",
+		"## Conversation\n\n**ghost** (2026-11-11):\n\n> ping",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("lacks %q:\n%s", want, md)
+		}
+	}
+	for _, unwanted := range []string{"Done already", "bo", "commented"} {
+		if strings.Contains(md, unwanted) {
+			t.Errorf("shows %q:\n%s", unwanted, md)
+		}
+	}
+	if md := discussionMarkdown(PrDiscussion{}); !strings.Contains(md, "## Unresolved review threads\n\n_None._") {
+		t.Errorf("an empty discussion:\n%s", md)
+	}
+}
+
+func TestFixPrompt(t *testing.T) {
+	tempState(t)
+	pr := Pr{Key: "reports-app#1260", Repo: "bloqit/reports-app", Number: 1260}
+	v := PrView{Title: "Van filter", HeadRefName: "li/FLD-1786-van-filter", BaseRefName: "develop"}
+	v.Author.Login = "li"
+	d := PrDispatch{Pr: pr, Agent: agentPi, Fix: true}
+	md := discussionMarkdown(testDiscussion(t))
+	p := fixPrompt(d, v, md, "FLD-1786", "the ticket", "/w/reports-app-fld-1786", true)
+	for _, want := range []string{
+		`# Fix bloqit/reports-app#1260: "Van filter"`,
+		"Working directory: /w/reports-app-fld-1786",
+		"Branch: li/FLD-1786-van-filter, tracking origin/li/FLD-1786-van-filter (a worktree that already had it checked out",
+		"`git diff origin/develop...HEAD`",
+		"## Unresolved review threads",
+		"Off by one",
+		"## Jira ticket\n\nthe ticket",
+		"Address each unresolved review thread",
+		"do not push, reply to or resolve comments",
+		"foreman ask",
+		evidenceDir("fix:reports-app#1260") + "/report.md",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("the prompt lacks %q:\n%s", want, p)
+		}
+	}
+	if strings.Contains(p, "Do not change it") || strings.Contains(p, "## What to fix") {
+		t.Errorf("a fix without context reads as a review or names a task:\n%s", p)
+	}
+
+	d.Context = "Only the naming nits"
+	p = fixPrompt(d, v, md, "", "", "/w/reports-app-fix-1260", false)
+	for _, want := range []string{"## What to fix\n\nOnly the naming nits", "a git worktree created for this fix", "Do what the What to fix section asks"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("the prompt lacks %q:\n%s", want, p)
+		}
+	}
+}
+
+// A fix's key keeps it apart from a review of the same PR: its evidence, its kind, and the PR's
+// queue row leads to it.
+func TestFixKey(t *testing.T) {
+	if evidenceDir("fix:reports-app#1260") == evidenceDir("reports-app#1260") {
+		t.Error("a fix and a review share an evidence directory")
+	}
+	if got := kindName(queueItem{Kind: agentItem, Key: "fix:reports-app#1260"}); got != "fix" {
+		t.Errorf("kind = %q", got)
+	}
+	if got := kindName(queueItem{Kind: agentItem, Key: "reports-app#1260"}); got != "review" {
+		t.Errorf("a review's kind = %q", got)
+	}
+	q := &queueModel{state: State{
+		Dispatched: map[string]string{"FLD-1": "/w/1", "fix:app#5": "/w/1"},
+		Sessions:   map[string]string{"FLD-1": "s1", "fix:app#5": "s2"},
+	}}
+	if it, ok := q.prAgent(Pr{Key: "app#5", Branch: "rf/fld-1-x"}); !ok || it.Key != "fix:app#5" {
+		t.Errorf("prAgent = %+v, %t; want the fix", it, ok)
+	}
+	m := &model{state: State{Dispatched: map[string]string{"fix:app#5": "/w/1"}}}
+	if got := m.agentKey("app#5"); got != "fix:app#5" {
+		t.Errorf("agentKey = %q", got)
+	}
+	m.state.Dispatched["app#5"] = "/w/app-pr-5"
+	if got := m.agentKey("app#5"); got != "app#5" {
+		t.Errorf("agentKey with a review = %q", got)
 	}
 }

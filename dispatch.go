@@ -281,6 +281,55 @@ func prepareTaskWorktree(repo, cwd, title string, n int, progress func(string)) 
 	return branch, newBranchWorktree(repo, cwd, branch, base, progress)
 }
 
+// prepareFixWorktree puts the PR's head branch, which is on origin, in a worktree with origin's as
+// its upstream: the worktree that already has it checked out, else cwd on the local branch of that
+// name, else cwd on a new branch tracking origin's. reused says the worktree was there before, with
+// whatever it holds.
+func prepareFixWorktree(repo, cwd, head, base string, progress func(string)) (dir string, reused bool, err error) {
+	git := func(args ...string) (string, error) { return sh("", "git", append([]string{"-C", repo}, args...)...) }
+	// A branch made by hand may have no upstream; the agent is told it tracks origin's.
+	track := func() error {
+		if _, err := git("rev-parse", "--verify", "--quiet", head+"@{upstream}"); err == nil {
+			return nil
+		}
+		_, err := git("branch", "--set-upstream-to=origin/"+head, head)
+		return err
+	}
+	progress("Fetching " + head + "…")
+	refspecs := []string{fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", head, head)}
+	if base != "" {
+		// The diff's left side, origin/<base>, should be current too.
+		refspecs = append(refspecs, fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", base, base))
+	}
+	if _, err := shFor(fetchTimeout, "", "git", append([]string{"-C", repo, "fetch", "--quiet", "origin"}, refspecs...)...); err != nil {
+		return "", false, err
+	}
+	list, err := git("worktree", "list", "--porcelain")
+	if err != nil {
+		return "", false, err
+	}
+	if at := checkedOutAt(list, head); at != "" {
+		progress(fmt.Sprintf("Reusing %s, where %s is checked out", tilde(at), head))
+		return at, true, track()
+	}
+	if exists(cwd) {
+		return "", false, fmt.Errorf("%s exists but isn't on %s; check %s out there or remove it", tilde(cwd), head, head)
+	}
+	// A local branch of that name may hold unpushed commits: check it out as is rather than reset it.
+	if _, err := git("rev-parse", "--verify", "--quiet", "refs/heads/"+head); err == nil {
+		if _, err := git("worktree", "add", cwd, head); err != nil {
+			return "", false, err
+		}
+		progress(fmt.Sprintf("Created worktree %s on the local %s", tilde(cwd), head))
+		return cwd, false, track()
+	}
+	if _, err := git("worktree", "add", "--track", "-b", head, cwd, "origin/"+head); err != nil {
+		return "", false, err
+	}
+	progress(fmt.Sprintf("Created worktree %s on %s, tracking origin/%s", tilde(cwd), head, head))
+	return cwd, false, nil
+}
+
 // checkedOutAt is the worktree that has branch checked out, from `git worktree list --porcelain`.
 func checkedOutAt(list, branch string) string {
 	dir := ""
@@ -363,6 +412,14 @@ func workBranch(repo string) (string, error) {
 const taskPrefix = "task:"
 
 func isTask(key string) bool { return strings.HasPrefix(key, taskPrefix) }
+
+// A fix's key is its PR's with this prefix, fix:reports-app#1260: a review of the same PR keeps
+// its own state, session and report.
+const fixPrefix = "fix:"
+
+func isFix(key string) bool { return strings.HasPrefix(key, fixPrefix) }
+
+func fixKey(prKey string) string { return fixPrefix + prKey }
 
 type TaskDispatch struct {
 	Repo     string
@@ -491,12 +548,14 @@ func methodSection(skill, what string) []string {
 // sessionLabel names a dispatch's Rex session: a ticket's key and the start of its summary
 // (fld-1671-my-van-always), a review's PR key (review-reports-app-1185), a task's key and the start
 // of its title (task-foreman-3-add-a-dispatch). findSession relies on the key leading it.
+// A fix's key and the start of its title lead its label the same way
+// (fix-reports-app-1260-address-review-comments).
 func sessionLabel(key, summary string) string {
-	if strings.Contains(key, "#") {
+	if strings.Contains(key, "#") && !isFix(key) {
 		return "review-" + slug(key)
 	}
 	label := strings.ToLower(key)
-	if isTask(key) {
+	if isTask(key) || isFix(key) {
 		label = keySlug(key)
 	}
 	if s := slug(summary); s != "" {
@@ -569,14 +628,26 @@ func potetoSkill() (string, error) {
 	return "", fmt.Errorf("poteto-mode: %s lists no pstack plugin with the skill", tilde(installedPlugins))
 }
 
-type ReviewDispatch struct {
+type PrDispatch struct {
 	Pr      Pr
 	Agent   string
 	Context string
+	// Fix has the agent fix the PR on its branch rather than review it.
+	Fix bool
+	// Title names a fix in its session and the queue; empty takes the PR's title.
+	Title string
+}
+
+// dispatchPr starts a fix or a review of the PR.
+func dispatchPr(ctx context.Context, jira *Jira, d PrDispatch, progress func(string)) (string, error) {
+	if d.Fix {
+		return dispatchFix(ctx, jira, d, progress)
+	}
+	return dispatchReview(ctx, jira, d, progress)
 }
 
 // dispatchReview checks the PR's head out detached in `<repo>-pr-<n>` (refreshed if it exists) and starts a read-only review.
-func dispatchReview(ctx context.Context, jira *Jira, d ReviewDispatch, progress func(string)) (string, error) {
+func dispatchReview(ctx context.Context, jira *Jira, d PrDispatch, progress func(string)) (string, error) {
 	pr := d.Pr
 	repo := pr.Checkout
 	cwd := fmt.Sprintf("%s-pr-%d", repo, pr.Number)
@@ -668,6 +739,102 @@ func dispatchReview(ctx context.Context, jira *Jira, d ReviewDispatch, progress 
 	}
 	markDispatched(pr.Key, v.Title, cwd, session, d.Agent)
 	return fmt.Sprintf("✓ %s is reviewing %s in session %s · %s", d.Agent, pr.Key, name, tilde(cwd)), nil
+}
+
+// dispatchFix starts an agent that fixes the PR on its own branch: in the worktree that has the
+// branch checked out, else in a new `<repo>-fix-<n>` tracking origin's.
+func dispatchFix(ctx context.Context, jira *Jira, d PrDispatch, progress func(string)) (string, error) {
+	pr := d.Pr
+	key := fixKey(pr.Key)
+	progress(fmt.Sprintf("Reading %s…", pr.Key))
+	v, err := viewPr(pr)
+	if err != nil {
+		return "", err
+	}
+	if v.IsCrossRepository {
+		return "", fmt.Errorf("%s is from a fork (%s:%s); a fix works only on a PR whose branch is on origin", pr.Key, v.Author.Login, v.HeadRefName)
+	}
+	if v.HeadRefName == "" {
+		return "", errors.New("GitHub returned no head branch for the PR")
+	}
+	cwd, reused, err := prepareFixWorktree(pr.Checkout, fmt.Sprintf("%s-fix-%d", pr.Checkout, pr.Number), v.HeadRefName, v.BaseRefName, progress)
+	if err != nil {
+		return "", err
+	}
+	progress("Reading the review comments…")
+	discussion, err := prDiscussion(pr)
+	if err != nil {
+		return "", fmt.Errorf("review comments: %w", err)
+	}
+	ticketKey, ticket := jiraKey(pr, &v), ""
+	if ticketKey != "" {
+		progress(fmt.Sprintf("Reading %s…", ticketKey))
+		ticket, _ = jira.detail(ctx, ticketKey)
+	}
+	title := cmp.Or(strings.TrimSpace(d.Title), v.Title)
+	if err := resetEvidence(key); err != nil {
+		return "", err
+	}
+	prompt := fixPrompt(d, v, discussionMarkdown(discussion), ticketKey, ticket, cwd, reused)
+	session, name, err := start(d.Agent, key, prompt, cwd, sessionLabel(key, title), progress)
+	if err != nil {
+		return "", err
+	}
+	markDispatched(key, title, cwd, session, d.Agent)
+	return fmt.Sprintf("✓ %s is fixing %s in session %s · %s (%s)", d.Agent, pr.Key, name, tilde(cwd), v.HeadRefName), nil
+}
+
+// fixPrompt is what the agent fixing a PR starts with. discussion is the PR's reviews and comments
+// as markdown; ticket is the ticket named by ticketKey, empty when it couldn't be read.
+func fixPrompt(d PrDispatch, v PrView, discussion, ticketKey, ticket, cwd string, reused bool) string {
+	pr := d.Pr
+	head, base := v.HeadRefName, v.BaseRefName
+	where := "a git worktree created for this fix"
+	if reused {
+		where = "a worktree that already had it checked out, so it may hold work of its own: check `git status`, and `git log` against `origin/" + head + "`, before you start"
+	}
+	lines := []string{
+		fmt.Sprintf("# Fix %s#%d: %q", pr.Repo, pr.Number, v.Title),
+		"",
+		fmt.Sprintf("You are fixing a pull request by %s on its own branch.", v.Author.Login),
+		"Working directory: " + cwd,
+		fmt.Sprintf("Branch: %s, tracking origin/%s (%s).", head, head, where),
+		fmt.Sprintf("The PR's changes: `git diff origin/%s...HEAD` (`%s` → `%s`).", base, head, base),
+	}
+	if d.Context != "" {
+		lines = append(lines, "", "## What to fix", "", d.Context)
+	}
+	lines = append(lines, "", "## Pull request", "", prMarkdown(pr, v), "", discussion)
+	if ticket != "" {
+		lines = append(lines, "", "## Jira ticket", "", ticket)
+	} else if ticketKey != "" {
+		lines = append(lines, "", fmt.Sprintf("The PR mentions %s, but the ticket could not be read.", ticketKey))
+	}
+	lines = append(lines, skillsSection(d.Agent, cwd)...)
+	scope := "Address each unresolved review thread and each review comment that asks for a change."
+	if d.Context != "" {
+		scope = "Do what the What to fix section asks; the review comments are its context."
+	}
+	acceptance := ""
+	if ticket != "" {
+		acceptance = ", the ticket's acceptance criteria"
+	}
+	lines = append(lines,
+		"",
+		"## Workflow",
+		"",
+		"1. **Understand.** Read the repo's AGENTS.md / CLAUDE.md, the PR description"+acceptance+", the review comments and the code they point at. If a comment is ambiguous, ask instead of guessing, as below.",
+		"2. **Fix.** "+scope+" Keep to the PR's scope. A comment you think is wrong or already handled: leave the code as it is and say why in the report, so I can answer the reviewer.",
+		"3. **Verify.** Build, and run the tests and linters that cover what you touched.",
+		"4. **Show it working.** Capture evidence that the fix does what the comments ask, as described below.",
+		"5. **Commit** on this branch, on top of the PR's commits, leaving them as they are.",
+		"6. **Report**: for each comment, what you changed or why you didn't, then how you verified it. Write it as described below and end your final message with it.",
+		"",
+		"Leave pushing and answering the reviewers to me: do not push, reply to or resolve comments, or change the PR or the Jira ticket.",
+	)
+	lines = append(lines, askSection()...)
+	lines = append(lines, reportSection(fixKey(pr.Key), true)...)
+	return strings.Join(lines, "\n")
 }
 
 // promptFile is where a dispatch leaves the agent's prompt, beside its report: a new dispatch and

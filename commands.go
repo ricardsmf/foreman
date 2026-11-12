@@ -28,12 +28,13 @@ const commandsUsage = `usage: foreman agents [--json] [--prs]   every dispatched
        foreman wait [--timeout D] KEY     block until the agent stops working
        foreman cleanup [--dry-run] [KEY…] remove finished worktrees, as ^x on the board
 
-KEY is a dispatch's key (FLD-1700, reports-app#1185, task:foreman-3) or a watcher's name, in any case.`
+KEY is a dispatch's key (FLD-1700, reports-app#1185, fix:reports-app#1185, task:foreman-3) or a
+watcher's name, in any case.`
 
 // An agentInfo is a queue item as the agents command reports it.
 type agentInfo struct {
 	Key   string `json:"key"`
-	Kind  string `json:"kind"`  // ticket, review, task, watcher, pr
+	Kind  string `json:"kind"`  // ticket, review, fix, task, watcher, pr
 	Group string `json:"group"` // needs you, review, working, idle, closed
 	// State is what the agent reports to Rex (working, blocked, error, done, idle, open), or
 	// closed when its session is.
@@ -62,6 +63,8 @@ func kindName(it queueItem) string {
 		return "orchestrator"
 	case it.review():
 		return "review"
+	case isFix(it.Key):
+		return "fix"
 	case isTask(it.Key):
 		return "task"
 	}

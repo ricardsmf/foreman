@@ -41,6 +41,7 @@ type PrView struct {
 	HeadRefName       string `json:"headRefName"`
 	BaseRefName       string `json:"baseRefName"`
 	HeadRefOid        string `json:"headRefOid"`
+	IsCrossRepository bool   `json:"isCrossRepository"` // from a fork
 	Additions         int    `json:"additions"`
 	Deletions         int    `json:"deletions"`
 	ChangedFiles      int    `json:"changedFiles"`
@@ -331,7 +332,7 @@ func openPrs() (prs []Pr, truncated bool, err error) {
 }
 
 func viewPr(pr Pr) (PrView, error) {
-	const fields = "title,body,url,author,headRefName,baseRefName,headRefOid,additions,deletions,changedFiles,isDraft,reviewDecision,mergeable,statusCheckRollup,files"
+	const fields = "title,body,url,author,headRefName,baseRefName,headRefOid,isCrossRepository,additions,deletions,changedFiles,isDraft,reviewDecision,mergeable,statusCheckRollup,files"
 	var v PrView
 	out, err := sh("", "gh", "pr", "view", strconv.Itoa(pr.Number), "-R", pr.Repo, "--json", fields)
 	if err != nil {
@@ -403,4 +404,166 @@ func jiraKey(pr Pr, v *PrView) string {
 		branch = v.HeadRefName
 	}
 	return jiraKeyRe.FindString(strings.ToUpper(pr.Summary + " " + branch))
+}
+
+// A PR's conversation, reviews and inline review threads: what a fix works from. One page of each;
+// the markdown says when there is more.
+const discussionQuery = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviews(first: 100) { totalCount nodes { author { login } state body submittedAt } }
+      comments(first: 100) { totalCount nodes { author { login } body createdAt } }
+      reviewThreads(first: 100) { totalCount nodes {
+        isResolved isOutdated path line originalLine
+        comments(first: 50) { totalCount nodes { author { login } body createdAt } }
+      } }
+    }
+  }
+}`
+
+type ghComment struct {
+	Author *struct {
+		Login string `json:"login"`
+	} `json:"author"`
+	State       string `json:"state"` // a review's
+	Body        string `json:"body"`
+	CreatedAt   string `json:"createdAt"`
+	SubmittedAt string `json:"submittedAt"`
+}
+
+func (c ghComment) login() string {
+	if c.Author == nil {
+		return "ghost"
+	}
+	return c.Author.Login
+}
+
+type ghThread struct {
+	IsResolved   bool   `json:"isResolved"`
+	IsOutdated   bool   `json:"isOutdated"`
+	Path         string `json:"path"`
+	Line         int    `json:"line"`
+	OriginalLine int    `json:"originalLine"`
+	Comments     struct {
+		TotalCount int         `json:"totalCount"`
+		Nodes      []ghComment `json:"nodes"`
+	} `json:"comments"`
+}
+
+type PrDiscussion struct {
+	Reviews struct {
+		TotalCount int         `json:"totalCount"`
+		Nodes      []ghComment `json:"nodes"`
+	} `json:"reviews"`
+	Comments struct {
+		TotalCount int         `json:"totalCount"`
+		Nodes      []ghComment `json:"nodes"`
+	} `json:"comments"`
+	ReviewThreads struct {
+		TotalCount int        `json:"totalCount"`
+		Nodes      []ghThread `json:"nodes"`
+	} `json:"reviewThreads"`
+}
+
+func prDiscussion(pr Pr) (PrDiscussion, error) {
+	owner, name, _ := strings.Cut(pr.Repo, "/")
+	out, err := sh("", "gh", "api", "graphql", "-f", "query="+discussionQuery,
+		"-f", "owner="+owner, "-f", "name="+name, "-F", "number="+strconv.Itoa(pr.Number))
+	if err != nil {
+		return PrDiscussion{}, err
+	}
+	var res struct {
+		Data struct {
+			Repository struct {
+				PullRequest *PrDiscussion `json:"pullRequest"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		return PrDiscussion{}, err
+	}
+	if res.Data.Repository.PullRequest == nil {
+		return PrDiscussion{}, fmt.Errorf("GitHub has no PR %s#%d", pr.Repo, pr.Number)
+	}
+	return *res.Data.Repository.PullRequest, nil
+}
+
+// discussionMarkdown lists the reviews with something to say, the unresolved review threads and the
+// conversation, each comment quoted under its author so its own headings can't break the prompt's.
+func discussionMarkdown(d PrDiscussion) string {
+	quote := func(c ghComment, when string) []string {
+		lines := []string{fmt.Sprintf("**%s** (%s):", c.login(), cmp.Or(when, "?")), ""}
+		for _, l := range strings.Split(strings.TrimSpace(strings.ReplaceAll(c.Body, "\r", "")), "\n") {
+			lines = append(lines, strings.TrimRight("> "+l, " "))
+		}
+		return append(lines, "")
+	}
+	more := func(shown, total int, what string) []string {
+		if total > shown {
+			return []string{fmt.Sprintf("_%d more %s not shown; read them with `gh`._", total-shown, what), ""}
+		}
+		return nil
+	}
+
+	out := []string{"## Reviews", ""}
+	n := 0
+	for _, r := range d.Reviews.Nodes {
+		// An empty COMMENTED review only carries inline comments, which the threads show.
+		if r.State == "PENDING" || (strings.TrimSpace(r.Body) == "" && r.State != "CHANGES_REQUESTED") {
+			continue
+		}
+		n++
+		state := strings.ReplaceAll(strings.ToLower(r.State), "_", " ")
+		if strings.TrimSpace(r.Body) == "" {
+			out = append(out, fmt.Sprintf("**%s** (%s): %s, no comment.", r.login(), cmp.Or(r.SubmittedAt, "?"), state), "")
+			continue
+		}
+		lines := quote(r, r.SubmittedAt)
+		lines[0] = strings.TrimSuffix(lines[0], ":") + ", " + state + ":"
+		out = append(out, lines...)
+	}
+	if n == 0 {
+		out = append(out, "_None with a comment._", "")
+	}
+	out = append(out, more(len(d.Reviews.Nodes), d.Reviews.TotalCount, "reviews")...)
+
+	resolved := 0
+	var threads []string
+	for _, t := range d.ReviewThreads.Nodes {
+		if t.IsResolved {
+			resolved++
+			continue
+		}
+		where := "`" + t.Path + "`"
+		if line := cmp.Or(t.Line, t.OriginalLine); line != 0 {
+			where = fmt.Sprintf("`%s:%d`", t.Path, line)
+		}
+		if t.IsOutdated {
+			where += " (outdated: the code moved since)"
+		}
+		threads = append(threads, "### "+where, "")
+		for _, c := range t.Comments.Nodes {
+			threads = append(threads, quote(c, c.CreatedAt)...)
+		}
+		threads = append(threads, more(len(t.Comments.Nodes), t.Comments.TotalCount, "replies")...)
+	}
+	out = append(out, "## Unresolved review threads", "")
+	if len(threads) == 0 {
+		out = append(out, "_None._", "")
+	}
+	out = append(out, threads...)
+	if resolved > 0 {
+		out = append(out, fmt.Sprintf("_%d resolved threads left out._", resolved), "")
+	}
+	out = append(out, more(len(d.ReviewThreads.Nodes), d.ReviewThreads.TotalCount, "threads")...)
+
+	out = append(out, "## Conversation", "")
+	if len(d.Comments.Nodes) == 0 {
+		out = append(out, "_No comments._", "")
+	}
+	for _, c := range d.Comments.Nodes {
+		out = append(out, quote(c, c.CreatedAt)...)
+	}
+	out = append(out, more(len(d.Comments.Nodes), d.Comments.TotalCount, "comments")...)
+	return strings.TrimRight(strings.Join(out, "\n"), "\n")
 }

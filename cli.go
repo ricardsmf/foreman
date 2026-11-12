@@ -26,15 +26,17 @@ optional extra context. "-" reads TEXT from stdin. Options go before TEXT.
                   (a ticket defaults to its project's last repo)
   --ticket KEY    work on a Jira ticket
   --pr REPO#N     review a pull request, e.g. reports-app#1185
+  --fix           with --pr: fix the PR on its own branch (its review comments, or TEXT) instead
+                  of reviewing it, in the worktree that has the branch, else <repo>-fix-<n>
   --agent NAME    pi, claude or yolo (default: the repo's last, else Claude where it ships skills)
   --no-worktree   work in the checkout itself, which must be on a work branch
   --poteto        follow pstack's poteto-mode skill
-  --title TITLE   the task's title (default: TEXT's first line)
+  --title TITLE   the task's title (default: TEXT's first line), or a fix's (default: the PR's)
   --again         start even though the ticket's or PR's agent session is still open`
 
 type dispatchArgs struct {
 	repo, ticket, pr, agent, title, text string
-	noWorktree, poteto, again            bool
+	noWorktree, poteto, again, fix       bool
 }
 
 func parseDispatchArgs(argv []string, stdin io.Reader) (dispatchArgs, error) {
@@ -49,6 +51,7 @@ func parseDispatchArgs(argv []string, stdin io.Reader) (dispatchArgs, error) {
 	fs.BoolVar(&a.noWorktree, "no-worktree", false, "")
 	fs.BoolVar(&a.poteto, "poteto", false, "")
 	fs.BoolVar(&a.again, "again", false, "")
+	fs.BoolVar(&a.fix, "fix", false, "")
 	if err := fs.Parse(argv); err != nil {
 		return a, err
 	}
@@ -68,7 +71,11 @@ func parseDispatchArgs(argv []string, stdin io.Reader) (dispatchArgs, error) {
 		return a, errors.New("a task needs TEXT saying what to do")
 	case a.ticket == "" && a.pr == "" && a.repo == "":
 		return a, errors.New("a task needs --repo")
-	case a.pr != "" && (a.repo != "" || a.noWorktree || a.poteto || a.title != ""):
+	case a.fix && a.pr == "":
+		return a, errors.New("--fix goes with --pr")
+	case a.fix && (a.repo != "" || a.noWorktree || a.poteto):
+		return a, errors.New("a fix takes only --agent, --title, --again and TEXT")
+	case a.pr != "" && !a.fix && (a.repo != "" || a.noWorktree || a.poteto || a.title != ""):
 		return a, errors.New("a review takes only --agent, --again and TEXT")
 	case a.ticket != "" && a.title != "":
 		return a, errors.New("--title is for a task; a ticket has its summary")
@@ -193,6 +200,9 @@ func runDispatch(argv []string) error {
 			return err
 		}
 		key, repo = pr.Key, pr.Checkout
+		if a.fix {
+			key = fixKey(pr.Key)
+		}
 	case a.ticket != "":
 		key = strings.ToUpper(a.ticket)
 		if repo == "" {
@@ -227,7 +237,7 @@ func runDispatch(argv []string) error {
 	var text string
 	switch {
 	case a.pr != "":
-		text, err = dispatchReview(ctx, jira, ReviewDispatch{pr, agent, a.text}, progress)
+		text, err = dispatchPr(ctx, jira, PrDispatch{Pr: pr, Agent: agent, Context: a.text, Fix: a.fix, Title: a.title}, progress)
 	case a.ticket != "":
 		text, err = dispatch(ctx, jira, Dispatch{Issue: issue, Agent: agent, Worktree: !a.noWorktree, Poteto: a.poteto, Repo: repo, Context: a.text}, progress)
 	default:
