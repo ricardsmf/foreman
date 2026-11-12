@@ -684,18 +684,16 @@ func (q *queueModel) hide(it queueItem) tea.Cmd {
 	return q.rebuild()
 }
 
-// openDiff shows the worktree's changes in a pager, suspending the queue: a ticket's against where
-// its branch forked plus anything uncommitted, a review's against the PR's base.
+// openDiff shows the worktree's changes in a pager, suspending the queue: the agent's since its
+// dispatch plus anything uncommitted, or a review's against the PR's base.
 func (q *queueModel) openDiff(it queueItem) tea.Cmd {
 	if !exists(it.Dir) {
 		q.say(tilde(it.Dir)+" is gone", cOverlay)
 		return nil
 	}
 	args := []string{"-C", it.Dir, "diff"}
-	if base := diffBase(it.Dir, it.review()); base != "" {
-		if mb, err := sh(it.Dir, "git", "merge-base", base, "HEAD"); err == nil {
-			args = append(args, strings.TrimSpace(mb))
-		}
+	if from := diffFrom(it.Dir, it.review(), q.state.StartedFrom[it.Key]); from != "" {
+		args = append(args, from)
 	}
 	return tea.ExecProcess(exec.Command("git", args...), func(err error) tea.Msg {
 		if err != nil {
@@ -703,6 +701,23 @@ func (q *queueModel) openDiff(it queueItem) tea.Cmd {
 		}
 		return nil
 	})
+}
+
+// diffFrom is the commit the board diffs dir's work from: started, the commit its dispatch
+// recorded, while the repo still has it; else, for a dispatch from before they were recorded or a
+// commit gone with a gc, where the branch forked from diffBase. "" diffs against the index alone.
+func diffFrom(dir string, review bool, started string) string {
+	if started != "" {
+		if _, err := sh(dir, "git", "cat-file", "-e", started+"^{commit}"); err == nil {
+			return started
+		}
+	}
+	if base := diffBase(dir, review); base != "" {
+		if mb, err := sh(dir, "git", "merge-base", base, "HEAD"); err == nil {
+			return strings.TrimSpace(mb)
+		}
+	}
+	return ""
 }
 
 // diffBase is the branch the work started from: a ticket branch's upstream when it tracks one,
