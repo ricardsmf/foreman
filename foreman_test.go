@@ -355,7 +355,7 @@ func TestPrepareWorktreeKeepsLocalCommits(t *testing.T) {
 	unpushed := git(t, repo, "rev-parse", "li/FLD-7-thing")
 
 	cwd := repo + "-fld-7"
-	branch, err := prepareWorktree(repo, cwd, Issue{Key: "FLD-7", Summary: "Thing"}, func(string) {})
+	_, branch, err := prepareWorktree(repo, cwd, Issue{Key: "FLD-7", Summary: "Thing"}, func(string) {})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,7 +375,7 @@ func TestPrepareWorktreeNewBranch(t *testing.T) {
 	git(t, root, "clone", "-q", origin, repo)
 
 	cwd := repo + "-fld-8"
-	branch, err := prepareWorktree(repo, cwd, Issue{Key: "FLD-8", Summary: "New thing"}, func(string) {})
+	_, branch, err := prepareWorktree(repo, cwd, Issue{Key: "FLD-8", Summary: "New thing"}, func(string) {})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -384,6 +384,38 @@ func TestPrepareWorktreeNewBranch(t *testing.T) {
 	}
 	if got, want := git(t, cwd, "rev-parse", "HEAD"), git(t, repo, "rev-parse", "origin/main"); got != want {
 		t.Errorf("new branch starts at %s, want origin/main %s", got, want)
+	}
+}
+
+// A ticket branch checked out in a worktree made by hand is worked on there; git won't check it out twice.
+func TestPrepareWorktreeReusesTheBranchsWorktree(t *testing.T) {
+	root := t.TempDir()
+	origin, repo := filepath.Join(root, "origin"), filepath.Join(root, "repo")
+	git(t, root, "init", "-q", "-b", "develop", origin)
+	git(t, origin, "commit", "-q", "--allow-empty", "-m", "base")
+	git(t, origin, "branch", "rf/fld-9-accents")
+	git(t, root, "clone", "-q", origin, repo)
+	byHand := filepath.Join(root, "repo-accents")
+	git(t, repo, "worktree", "add", "-q", "--track", "-b", "rf/fld-9-accents", byHand, "origin/rf/fld-9-accents")
+
+	dir, branch, err := prepareWorktree(repo, repo+"-fld-9", Issue{Key: "FLD-9", Summary: "Accents"}, func(string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// macOS temp dirs sit behind a symlink; git reports the resolved path.
+	want, _ := filepath.EvalSymlinks(byHand)
+	if got, _ := filepath.EvalSymlinks(dir); got != want || branch != "rf/fld-9-accents" {
+		t.Errorf("got %s on %s, want %s on rf/fld-9-accents", dir, branch, byHand)
+	}
+	if exists(repo + "-fld-9") {
+		t.Error("created a second worktree")
+	}
+}
+
+func TestErrorLinesPutsTheFailureFirst(t *testing.T) {
+	got := errorLines("Preparing worktree (checking out 'b')\nfatal: 'b' is already used by worktree at '/w'")
+	if firstLine(got) != "fatal: 'b' is already used by worktree at '/w'" {
+		t.Errorf("first line = %q", firstLine(got))
 	}
 }
 

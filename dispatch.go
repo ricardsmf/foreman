@@ -103,11 +103,25 @@ func shFor(timeout time.Duration, cwd, name string, args ...string) (string, err
 	}
 	if err != nil {
 		if msg := strings.TrimSpace(stderr.String()); msg != "" {
-			return string(out), errors.New(msg)
+			return string(out), errors.New(errorLines(msg))
 		}
 		return string(out), fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
 	}
 	return string(out), nil
+}
+
+// errorLines puts a command's fatal and error lines first: git prints progress before them
+// ("Preparing worktree…"), and the status line shows only the first line.
+func errorLines(stderr string) string {
+	var errs, rest []string
+	for _, l := range strings.Split(stderr, "\n") {
+		if strings.HasPrefix(l, "fatal: ") || strings.HasPrefix(l, "error: ") {
+			errs = append(errs, l)
+		} else {
+			rest = append(rest, l)
+		}
+	}
+	return strings.Join(append(errs, rest...), "\n")
 }
 
 func short(sha string) string { return sha[:min(8, len(sha))] }
@@ -165,16 +179,18 @@ func ticketBranch(remotes []string, key string) string {
 	return ""
 }
 
-// prepareWorktree creates `<repo>-<key>` on the ticket's branch, or reuses it, and returns its branch.
-func prepareWorktree(repo, cwd string, issue Issue, progress func(string)) (string, error) {
+// prepareWorktree creates `<repo>-<key>` on the ticket's branch, or reuses it, and returns its
+// directory and branch. A ticket branch already checked out elsewhere, in a worktree made by hand,
+// is worked on there: git won't check a branch out twice.
+func prepareWorktree(repo, cwd string, issue Issue, progress func(string)) (dir, branch string, err error) {
 	git := func(args ...string) (string, error) { return sh("", "git", append([]string{"-C", repo}, args...)...) }
 	if exists(cwd) {
 		out, err := sh("", "git", "-C", cwd, "branch", "--show-current")
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		progress("Reusing worktree " + tilde(cwd))
-		return strings.TrimSpace(out), nil
+		return cwd, strings.TrimSpace(out), nil
 	}
 
 	progress("Fetching origin…")
@@ -184,39 +200,60 @@ func prepareWorktree(repo, cwd string, issue Issue, progress func(string)) (stri
 	}
 	out, err := git("for-each-ref", "--sort=-committerdate", "--format=%(refname:short)", "refs/remotes/origin")
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	remotes := strings.Fields(out)
 	originHead, _ := git("symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
 
 	if existing := ticketBranch(remotes, issue.Key); existing != "" {
 		branch := strings.TrimPrefix(existing, "origin/")
+		list, err := git("worktree", "list", "--porcelain")
+		if err != nil {
+			return "", "", err
+		}
+		if at := checkedOutAt(list, branch); at != "" {
+			progress(fmt.Sprintf("Reusing %s, where %s is checked out", tilde(at), branch))
+			return at, branch, nil
+		}
 		// A local branch of that name may hold unpushed commits: check it out as is rather than reset it.
 		if _, err := git("rev-parse", "--verify", "--quiet", "refs/heads/"+branch); err == nil {
 			if _, err := git("worktree", "add", cwd, branch); err != nil {
-				return "", err
+				return "", "", err
 			}
 			progress(fmt.Sprintf("Created worktree %s on the local %s", tilde(cwd), branch))
-			return branch, nil
+			return cwd, branch, nil
 		}
 		if _, err := git("worktree", "add", "--track", "-b", branch, cwd, existing); err != nil {
-			return "", err
+			return "", "", err
 		}
 		progress(fmt.Sprintf("Created worktree %s on %s", tilde(cwd), branch))
-		return branch, nil
+		return cwd, branch, nil
 	}
 
 	base := baseBranch(remotes, strings.TrimSpace(originHead))
-	branch := branchPrefix + strings.ToLower(issue.Key) + "-" + slug(issue.Summary)
+	branch = branchPrefix + strings.ToLower(issue.Key) + "-" + slug(issue.Summary)
 	args := []string{"worktree", "add", "--no-track", "-b", branch, cwd}
 	if base != "" {
 		args = append(args, base)
 	}
 	if _, err := git(args...); err != nil {
-		return "", err
+		return "", "", err
 	}
 	progress(fmt.Sprintf("Created worktree %s on %s from %s", tilde(cwd), branch, cmp.Or(base, "HEAD")))
-	return branch, nil
+	return cwd, branch, nil
+}
+
+// checkedOutAt is the worktree that has branch checked out, from `git worktree list --porcelain`.
+func checkedOutAt(list, branch string) string {
+	dir := ""
+	for _, line := range strings.Split(list, "\n") {
+		if p, ok := strings.CutPrefix(line, "worktree "); ok {
+			dir = p
+		} else if line == "branch refs/heads/"+branch {
+			return dir
+		}
+	}
+	return ""
 }
 
 func firstLine(s string) string { return strings.SplitN(s, "\n", 2)[0] }
@@ -236,12 +273,11 @@ func dispatch(ctx context.Context, jira *Jira, d Dispatch, progress func(string)
 	cwd := repo
 	var branch string
 	if d.Worktree {
-		cwd = repo + "-" + keyLower
-		b, err := prepareWorktree(repo, cwd, issue, progress)
+		dir, b, err := prepareWorktree(repo, repo+"-"+keyLower, issue, progress)
 		if err != nil {
 			return "", err
 		}
-		branch = b
+		cwd, branch = dir, b
 	} else {
 		out, err := sh("", "git", "-C", repo, "branch", "--show-current")
 		if err != nil {
