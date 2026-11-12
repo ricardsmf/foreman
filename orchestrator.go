@@ -5,7 +5,6 @@ package main
 // board goes there, starting it when it isn't running.
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -59,8 +58,9 @@ foreman lets you answer or message each dispatch `+fmt.Sprint(maxOrchestratorAns
 Pushing, opening PRs, and writing to GitHub or Jira stay with me, for you as for the agents. §foreman cleanup§ runs with §--dry-run§ unless I ask for the removal.
 `, "§", "`")
 
-// orchestratorTools run without a permission prompt: they read, or settle a question an agent
-// waits on in foreman ask, which never types into a pane.
+// orchestratorTools run without a permission prompt: they read, settle a question an agent waits
+// on in foreman ask, message an agent (foreman refuses to type into a blocked one), or clean up,
+// which never forces. dispatch stays off the list.
 var orchestratorTools = []string{
 	"Bash(foreman --help)",
 	"Bash(foreman agents:*)",
@@ -69,13 +69,6 @@ var orchestratorTools = []string{
 	"Bash(foreman wait:*)",
 	"Bash(foreman answer:*)",
 	"Bash(foreman escalate:*)",
-}
-
-// orchestratorAsks always ask, so I see every command it sends to an agent: a reply could answer
-// another agent's permission prompt. Manual mode alone isn't enough: Claude Code runs some
-// commands it judges safe unasked, foreman dispatch among them.
-var orchestratorAsks = []string{
-	"Bash(foreman dispatch:*)",
 	"Bash(foreman reply:*)",
 	"Bash(foreman cleanup:*)",
 }
@@ -84,8 +77,7 @@ var orchestratorAsks = []string{
 // resume, in the manual permission mode whatever my settings say. Its MCP servers let it read
 // Jira. --allowedTools takes a list, so it goes last.
 func orchestratorCommand(resume bool) []string {
-	asks, _ := json.Marshal(map[string]any{"permissions": map[string]any{"ask": orchestratorAsks}})
-	cmd := []string{which("claude"), "--permission-mode", "manual", "--settings", string(asks), "--mcp-config", mcpConfig}
+	cmd := []string{which("claude"), "--permission-mode", "manual", "--mcp-config", mcpConfig}
 	if resume {
 		cmd = append(cmd, "--continue")
 	}
