@@ -175,8 +175,65 @@ func mostUrgent(states []string) string {
 	return "open"
 }
 
+// rexClient is a client "rex client ls --json" lists.
+type rexClient struct {
+	ID   string `json:"client_id"`
+	Info struct {
+		Kind string `json:"kind"`
+	} `json:"info"`
+	Principal struct {
+		Transport string `json:"transport"`
+	} `json:"principal"`
+	ConnectedAt time.Time `json:"connected_at"`
+}
+
+// pickApp chooses the Rex app to switch sessions in. Rex picks one only when exactly one app is
+// connected, so with a phone connected too, prefer the app on this machine (a unix socket), then
+// the latest to connect.
+func pickApp(clients []rexClient) (string, error) {
+	var best *rexClient
+	for i := range clients {
+		c := &clients[i]
+		if c.Info.Kind != "app" {
+			continue
+		}
+		if best == nil {
+			best = c
+			continue
+		}
+		local, bestLocal := c.Principal.Transport == "unix", best.Principal.Transport == "unix"
+		if local != bestLocal {
+			if local {
+				best = c
+			}
+			continue
+		}
+		if c.ConnectedAt.After(best.ConnectedAt) {
+			best = c
+		}
+	}
+	if best == nil {
+		return "", fmt.Errorf("no Rex app is connected")
+	}
+	return best.ID, nil
+}
+
 // switchTo shows the session, given by ID or label, in the Rex app, as cmd+s would.
 func switchTo(label string) error {
+	out, err := sh("", "rex", "client", "ls", "--json")
+	if err != nil {
+		return err
+	}
+	var data struct {
+		Clients []rexClient `json:"clients"`
+	}
+	if err := json.Unmarshal([]byte(out), &data); err != nil {
+		return err
+	}
+	client, err := pickApp(data.Clients)
+	if err != nil {
+		return err
+	}
 	script := fmt.Sprintf(`
 for _, s in ipairs(rex.call("session.list").sessions or {}) do
   if s.session_id == %[1]s or s.label == %[1]s then
@@ -186,7 +243,7 @@ for _, s in ipairs(rex.call("session.list").sessions or {}) do
 end
 error("no session " .. %[1]s, 0)
 `, strconv.Quote(label))
-	_, err := sh("", "rex", "do", "-e", script)
+	_, err = sh("", "rex", "-C", client, "do", "-e", script)
 	return err
 }
 

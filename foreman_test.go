@@ -2708,3 +2708,31 @@ func TestHelpScrolls(t *testing.T) {
 		t.Errorf("a short pane: %d lines, rule %q", len(lines), lines[1])
 	}
 }
+
+func TestPickApp(t *testing.T) {
+	parse := func(s string) []rexClient {
+		var data struct {
+			Clients []rexClient `json:"clients"`
+		}
+		if err := json.Unmarshal([]byte(s), &data); err != nil {
+			t.Fatal(err)
+		}
+		return data.Clients
+	}
+	clients := parse(`{"clients": [
+		{"client_id": "cli", "info": {"kind": "cli"}, "principal": {"transport": "unix"}, "connected_at": "2026-11-12T18:10:00Z"},
+		{"client_id": "mac-old", "info": {"kind": "app"}, "principal": {"transport": "unix"}, "connected_at": "2026-11-12T17:00:00Z"},
+		{"client_id": "mac", "info": {"kind": "app"}, "principal": {"transport": "unix"}, "connected_at": "2026-11-12T18:00:00Z"},
+		{"client_id": "phone", "info": {"kind": "app"}, "principal": {"transport": "tcp"}, "connected_at": "2026-11-12T18:05:00Z"},
+		{"client_id": "pending", "principal": {"transport": "unix"}, "connected_at": "2026-11-12T18:06:00Z"}
+	]}`)
+	if got, err := pickApp(clients); err != nil || got != "mac" {
+		t.Errorf("pickApp = %q, %v; want mac", got, err)
+	}
+	if got, err := pickApp(clients[3:]); err != nil || got != "phone" {
+		t.Errorf("pickApp(phone only) = %q, %v; want phone", got, err)
+	}
+	if _, err := pickApp(clients[:1]); err == nil {
+		t.Error("pickApp with no app: want an error")
+	}
+}
