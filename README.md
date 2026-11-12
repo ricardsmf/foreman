@@ -331,8 +331,8 @@ prompt](#answering-a-prompt)), `v` open the screenshots and videos, `d` the work
 pager, `o` the ticket or PR in the browser, `x` mark reviewed (the agent moves to idle or closed
 until it writes a new report; a PR goes until its status changes), `K` twice close the agent's Rex
 session, or on a closed one drop it from the queue (its worktree and report stay), `c` list or fold
-the closed agents, `^u`/`^d` scroll, `^r` reload, `?` every key, `q` quit foreman, the board too (`cmd+alt+j` brings the
-pane back).
+the closed agents, `^u`/`^d` scroll, `^r` reload, `?` every key, `q` close the queue, leaving the board alone at full width (`^z` there brings the
+queue back beside it; `^c` quits foreman).
 
 ### Answering a prompt
 

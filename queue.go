@@ -252,6 +252,8 @@ type (
 		text  string
 		color Color
 	}
+	// closeQueueMsg asks the app to put the queue away and show the board alone.
+	closeQueueMsg struct{}
 	// openFormMsg asks the board to open its dispatch form on a ticket.
 	openFormMsg    struct{ key string }
 	queueDetailMsg struct {
@@ -585,9 +587,11 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 		return q.loadDetail()
 	}
 	switch msg.String() {
-	// No esc: it is easy to press, and quitting takes the board with it.
-	case "ctrl+c", "q":
+	case "ctrl+c":
 		return tea.Quit
+	// q closes the queue, not foreman: the board stays. No esc: it is easy to press.
+	case "q":
+		return func() tea.Msg { return closeQueueMsg{} }
 	case "up", "k", "ctrl+p":
 		return move(q.cursor - 1)
 	case "down", "j", "ctrl+n":

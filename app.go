@@ -98,6 +98,9 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.to(a.focus, msg)
 	case tea.PasteMsg:
 		return a, a.to(a.focus, msg)
+	case closeQueueMsg:
+		a.focus, a.zoomed = boardSide, true
+		return a, a.resize()
 	case openFormMsg:
 		a.focus = boardSide
 		return a, tea.Batch(a.resize(), a.board.requestForm(msg.key))

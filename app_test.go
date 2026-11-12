@@ -146,6 +146,34 @@ func TestAppOpensTheFormFromTheQueue(t *testing.T) {
 	}
 }
 
+// q on the queue puts the queue away; the board stays, alone, and nothing quits.
+func TestAppQClosesTheQueueOnly(t *testing.T) {
+	a := testApp(t, false)
+	a.Update(keyOf('l', tea.ModCtrl, ""))
+	_, cmd := a.Update(keyOf('q', 0, "q"))
+	if cmd == nil {
+		t.Fatal("q on the queue: want a request to close it")
+	}
+	msg := cmd()
+	if _, quit := msg.(tea.QuitMsg); quit {
+		t.Fatal("q on the queue quit foreman")
+	}
+	a.Update(msg)
+	if a.focus != boardSide || !a.alone() || a.board.width != 161 || strings.Contains(ansi.Strip(a.content()), "│ queue") {
+		t.Errorf("after q: focus %d, alone %t, board %d wide; want the board alone", a.focus, a.alone(), a.board.width)
+	}
+	// ^z brings the queue back beside the board.
+	a.Update(keyOf('z', tea.ModCtrl, ""))
+	if a.alone() || !strings.Contains(ansi.Strip(a.content()), "│ queue") {
+		t.Error("^z after q: want the queue beside the board again")
+	}
+	// On the board, q is a letter of the filter.
+	a.Update(keyOf('q', 0, "q"))
+	if a.board.query != "q" {
+		t.Errorf("q on the board: query %q", a.board.query)
+	}
+}
+
 func TestDim(t *testing.T) {
 	if got, want := dim("a"+bold("b")+"c"), "\x1b[2ma\x1b[1mb\x1b[22;2mc\x1b[22m"; got != want {
 		t.Errorf("dim = %q; want %q", got, want)

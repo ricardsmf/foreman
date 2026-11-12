@@ -305,7 +305,7 @@ var queueHelp = []helpKey{
 	{"^u  ^d  space", "scroll the report or screen"},
 	{"c", "show or fold the closed agents"},
 	{"^r", "reload"},
-	{"q", "quit foreman, the board too (cmd+alt+j brings it back)"},
+	{"q", "close the queue: the board alone (^z brings it back beside it)"},
 	{"^l", "the board"},
 	{"^z", "the queue alone, or beside the board"},
 	{"", "The row"},
