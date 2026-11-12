@@ -31,6 +31,9 @@ type State struct {
 	Hidden map[string]bool `json:"hidden,omitempty"`
 	// WatcherSessions maps each watcher's name to its Rex session ID: it may rename the session.
 	WatcherSessions map[string]string `json:"watcherSessions,omitempty"`
+	// WatcherPrs maps each polled watcher's name to its PRs' signatures at its last wake, by
+	// `owner/name#n`: the board wakes it again only when one differs.
+	WatcherPrs map[string]map[string]string `json:"watcherPrs,omitempty"`
 	// Orchestrator is the orchestrator's Rex session ID: it may rename the session.
 	Orchestrator string `json:"orchestrator,omitempty"`
 	// Questions holds the question each agent waits on in foreman ask, by its key.
@@ -113,6 +116,9 @@ func readState() State {
 	}
 	if s.WatcherSessions == nil {
 		s.WatcherSessions = map[string]string{}
+	}
+	if s.WatcherPrs == nil {
+		s.WatcherPrs = map[string]map[string]string{}
 	}
 	if s.Questions == nil {
 		s.Questions = map[string]Question{}

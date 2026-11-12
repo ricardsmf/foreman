@@ -55,6 +55,8 @@ type queueItem struct {
 	Pr      *Pr
 	// Watcher marks a watcher's session rather than a dispatched agent's.
 	Watcher bool
+	// Polled marks a watcher the board wakes when its PRs change, rather than one that loops.
+	Polled bool
 	// Orchestrator marks the orchestrator's session.
 	Orchestrator bool
 	// Question is the one the agent waits on in foreman ask.
@@ -855,6 +857,9 @@ func itemLabel(it queueItem) (string, string) {
 	}
 	if it.Watcher {
 		what = "between passes"
+		if it.Polled {
+			what = "waits for a PR to change"
+		}
 		if it.Agent == "" {
 			what = "not running, enter starts it"
 		}

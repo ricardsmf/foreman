@@ -275,22 +275,55 @@ attach or link them. A new dispatch empties the directory, and cleaning up a wor
 
 ## Watchers
 
-A watcher is a Claude Code session that keeps running one of a repo's skills. Mine is
-`fld-pr-watch`: `/loop 10m /fld-watch` in `~/work/code/reports-app-watch`, which reviews the PRs
-that request my review and posts the result under my account.
+A watcher is a Claude Code session that runs one of a repo's skills when there is something for it
+to do. Mine is `fld-pr-watch`: `/fld-watch` in `~/work/code/reports-app-watch`, which reviews the
+PRs that request my review and posts the result under my account.
 
 - The board starts each watcher that has no open Rex session, in the background, and records
   each watcher's session ID. A watcher's session is the recorded one, else one named after it, else
   one running Claude Code in its checkout: Claude renames its session when Rex's startup hook says
   so, and a watcher started twice would review every PR twice.
 - It runs `claude --permission-mode manual <prompt>`: only the commands its checkout's
-  `.claude/settings.local.json` allows run unasked. The skill's own file lists them.
+  `.claude/settings.local.json` allows run unasked. The skill's own file lists them. Starting it
+  runs one pass.
 - The queue always lists it: with **needs you** when it waits on a permission prompt or failed (a
-  pass stalls until you answer), else **working**, **idle** between passes, or **closed** when it
-  isn't running, where `enter` starts it. `K` twice stops it.
+  pass stalls until you answer), else **working**, **idle** while it waits for a PR to change (or
+  between passes, for one that loops), or **closed** when it isn't running, where `enter` starts
+  it. `K` twice stops it.
 - Its checkout is a worktree nobody works in, detached at `origin/develop`. The skills run from
   it, so move it forward when they change: `git -C <dir> fetch origin develop && git -C <dir>
   checkout --detach origin/develop`.
+
+### Waking a watcher
+
+A watcher with `prs` (GitHub searches) costs no model turn while nothing happens: the board polls
+its PRs and types its prompt into its pane, once, only when one of them changed.
+
+- The board polls when it starts and then every 2 minutes, with one `gh api graphql` request per
+  search, scoped to the repo the checkout's `origin` points at. `fld-pr-watch`'s are the two
+  `/fld-watch` runs: `user-review-requested:@me is:open draft:false base:develop` and
+  `reviewed-by:@me is:open draft:false base:develop`.
+- Each PR's signature is its head commit, the names of its failing checks (a check queuing,
+  running or passing doesn't wake it; a new failure does), whether it has a merge conflict, and
+  the newest comment or review by someone other than you. A PR whose signature differs from the
+  one recorded at the watcher's last wake, or that is new to the searches, wakes it; a PR leaving
+  them doesn't. The signatures are in `state.json` under `watcherPrs`, and the status line says
+  which PRs woke it.
+- A watcher that is working or waits on a permission prompt isn't typed into: the next poll tries
+  again, and still sees the change, since signatures are only recorded on a wake. Nor is one whose
+  program reports no state (still starting, or no longer Claude Code). A closed watcher stays
+  closed: the poll doesn't restart one you stopped.
+- Starting a watcher records its PRs' signatures first, so the pass its prompt runs isn't followed
+  by a wake for the same PRs.
+- The poll runs in the board, so it stops when the board quits. The watcher then sits idle after its
+  last pass: nothing is reviewed until the board runs again, and nothing is lost, since the board's
+  first poll compares against the last wake, not the last poll. A watcher started from the queue
+  while the board is closed runs its one pass and waits the same way.
+- Two boards open at once wake a watcher once per change: each wake is recorded under the state
+  lock before the prompt is typed. A wake that fails puts the old signatures back for the next poll.
+- A watcher without `prs` gets its prompt only at start, so it must keep itself going with
+  `/loop 10m …`, as watchers did before the poll. A watcher with `prs` can't have a `/loop` prompt:
+  each wake would start another schedule.
 
 ## Cleaning up
 
@@ -317,16 +350,22 @@ reports, evidence and the agent's Rex session go.
   "cloudId": "1eb9eb54-74a9-4d94-8eb1-a1a7696be552",
   "defaultProject": "FLD",
   "branchPrefix": "rf/",
-  "watchers": [{ "name": "fld-pr-watch", "dir": "~/work/code/reports-app-watch", "prompt": "/loop 10m /fld-watch" }]
+  "watchers": [{
+    "name": "fld-pr-watch",
+    "dir": "~/work/code/reports-app-watch",
+    "prompt": "/fld-watch",
+    "prs": ["user-review-requested:@me is:open draft:false base:develop", "reviewed-by:@me is:open draft:false base:develop"]
+  }]
 }
 ```
 
-`"watchers": []` turns them off.
+`"watchers": []` turns them off. A watcher's `prs` is optional; see [Waking a
+watcher](#waking-a-watcher).
 
 ## State
 
 - State (repo per project, last agent per repo, dispatched tickets, PRs and tasks with their sessions and titles, the last task number per repo, queue items
-  marked reviewed) is in
+  marked reviewed, each watcher's PR signatures at its last wake) is in
   `~/.local/state/foreman/state.json`, written atomically. The board and the queue both write it,
   so each write holds `state.json.lock`, and the board re-reads it every few seconds. An unreadable
   file is moved to `state.json.corrupt` rather than overwritten.
