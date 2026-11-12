@@ -10,12 +10,15 @@ foreman                     # FLD open tickets
 foreman OO                  # another project
 foreman 'assignee = currentUser() AND statusCategory != Done'
 foreman --logout            # forget the Atlassian sign-in
+foreman open                # go to the foreman Rex session, starting it when it isn't running
 foreman dispatch --repo foreman 'Add a --verbose flag'   # a task, no ticket
 ```
 
-In Rex, `cmd+alt+j` (the `foreman` action in `~/.config/rex/init.lua`) goes to the `foreman`
-session, starting it if it isn't running: the board on the left, the [queue](#queue)
-(`foreman queue`) on the right. A running session without the queue pane gets one.
+`foreman open` goes to the `foreman` Rex session, starting it if it isn't running: the board on
+the left (a pane labelled `board`), the [queue](#queue) (`foreman queue`, labelled `queue`) on the
+right. A running session that has one of the two panes gets the other. In Rex, `cmd+alt+j` (the
+`foreman` action in `~/.config/rex/init.lua`) runs `foreman open --print`, which prints the
+session's ID instead of showing it, and selects that session in the app the key was pressed in.
 
 ## Jira access
 
@@ -163,7 +166,9 @@ foreman escalate KEY NOTE|-         hand KEY's question to me in the queue, with
 
 - `agents --json` gives each one's `key`, `kind` (ticket, review, fix, task, watcher, pr), `group`,
   `state` as the agent reports it to Rex (working, blocked, error, done, idle, open) or `closed`,
-  `title`, `agent`, `session`, `dir`, `report` and `reportAt`, evidence counts, and `seen`, the
+  `title`, `agent`, `session`, `pane` (the agent's pane in it), `waitsFor` (what a `blocked` agent
+  says it waits for: `permission`, `question` or `auth`, when it says), `dir`, `report` and
+  `reportAt`, evidence counts, and `seen`, the
   seen token of an agent whose session is open.
 - `reply` refuses a closed session, and a working agent unless `--now`: pi and Claude Code each
   handle text typed mid-turn their own way. To an agent waiting in `foreman ask`, it is the answer.
@@ -288,25 +293,32 @@ grouped most urgent first:
    Dispatches from before the agent was recorded take the agent with the newest conversation there.
 
 An agent is found by the session ID recorded at dispatch, else by a session whose label still starts
-with its key (`fld-1704`, `review-reports-app-1185`), whose ID is then recorded. It reads the board's
-state file every few seconds and your PRs every five minutes. The Rex sessions it lists when Rex
-says something changed: it runs a Lua listener (`rex do --all`) for programs reporting a status and
-sessions and panes opening, closing or being renamed, so a row moves as its agent stops. It lists
-them every 15 seconds besides, and every few seconds while the listener isn't running. The board
+with its key (`fld-1704`, `review-reports-app-1185`), whose ID is then recorded. Its state is its
+own pane's: the one Rex made at dispatch, recorded with the session, so a shell or a fork of its
+conversation split beside it doesn't speak for it, and replies and key presses go to that pane. A
+session with no recorded pane (an older dispatch, a watcher started by hand) gets its oldest pane
+whose program reports a status.
+
+It reads the board's state file every few seconds and your PRs every five minutes. The Rex
+sessions it follows by their events: one Lua listener (`rex do --all`) prints each status a
+program reports, with the record itself, and the queue applies it to the picture of the sessions
+it keeps, with no call to Rex, so a row moves as its agent stops. A session or a pane opening, or
+a program exiting, takes a listing; so does every 15 seconds, in case an event was missed. While
+the listener isn't running the sessions are listed every few seconds. The board
 does the same. Its pane title carries the count of items in the first two groups, `queue (3)`.
 
 It also reports that count to Rex in the Program Status Protocol (OSC 7501), so the `foreman`
 session is marked in Rex's session picker whatever session you are in: `blocked` while anything is
 under **needs you**, else `done` while anything is under **review**, else `idle`. Agents at work
 aren't reported, since their own sessions show that. Each item in those two groups is a record of
-its own under the queue's, with its key and title and what it waits for (`kind=permission` for a
-prompt, `kind=question` for a question handed to you), cleared when it leaves them. Quitting the
+its own under the queue's, with its key and title and what it waits for (the agent's own `kind` and message for one
+that is blocked, `kind=permission` when it names none; `kind=question` for a question handed to
+you), cleared when it leaves them. Quitting the
 queue clears them all.
 
 Keys: `↑↓` pick, `enter` go to the agent's session, resuming a closed one (a PR goes to the agent of
 the ticket its title or branch names; with no agent, to the board's dispatch form on that ticket;
-with no ticket, the browser), `f` type a reply that is sent to the agent's pane (the one whose
-program reports a status), `y` or `n` answer the prompt an agent waits on (see [Answering a
+with no ticket, the browser), `f` type a reply that is sent to the agent's pane, `y` or `n` answer the prompt an agent waits on (see [Answering a
 prompt](#answering-a-prompt)), `v` open the screenshots and videos, `d` the worktree's diff in git's
 pager, `o` the ticket or PR in the browser, `x` mark reviewed (the agent moves to idle or closed
 until it writes a new report; a PR goes until its status changes), `K` twice close the agent's Rex
@@ -326,6 +338,9 @@ in Claude Code's permission prompt, the highlighted "Yes" and a cancel.
   is read again.
 - They are keys in the pane, not answers: on a menu, `enter` picks whatever is highlighted. Read
   the prompt in the detail first; `enter` on the row goes to the session for anything else.
+- An agent that says it waits on a question or a sign-in (`kind=question`, `kind=auth` in its
+  status) isn't a yes or no: `y` and `n` do nothing there, and the detail says so. One that names
+  no kind is taken as a permission prompt.
 - Only these keys do it. No command presses a key in a pane, so the orchestrator can't.
 
 ### Reports and evidence
@@ -428,7 +443,7 @@ watcher](#waking-a-watcher).
 
 ## State
 
-- State (repo per project, last agent per repo, dispatched tickets, PRs and tasks with their sessions and titles, the last task number per repo, queue items
+- State (repo per project, last agent per repo, dispatched tickets, PRs and tasks with their sessions and titles, each session's agent pane, the last task number per repo, queue items
   marked reviewed, each watcher's PR signatures at its last wake) is in
   `~/.local/state/foreman/state.json`, written atomically. The board and the queue both write it,
   so each write holds `state.json.lock`, and the board re-reads it every few seconds. An unreadable
@@ -437,3 +452,6 @@ watcher](#waking-a-watcher).
 ## Development
 
 `go test ./...` covers the pure logic and the worktree branch choice against throwaway git repos.
+
+Every call to Rex goes through `rexAPI` (`rex.go`); `rexCLI` (`rex_cli.go`) is the only code that
+runs `rex`, and the tests put a fake in its place.

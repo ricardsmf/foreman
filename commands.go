@@ -53,10 +53,14 @@ type agentInfo struct {
 	Group string `json:"group"` // needs you, review, working, idle, closed
 	// State is what the agent reports to Rex (working, blocked, error, done, idle, open), or
 	// closed when its session is.
-	State       string     `json:"state"`
-	Title       string     `json:"title"`
-	Agent       string     `json:"agent,omitempty"` // pi, Claude, Claude (yolo)
-	Session     string     `json:"session,omitempty"`
+	State   string `json:"state"`
+	Title   string `json:"title"`
+	Agent   string `json:"agent,omitempty"` // pi, Claude, Claude (yolo)
+	Session string `json:"session,omitempty"`
+	// Pane is the agent's pane in its session.
+	Pane string `json:"pane,omitempty"`
+	// WaitsFor is what a blocked agent says it waits for: permission, question or auth.
+	WaitsFor    string     `json:"waitsFor,omitempty"`
 	Dir         string     `json:"dir,omitempty"`
 	Report      string     `json:"report,omitempty"`
 	ReportAt    *time.Time `json:"reportAt,omitempty"`
@@ -91,11 +95,11 @@ func kindName(it queueItem) string {
 func agentInfoOf(it queueItem, s State) agentInfo {
 	a := agentInfo{
 		Key: it.Key, Kind: kindName(it), Group: groupNames[it.Group], State: cmp.Or(it.Agent, "closed"),
-		Title: it.Title, Session: it.Session, Dir: it.Dir, Report: it.Report,
+		Title: it.Title, Session: it.Session, Pane: it.Block, WaitsFor: it.Waits, Dir: it.Dir, Report: it.Report,
 		Screenshots: it.Shots, Videos: it.Videos, Question: it.Question,
 	}
 	if it.Kind == prItem {
-		a.State, a.Session, a.URL, a.Status = "", "", it.Pr.URL, it.Pr.Status
+		a.State, a.Session, a.Pane, a.URL, a.Status = "", "", "", it.Pr.URL, it.Pr.Status
 		return a
 	}
 	switch {
@@ -262,11 +266,10 @@ func seenHint(it queueItem, screen string) string {
 
 // capturePane is the text of the agent's pane, its scrollback included.
 func capturePane(it queueItem) (string, error) {
-	block, err := agentBlock(it.Session)
-	if err != nil {
-		return "", err
+	if it.Block == "" {
+		return "", fmt.Errorf("%s's session has no pane to read", it.Key)
 	}
-	return sh("", "rex", "capture", "-s", it.Session, "-b", block, "--trim")
+	return rex.capture(it.Session, it.Block, false)
 }
 
 // seenLines is how many of the pane's last non-blank lines a seen token covers. Twelve hold what
@@ -379,7 +382,7 @@ func runReply(argv []string, stdin io.Reader, out io.Writer) error {
 			return err
 		}
 	}
-	if err := sendToAgent(it.Session, text); err != nil {
+	if err := sendToAgent(it.Session, it.Block, text); err != nil {
 		return fmt.Errorf("reply to %s: %w", it.Key, err)
 	}
 	if by == byOrchestrator {
@@ -397,6 +400,8 @@ func replyAllowed(it queueItem, now bool, by string) error {
 	switch {
 	case it.Agent == "":
 		return fmt.Errorf("%s's session is closed; enter on it in the queue resumes it", it.Key)
+	case by == byOrchestrator && it.Agent == "blocked" && it.Waits != "" && it.Waits != "permission":
+		return fmt.Errorf("%s is blocked: it %s in its pane, which only I answer; tell me what it asks", it.Key, waitsFor(it.Waits))
 	case by == byOrchestrator && it.Agent == "blocked":
 		return fmt.Errorf("%s is blocked, likely on a permission prompt, which only I answer; tell me what it asks", it.Key)
 	case by == byOrchestrator && orchestratorSent(it.Key) >= maxOrchestratorAnswers:

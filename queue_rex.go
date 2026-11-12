@@ -3,16 +3,14 @@ package main
 // What the queue tells Rex and does in an agent's pane: its status records, replies and key presses.
 
 import (
+	"cmp"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"maps"
 	"os"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
@@ -74,7 +72,7 @@ func itemRecords(items []queueItem) map[string]string {
 		case it.Question != nil && it.Question.Escalated != "":
 			state, kind, msg = "blocked", "question", "asks: "+it.Question.Text
 		case it.Agent == "blocked":
-			state, kind, msg = "blocked", "permission", "waits on a prompt"
+			state, kind, msg = "blocked", cmp.Or(it.Waits, "permission"), cmp.Or(it.Doing, waitsFor(it.Waits))
 		case it.Agent == "error":
 			state, msg = "error", "failed"
 		}
@@ -145,6 +143,24 @@ func withoutInputBox(lines []string) []string {
 	return lines[:end]
 }
 
+// waitsFor says what a blocked agent waits for, by the kind it reports: a permission prompt
+// unless it says otherwise.
+func waitsFor(kind string) string {
+	switch kind {
+	case "question":
+		return "asks a question"
+	case "auth":
+		return "needs a sign-in"
+	}
+	return "waits on a prompt"
+}
+
+// pressable is whether y and n may press a key in the agent's pane: it waits on a prompt, where
+// enter is yes and esc is no. A question or a sign-in takes typing, in its session.
+func pressable(it queueItem) bool {
+	return it.Kind == agentItem && it.Agent == "blocked" && (it.Waits == "" || it.Waits == "permission")
+}
+
 // promptDetail is what a blocked agent's pane asks, to head its detail, and the seen token of the
 // pane it was read from: y and n press a key there only while the pane still shows it.
 func promptDetail(it queueItem, capture func(queueItem) (string, error)) ([]string, string) {
@@ -154,8 +170,11 @@ func promptDetail(it queueItem, capture func(queueItem) (string, error)) ([]stri
 	}
 	out := []string{"# It waits on this", "", "```"}
 	out = append(out, paneAsks(screen)...)
-	return append(out, "```", "", "`y` presses enter in its pane and `n` presses esc, while it still shows this. `enter` goes there.", ""),
-		seenToken(it.Agent, screen)
+	hint := "`y` presses enter in its pane and `n` presses esc, while it still shows this. `enter` goes there."
+	if !pressable(it) {
+		hint = "It " + waitsFor(it.Waits) + ", which `y` and `n` don't answer: `enter` goes there, `f` types a reply."
+	}
+	return append(out, "```", "", hint, ""), seenToken(it.Agent, screen)
 }
 
 // pressPrompt presses key in the agent's pane, unless the pane no longer shows what seen stands
@@ -164,61 +183,8 @@ func pressPrompt(it queueItem, seen, key string) error {
 	if err := stillSeen(it, seen, capturePane); err != nil {
 		return fmt.Errorf("%s's pane changed since it was read, so nothing was pressed; it is read again", it.Key)
 	}
-	block, err := agentBlock(it.Session)
-	if err != nil {
-		return err
+	if it.Block == "" {
+		return fmt.Errorf("%s's session has no pane to press a key in", it.Key)
 	}
-	_, err = sh("", "rex", "send-key", "-s", it.Session, "-b", block, key)
-	return err
-}
-
-// agentBlockScript finds the session's pane whose program reports a status (pi or Claude Code),
-// else its first placed pane: a session can hold a shell split beside the agent.
-const agentBlockScript = attachLua + `
-local label = %s
-for _, s in ipairs(rex.call("session.list").sessions or {}) do
-  if s.session_id == label or s.label == label then
-    attach(s.session_id)
-    local first
-    for _, b in ipairs((rex.call("session.list_blocks", {session_id = s.session_id}) or {}).blocks or {}) do
-      if b.placement == "placed" then
-        local ok, st = pcall(rex.call, "block.method", {session_id = s.session_id, block_id = b.block_id, method = "program_status"})
-        if ok and st and #(st.records or {}) > 0 then return b.block_id end
-        first = first or b.block_id
-      end
-    end
-    if first then return first end
-    error("no pane in session " .. label, 0)
-  end
-end
-error("no session " .. label, 0)
-`
-
-// agentBlock is the session's pane where the agent runs.
-func agentBlock(session string) (string, error) {
-	out, err := sh("", "rex", "do", "--all", "-e", fmt.Sprintf(agentBlockScript, strconv.Quote(session)), "--json")
-	if err != nil {
-		return "", err
-	}
-	var block string
-	if err := json.Unmarshal([]byte(out), &block); err != nil {
-		return "", fmt.Errorf("finding the agent's pane: %w", err)
-	}
-	return block, nil
-}
-
-// sendToAgent types text into the agent's pane and presses enter, as if I had replied there.
-func sendToAgent(session, text string) error {
-	block, err := agentBlock(session)
-	if err != nil {
-		return err
-	}
-	// After --: a reply that starts with a dash isn't a flag.
-	if _, err := sh("", "rex", "send", "-s", session, "-b", block, "--", text); err != nil {
-		return err
-	}
-	// A separate key press: in one write the agent's editor takes the newline as pasted text.
-	time.Sleep(150 * time.Millisecond)
-	_, err = sh("", "rex", "send-key", "-s", session, "-b", block, "enter")
-	return err
+	return rex.press(it.Session, it.Block, key)
 }

@@ -111,9 +111,16 @@ func runOrchestrator(argv []string) error {
 	if err := os.WriteFile(filepath.Join(orchestratorDir, "CLAUDE.md"), []byte(orchestratorGuide), 0o644); err != nil {
 		return err
 	}
-	// Wherever it was started, by ^g or by hand, its session is the one to go back to.
+	// Wherever it was started, by ^g or by hand, its session is the one to go back to, and this
+	// pane the one it answers in.
 	if id := os.Getenv("REX_SESSION"); id != "" {
-		if _, err := updateState(func(s *State) { s.Orchestrator = id }); err != nil {
+		block := os.Getenv("REX_BLOCK")
+		if _, err := updateState(func(s *State) {
+			s.Orchestrator = id
+			if block != "" {
+				s.Panes[id] = block
+			}
+		}); err != nil {
 			return err
 		}
 	}
@@ -142,7 +149,7 @@ func findOrchestrator(sessions []rexSession, recorded string) (rexSession, bool)
 	}
 	for _, s := range sessions {
 		if s.runsClaudeIn(orchestratorDir) {
-			return s, true
+			return s.onClaudeIn(orchestratorDir), true
 		}
 	}
 	return rexSession{}, false
@@ -155,7 +162,7 @@ func goToOrchestrator() error {
 		return err
 	}
 	if s, ok := findOrchestrator(sessions, loadState().Orchestrator); ok {
-		return switchTo(s.ID)
+		return rex.show(s.ID)
 	}
 	exe, err := os.Executable()
 	if err != nil {
@@ -168,7 +175,7 @@ func goToOrchestrator() error {
 	if err != nil {
 		return err
 	}
-	return switchTo(id)
+	return rex.show(id)
 }
 
 // orchestratorItem is the orchestrator's line in the queue while it runs: with the agents that
@@ -179,7 +186,8 @@ func orchestratorItem(sessions []rexSession, recorded string) (queueItem, bool) 
 		return queueItem{}, false
 	}
 	it := queueItem{Kind: agentItem, Orchestrator: true, Key: orchestratorName, Title: "talk to it here, or ^g on the board",
-		Dir: orchestratorDir, Agent: s.State, Session: s.ID, Doing: s.Msg, Group: idle}
+		Dir: orchestratorDir, Group: idle}
+	it.on(s)
 	switch {
 	case it.urgent():
 		it.Group = needsYou

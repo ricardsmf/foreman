@@ -80,7 +80,7 @@ func (m *model) boardInput(msg tea.KeyPressMsg) tea.Cmd {
 			break
 		}
 		return func() tea.Msg {
-			if err := switchTo(session); err != nil {
+			if err := rex.show(session); err != nil {
 				return statusMsg{"Switching to " + current.Key + "'s session: " + err.Error(), cRed, false}
 			}
 			return nil

@@ -67,7 +67,7 @@ func findWatcher(sessions []rexSession, w Watcher, recorded string) (rexSession,
 	}
 	for _, s := range sessions {
 		if s.runsClaudeIn(w.Dir) {
-			return s, true
+			return s.onClaudeIn(w.Dir), true
 		}
 	}
 	return rexSession{}, false
@@ -124,7 +124,7 @@ func startWatchers() (started []string, err error) {
 func watcherItem(w Watcher, sessions []rexSession, recorded string) queueItem {
 	it := queueItem{Kind: agentItem, Watcher: true, Polled: len(w.PRs) > 0, Key: w.Name, Title: w.Prompt, Dir: w.Dir, Group: closed}
 	if rs, ok := findWatcher(sessions, w, recorded); ok {
-		it.Agent, it.Session, it.Doing = rs.State, rs.ID, rs.Msg
+		it.on(rs)
 		switch {
 		case it.urgent():
 			it.Group = needsYou
@@ -185,7 +185,7 @@ func pollWatcher(w Watcher, sessions []rexSession, recorded string) ([]string, e
 	if err != nil {
 		return nil, err
 	}
-	return wakeIfChanged(w.Name, now, func() error { return sendToAgent(s.ID, w.Prompt) })
+	return wakeIfChanged(w.Name, now, func() error { return sendToAgent(s.ID, s.Block, w.Prompt) })
 }
 
 // wakeable is whether the watcher sits at its prompt, so typing into it starts a pass. Working or

@@ -83,6 +83,8 @@ func itemLabel(it queueItem) (string, string) {
 		return fg(cYellow, "●"), fg(cYellow, "asks the orchestrator")
 	case it.Agent == "working":
 		return fg(cYellow, "●"), fg(cYellow, "working")
+	case it.Agent == "blocked" && it.Waits == "auth":
+		return fg(cRed, "●"), fg(cRed, "needs a sign-in")
 	case it.Agent == "blocked":
 		return fg(cRed, "●"), fg(cRed, "asks you")
 	case it.Agent == "error":
@@ -121,7 +123,7 @@ func (q *queueModel) render(width, h int) []string {
 	keys := "↑↓ pick · enter go/resume · f reply · x reviewed · d diff · ? all keys"
 	if it, ok := q.current(); ok && it.Fold > 0 {
 		keys = "↑↓ pick · enter list them · ? all keys"
-	} else if ok && it.Agent == "blocked" && q.seen[detailKey(it)] != "" {
+	} else if ok && pressable(it) && q.seen[detailKey(it)] != "" {
 		keys = "y press enter · n press esc · " + keys
 	}
 	if q.showClosed {

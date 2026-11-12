@@ -563,7 +563,7 @@ func TestQueueItems(t *testing.T) {
 		Hidden:     map[string]bool{},
 	}
 	// FLD-2 asks, FLD-3 works, FLD-5 finished without a report, FLD-4's session is closed.
-	sessions := []rexSession{{"s1", "fld-1-a", "done", nil, ""}, {"s2", "fld-2-b", "blocked", nil, ""}, {"s3", "fld-3-c", "working", nil, ""}, {"s7", "review-repo-7", "idle", nil, ""}, {"s5", "fld-5-e", "done", nil, ""}}
+	sessions := []rexSession{{ID: "s1", Label: "fld-1-a", State: "done"}, {ID: "s2", Label: "fld-2-b", State: "blocked"}, {ID: "s3", Label: "fld-3-c", State: "working"}, {ID: "s7", Label: "review-repo-7", State: "idle"}, {ID: "s5", Label: "fld-5-e", State: "done"}}
 	prs := []Pr{
 		{Key: "repo#9", Mine: true, Category: "Blocked", Status: "in review ✗"},
 		{Key: "repo#10", Mine: true, Category: "Done", Status: "approved ✓"},
@@ -626,7 +626,7 @@ func TestQueueItems(t *testing.T) {
 	if _, ok := groups(queueItems(s, sessions, prs))["FLD-4"]; ok {
 		t.Error("hidden FLD-4 still listed")
 	}
-	sessions = append(sessions, rexSession{"s4", "fld-4-d", "idle", nil, ""})
+	sessions = append(sessions, rexSession{ID: "s4", Label: "fld-4-d", State: "idle"})
 	if _, ok := groups(queueItems(s, sessions, prs))["FLD-4"]; !ok {
 		t.Error("FLD-4 not listed with its session open again")
 	}
@@ -643,7 +643,7 @@ func TestQueueKeepsItsPlaceAcrossRebuilds(t *testing.T) {
 			Dispatched: map[string]string{"FLD-1": "/w/1", "FLD-2": "/w/2", "repo#9": "/w/9"},
 			Sessions:   map[string]string{"FLD-1": "s1", "FLD-2": "s2", "repo#9": "s9"},
 		},
-		sessions: []rexSession{{"s1", "fld-1-a", "idle", nil, ""}, {"s2", "fld-2-b", "idle", nil, ""}, {"s9", "review-repo-9", "working", nil, ""}},
+		sessions: []rexSession{{ID: "s1", Label: "fld-1-a", State: "idle"}, {ID: "s2", Label: "fld-2-b", State: "idle"}, {ID: "s9", Label: "review-repo-9", State: "working"}},
 		prs:      []Pr{{Key: "repo#9", Mine: true, Category: "Blocked", Status: "changes"}},
 	}
 	q.rebuild()
@@ -678,10 +678,10 @@ func TestQueueKeepsItsPlaceAcrossRebuilds(t *testing.T) {
 
 func TestFindSession(t *testing.T) {
 	sessions := []rexSession{
-		{"session:a", "fld-1704", "done", nil, ""},
-		{"session:b", "review-reports-app-1185-x", "idle", nil, ""},
-		{"session:d", "fix-reports-app-1185-address-review", "idle", nil, ""},
-		{"session:c", "fld-17040-other", "working", nil, ""},
+		{ID: "session:a", Label: "fld-1704", State: "done"},
+		{ID: "session:b", Label: "review-reports-app-1185-x", State: "idle"},
+		{ID: "session:d", Label: "fix-reports-app-1185-address-review", State: "idle"},
+		{ID: "session:c", Label: "fld-17040-other", State: "working"},
 	}
 	for _, tc := range []struct{ key, recorded, want string }{
 		{"FLD-1704", "session:c", "session:c"},                 // the recorded ID wins

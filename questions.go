@@ -204,7 +204,7 @@ func notifyOrchestrator(key, text string) error {
 		return errors.New("it isn't running")
 	}
 	line := strings.Join(strings.Fields(text), " ")
-	return sendToAgent(o.ID, fmt.Sprintf("[foreman ask] %s asks: %s (it waits for foreman answer %s or foreman escalate %s)", key, line, key, key))
+	return sendToAgent(o.ID, o.Block, fmt.Sprintf("[foreman ask] %s asks: %s (it waits for foreman answer %s or foreman escalate %s)", key, line, key, key))
 }
 
 // answerQuestion answers the dispatch's pending question. The orchestrator gets

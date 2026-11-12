@@ -18,6 +18,10 @@ type State struct {
 	// Sessions maps a ticket or PR key to its agent's latest Rex session: its ID, which survives a
 	// rename, or for dispatches before IDs were kept, its label.
 	Sessions map[string]string `json:"sessions,omitempty"`
+	// Panes maps a Rex session's ID to the pane its agent runs in, as Rex made it at dispatch: the
+	// agent's state is read from that pane and replies are typed there, whatever else the session
+	// holds. A session without one (older dispatches) gets its oldest pane that reports a status.
+	Panes map[string]string `json:"panes,omitempty"`
 	// Agents maps a ticket or PR key to the agent dispatched on it, to resume it with once its
 	// session is closed.
 	Agents map[string]string `json:"agents,omitempty"`
@@ -112,6 +116,9 @@ func readState() State {
 	}
 	if s.Sessions == nil {
 		s.Sessions = map[string]string{}
+	}
+	if s.Panes == nil {
+		s.Panes = map[string]string{}
 	}
 	if s.Agents == nil {
 		s.Agents = map[string]string{}

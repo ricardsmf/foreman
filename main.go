@@ -182,8 +182,6 @@ type model struct {
 	help         bool      // the list of keys is showing
 	helpScroll   int
 	theme        theme
-	rexLive      bool      // Rex's events arrive, so the sessions needn't be listed every tick
-	sessionsAt   time.Time // when the sessions were last listed
 	detailScroll int
 	details      map[string][]string // nil value = loading
 	detailOK     map[string]bool     // the cached detail is the real thing, not an error
@@ -521,7 +519,8 @@ func (m *model) submit() tea.Cmd {
 	}
 }
 
-// pollAgents reads the agents' states and the state file: the queue and any other board write it too.
+// pollAgents reads the agents' states and the state file: the queue and any other board write it
+// too. The states come from Rex's events while they arrive, which costs no call.
 func pollAgents() tea.Msg {
 	states, err := agentStates()
 	if err != nil {
@@ -529,9 +528,6 @@ func pollAgents() tea.Msg {
 	}
 	return agentsMsg{states, loadState()}
 }
-
-// pollBoardState reads the state file alone, for the ticks between Rex's events.
-func pollBoardState() tea.Msg { return agentsMsg{nil, loadState()} }
 
 func (m *model) Init() tea.Cmd {
 	return tea.Batch(m.reload(tickets), m.reload(prs), pollAgents, agentsTick(), requestTheme(),
@@ -651,19 +647,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.refreshStale(), pollAgents)
 	case agentsTickMsg:
 		m.expireStatus()
-		poll := pollAgents
-		if m.rexLive && time.Since(m.sessionsAt) < sessionsFallback {
-			poll = pollBoardState
-		}
-		return m, tea.Batch(poll, agentsTick())
+		return m, tea.Batch(pollAgents, agentsTick())
 	case rexEventMsg:
 		return m, pollAgents
-	case rexLiveMsg:
-		m.rexLive = bool(msg)
 	case agentsMsg:
 		m.state = msg.state
 		if msg.states != nil {
-			m.agents, m.sessionsAt = msg.states, time.Now()
+			m.agents = msg.states
 		}
 		return m, m.takeFormRequest()
 	case formRowMsg:
@@ -719,6 +709,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 const usage = `usage: foreman [PROJECT | JQL]
        foreman queue      every dispatched agent by state, and PRs that need you
+       foreman open [--print]   go to the foreman Rex session (board and queue), starting or mending it
        foreman dispatch   start an agent on a task, a ticket or a PR
        foreman orchestrator [--new]   Claude Code that hands work to agents (^g on the board)
        foreman agents | report | screen | reply | wait | cleanup | ask | answer | escalate
@@ -741,7 +732,7 @@ func run() error {
 	if len(argv) > 0 {
 		rest := argv[1:]
 		help := len(rest) > 0 && (rest[0] == "--help" || rest[0] == "-h")
-		if help && argv[0] != "dispatch" && argv[0] != "queue" && argv[0] != "orchestrator" {
+		if help && argv[0] != "dispatch" && argv[0] != "queue" && argv[0] != "orchestrator" && argv[0] != "open" {
 			fmt.Println(commandsUsage)
 			return nil
 		}
@@ -750,6 +741,8 @@ func run() error {
 			return runDispatch(rest)
 		case "orchestrator":
 			return runOrchestrator(rest)
+		case "open":
+			return runOpen(rest, os.Stdout)
 		case "agents":
 			return runAgents(rest, os.Stdout)
 		case "report":
@@ -807,7 +800,7 @@ func run() error {
 	prog = tea.NewProgram(m)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go watchRex(ctx, func(msg tea.Msg) { prog.Send(msg) })
+	go followRex(ctx, func() { prog.Send(rexEventMsg{}) })
 	go func() {
 		started, err := startWatchers()
 		switch {

@@ -289,7 +289,7 @@ func removeCandidates(picked []cleanupCandidate) cleanedMsg {
 		// Its agent's session has nothing left to work on. A failure to close it isn't one
 		// worth reporting: the worktree, which was the point, is gone.
 		if c.Session != "" && c.Agent != "" {
-			_, _ = sh("", "rex", "kill", c.Session)
+			_ = rex.kill(c.Session)
 		}
 	}
 	discard(done)

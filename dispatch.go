@@ -936,28 +936,6 @@ func start(agent, key, prompt, cwd, label string, progress func(string)) (id, na
 	return newSession(label, cwd, agent, agentCommand(agent, file))
 }
 
-// newSession starts cmd in a background Rex session named label, or label-2… when that is taken.
-func newSession(label, cwd, window string, cmd []string) (id, name string, err error) {
-	// `rex new` starts the session in the background; the app stays where it is.
-	session, err := freeSessionLabel(label)
-	if err != nil {
-		return "", "", err
-	}
-	args := append([]string{"new", session, "--json", "--cwd", cwd, "--window", window, "--"}, cmd...)
-	out, err := sh("", "rex", args...)
-	if err != nil {
-		return "", "", err
-	}
-	// The ID, not the label: an agent may rename its session to describe the work.
-	var made struct {
-		ID string `json:"session_id"`
-	}
-	if json.Unmarshal([]byte(out), &made) == nil && made.ID != "" {
-		return made.ID, session, nil
-	}
-	return session, session, nil
-}
-
 // headCommit is the commit dir is on, "" when git can't tell (a repo with no commits yet).
 func headCommit(dir string) string {
 	out, err := sh(dir, "git", "rev-parse", "--verify", "--quiet", "HEAD")
