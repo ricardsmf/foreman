@@ -126,7 +126,7 @@ func findSession(sessions []rexSession, key, recorded string) (rexSession, bool)
 		}
 	}
 	k := slug(key)
-	if isTask(key) {
+	if isTask(key) || isFix(key) {
 		k = keySlug(key)
 	}
 	for _, s := range sessions {

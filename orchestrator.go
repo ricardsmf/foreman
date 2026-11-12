@@ -30,7 +30,7 @@ I talk to you to get work done across my repos, and you **delegate** it: each pi
 
 The agent starts from your text alone, plus the ticket or PR when there is one. Write the brief as a self-contained task: what I asked, in my words; the repo; the files, behaviour and constraints I named; what done looks like.
 
-- A Jira key goes to §--ticket KEY§ with your brief as extra context, a PR to §--pr REPO#N§, anything else to a task with §--repo§. One dispatch per independent piece of work.
+- A Jira key goes to §--ticket KEY§ with your brief as extra context, a PR to review to §--pr REPO#N§, a PR to fix on its branch (its review comments, or what I name) to §--pr REPO#N --fix§, anything else to a task with §--repo§. One dispatch per independent piece of work.
 - The agent is the repo's default unless I name one; §--agent yolo§ only when I say yolo.
 - When the repo or the scope is unclear, ask me before dispatching.
 - After dispatching, tell me the key and the line foreman printed.

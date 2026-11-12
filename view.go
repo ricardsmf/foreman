@@ -218,7 +218,7 @@ func (m *model) renderBoard(width, h int) []string {
 		if sel {
 			line = fg(cMauve, "▌")
 		}
-		line += m.dispatchMark(i.Key)
+		line += m.dispatchMark(m.agentKey(i.Key))
 		keyColor, summary := cOverlay, fg(cSubtext, fit(i.Summary, sumW))
 		if sel {
 			keyColor, summary = cText, bold(fg(cText, fit(i.Summary, sumW)))
@@ -260,6 +260,9 @@ func (m *model) renderForm(width, h int) []string {
 	verb := "dispatch"
 	if f.row.Pr != nil {
 		verb = "review"
+		if f.fix {
+			verb = "fix"
+		}
 	}
 	header, heading := m.header(verb+" "+f.row.Key), fg(cMauve, f.row.Key)+" "+bold(`"`+f.row.Summary+`"`)
 	if f.task {
@@ -303,21 +306,27 @@ func (m *model) renderFormFields(out []string, verb string, width, h int) []stri
 		}
 		out = append(out, "    "+fg(color, filepath.Base(repo)+" "+note))
 	}
+	option := func(n int, on bool, name, note string) string {
+		mark, box := "    ", "[ ]"
+		if f.field == n {
+			mark = "  " + fg(cMauve, "› ")
+		}
+		if on {
+			box = fg(cGreen, "[x]")
+		}
+		return mark + box + " " + name + " " + fg(cOverlay, note)
+	}
 	if isPr {
 		p := f.row.Pr
-		out = append(out, "", "  "+bold("Checkout"),
-			"    "+fg(cSubtext, tilde(fmt.Sprintf("%s-pr-%d", p.Checkout, p.Number)))+" "+fg(cOverlay, "(worktree at the PR head)"))
-	} else {
-		option := func(n int, on bool, name, note string) string {
-			mark, box := "    ", "[ ]"
-			if f.field == n {
-				mark = "  " + fg(cMauve, "› ")
-			}
-			if on {
-				box = fg(cGreen, "[x]")
-			}
-			return mark + box + " " + name + " " + fg(cOverlay, note)
+		checkout := "    " + fg(cSubtext, tilde(fmt.Sprintf("%s-pr-%d", p.Checkout, p.Number))) + " " + fg(cOverlay, "(worktree at the PR head)")
+		if f.fix {
+			checkout = "    " + fg(cOverlay, "the worktree on ") + fg(cSubtext, p.Branch) + fg(cOverlay, ", else ") +
+				fg(cSubtext, tilde(fmt.Sprintf("%s-fix-%d", p.Checkout, p.Number))) + " " + fg(cOverlay, "(a new one tracking origin's)")
 		}
+		out = append(out, "", "  "+bold("Options"),
+			option(fieldWorktree, f.fix, "fix it", "(commit on its branch instead of reviewing: the review comments, or your context)"),
+			"", "  "+bold("Checkout"), checkout)
+	} else {
 		out = append(out, "", "  "+bold("Options"),
 			option(fieldWorktree, f.worktree, "git worktree", "(isolated checkout, parallel-safe)"),
 			option(fieldPoteto, f.poteto, "poteto-mode", "(pstack playbooks and subagents: slower, more tokens)"), "")
@@ -365,6 +374,8 @@ func (m *model) renderFormFields(out []string, verb string, width, h int) []stri
 		}
 	} else if f.task {
 		out = append(out, "    "+fg(cOverlay, "What to do: a change, a fix, a question to answer…"))
+	} else if isPr && f.fix {
+		out = append(out, "    "+fg(cOverlay, "What to fix; leave empty to address the unresolved review comments"))
 	} else if isPr {
 		out = append(out, "    "+fg(cOverlay, "What to focus on: risky areas, things you already know, questions to answer…"))
 	} else {
@@ -383,6 +394,15 @@ func (m *model) renderFormFields(out []string, verb string, width, h int) []stri
 		out = append(out, fg(cOverlay, fmt.Sprintf("tab/↑↓ field · %s · enter %s · esc back", fieldKeys, verb)))
 	}
 	return out
+}
+
+// agentKey is the dispatch a row's mark and ^s follow: its own, else, for a PR not dispatched for
+// review, its fix.
+func (m *model) agentKey(key string) string {
+	if m.state.Dispatched[key] == "" && strings.Contains(key, "#") && m.state.Dispatched[fixKey(key)] != "" {
+		return fixKey(key)
+	}
+	return key
 }
 
 // dispatchMark is the board's dispatch column: ◆ coloured by what the agent's Rex session reports,

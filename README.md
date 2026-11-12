@@ -2,7 +2,7 @@
 
 A terminal board of Jira tickets with their assignees. Pick a ticket and start pi or Claude Code on
 it in its own git worktree, in a Rex session of its own. `tab` switches to open pull requests, where
-the same dispatch starts a review instead. After @almonk's linear-dispatch.
+the same dispatch starts a review, or a fix on the PR's own branch, instead. After @almonk's linear-dispatch.
 
 ```
 go build -o ~/.local/bin/foreman .   # puts foreman on PATH
@@ -32,7 +32,7 @@ PRs: author), `^w` set the ticket's status, `^y` set its assignee (see [Changing
 ticket](#changing-a-ticket)), `^u`/`^d` scroll the description, `^b` open in browser, `^s` go to the agent's Rex
 session, `^t` a [task](#tasks), `^g` the [orchestrator](#orchestrator), `^x` clean up worktrees, `^r` refresh, `esc` quit.
 
-Dispatch form: `tab`/`↑↓` field, `←→` agent or repo, `space` worktree or poteto-mode on/off, type to filter repos
+Dispatch form: `tab`/`↑↓` field, `←→` agent or repo, `space` worktree, poteto-mode or (on a PR) fix on/off, type to filter repos
 or write extra context, `alt+enter` new line, paste works, `^e` writes the context in `$VISUAL` /
 `$EDITOR`, `enter` dispatch, `esc` back.
 
@@ -113,6 +113,7 @@ result line to stdout.
 foreman dispatch --repo foreman [--agent pi|claude|yolo] [--no-worktree] [--poteto] [--title T] 'what to do'
 foreman dispatch --ticket FLD-1700 [--repo reports-app] [...] ['extra context']
 foreman dispatch --pr reports-app#1185 [--agent claude] ['what to focus on']
+foreman dispatch --pr reports-app#1185 --fix [--agent claude] [--title T] ['what to fix']
 ```
 
 `-` as the text reads it from stdin. A ticket without `--repo` goes to its project's last repo. A
@@ -121,7 +122,7 @@ ticket or PR whose agent session is still open needs `--again`, like the board's
 ### Reading and steering agents
 
 What the queue shows and does, as commands. KEY is a dispatch's key (`FLD-1700`,
-`reports-app#1185`, `task:foreman-3`) or a watcher's name, in any case.
+`reports-app#1185`, `fix:reports-app#1185`, `task:foreman-3`) or a watcher's name, in any case.
 
 Options go before or after KEY, except `reply`'s, which go before it.
 
@@ -138,7 +139,7 @@ foreman answer KEY TEXT|-           answer the question KEY waits on
 foreman escalate KEY NOTE|-         hand KEY's question to me in the queue, with a suggestion
 ```
 
-- `agents --json` gives each one's `key`, `kind` (ticket, review, task, watcher, pr), `group`,
+- `agents --json` gives each one's `key`, `kind` (ticket, review, fix, task, watcher, pr), `group`,
   `state` as the agent reports it to Rex (working, blocked, error, done, idle, open) or `closed`,
   `title`, `agent`, `session`, `dir`, `report` and `reportAt`, evidence counts, and `seen`, the
   seen token of an agent whose session is open.
@@ -209,6 +210,27 @@ typed into a working agent. Claude agents run it without a permission prompt.
 - The agent gets the PR description, its file list, the Jira ticket named in the title or branch,
   and your extra context. It is told to report findings without editing, committing or posting
   anything to GitHub or Jira.
+
+### Fixing a PR
+
+`fix it` on the PR's dispatch form, or `foreman dispatch --pr REPO#N --fix`, starts an agent that
+fixes the PR on its own branch instead of reviewing it: its review comments, or what the extra
+context names.
+
+- Its key is `fix:<repo>#<n>`, so a review of the same PR keeps its own session, report and queue
+  row. The session is `fix-<repo>-<n>-<title>`; `--title` names it and the queue row in place of
+  the PR's title. The board's PR row shows the review's `◆`, else the fix's, and `^s` follows it.
+- The worktree is the one that already has the PR's head branch checked out, a ticket's or one
+  made by hand, whatever it holds; else `<repo>-fix-<n>` on the local branch of that name, as is,
+  or on a new one tracking `origin/<head>`. A branch without an upstream gets `origin/<head>`.
+- A PR from a fork is refused: its branch isn't on origin.
+- The agent gets the PR description and file list, its reviews with a comment, its unresolved
+  review threads (inline comments with their replies; resolved ones are counted, not shown), its
+  conversation, the Jira ticket named in the title or branch, and your context. It is told to
+  commit on the branch and to leave pushing, replying to and resolving comments, and the PR and
+  ticket, to you; its report says what it did about each comment.
+- In the queue, `enter` on one of your PRs goes to its fix agent when there is one, before the
+  ticket's.
 
 ## Queue
 

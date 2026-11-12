@@ -70,7 +70,8 @@ const (
 	dispatchTimeout = 10 * time.Minute
 )
 
-// The dispatch form's fields, in tab order. A review has only the agent and the context.
+// The dispatch form's fields, in tab order. A PR has prFields: the agent, whether to fix it rather
+// than review it, which takes the worktree's place, and the context.
 const (
 	fieldAgent = iota
 	fieldWorktree
@@ -79,6 +80,8 @@ const (
 	fieldContext
 	fieldCount
 )
+
+var prFields = []int{fieldAgent, fieldWorktree, fieldContext}
 
 type form struct {
 	row Row
@@ -90,6 +93,7 @@ type form struct {
 	agentPicked bool
 	worktree    bool
 	poteto      bool
+	fix         bool // a PR's: fix it on its branch instead of reviewing it
 	repo        int
 	repoQuery   string
 	context     string
@@ -434,10 +438,14 @@ func (m *model) submit() tea.Cmd {
 		m.say("Describe the task first", cYellow)
 		return nil
 	}
+	key := f.row.Key
+	if f.row.Pr != nil && f.fix {
+		key = fixKey(key)
+	}
 	// A second agent would work in the first one's worktree, and the board would lose track of the first.
-	if session := m.state.Sessions[f.row.Key]; session != "" && m.agents[session] != "" && !f.confirmed {
+	if session := m.state.Sessions[key]; session != "" && m.agents[session] != "" && !f.confirmed {
 		f.confirmed = true
-		m.say(fmt.Sprintf("%s's agent session is still open (%s); enter again starts a second agent", f.row.Key, m.agents[session]), cYellow)
+		m.say(fmt.Sprintf("%s's agent session is still open (%s); enter again starts a second agent", key, m.agents[session]), cYellow)
 		m.statusSticky = true
 		return nil
 	}
@@ -451,7 +459,7 @@ func (m *model) submit() tea.Cmd {
 		s.AgentByRepo[agentRepo] = agent
 	})
 	progress := func(line string) { prog.Send(statusMsg{line, cSubtext, true}) }
-	jira, row, task, worktree, poteto, extra := m.jira, f.row, f.task, f.worktree, f.poteto, strings.TrimSpace(f.context)
+	jira, row, task, worktree, poteto, fix, extra := m.jira, f.row, f.task, f.worktree, f.poteto, f.fix, strings.TrimSpace(f.context)
 	ticket := ""
 	if m.detailOK[row.Key] && row.Pr == nil {
 		ticket = strings.Join(m.details[row.Key], "\n")
@@ -469,7 +477,7 @@ func (m *model) submit() tea.Cmd {
 			}
 			return dispatchedMsg{text, err}
 		case row.Pr != nil:
-			text, err = dispatchReview(ctx, jira, ReviewDispatch{*row.Pr, agent, extra}, progress)
+			text, err = dispatchPr(ctx, jira, PrDispatch{Pr: *row.Pr, Agent: agent, Context: extra, Fix: fix}, progress)
 		default:
 			text, err = dispatch(ctx, jira, Dispatch{Issue: *row.Issue, Agent: agent, Worktree: worktree, Poteto: poteto, Repo: repo, Context: extra, Ticket: ticket}, progress)
 		}

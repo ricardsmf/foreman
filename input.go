@@ -72,7 +72,7 @@ func (m *model) boardInput(msg tea.KeyPressMsg) tea.Cmd {
 		if !ok {
 			break
 		}
-		session := m.state.Sessions[current.Key]
+		session := m.state.Sessions[m.agentKey(current.Key)]
 		if session == "" || m.agents[session] == "" {
 			m.say("No open agent session for "+current.Key, cOverlay)
 			break
@@ -134,16 +134,15 @@ func (m *model) formInput(msg tea.KeyPressMsg) tea.Cmd {
 	case k == "ctrl+e":
 		f.field = fieldContext
 		return editContext(f.context)
-	// A review has no options or repo to pick: its fields are the agent, which is 0, and the context.
 	case k == "tab" || (k == "down" && f.field != fieldRepo):
 		if isPr {
-			f.field = fieldContext - f.field
+			f.field = prFields[(slices.Index(prFields, f.field)+1)%len(prFields)]
 		} else {
 			f.field = (f.field + 1) % fieldCount
 		}
 	case k == "shift+tab" || (k == "up" && f.field != fieldRepo):
 		if isPr {
-			f.field = fieldContext - f.field
+			f.field = prFields[(slices.Index(prFields, f.field)+len(prFields)-1)%len(prFields)]
 		} else {
 			f.field = (f.field + fieldCount - 1) % fieldCount
 		}
@@ -154,6 +153,8 @@ func (m *model) formInput(msg tea.KeyPressMsg) tea.Cmd {
 			f.agent = (f.agent + 1) % len(agents)
 		}
 		f.agentPicked = true
+	case f.field == fieldWorktree && isPr && (k == "space" || left || right):
+		f.fix = !f.fix
 	case f.field == fieldWorktree && (k == "space" || left || right):
 		f.worktree = !f.worktree
 	case f.field == fieldPoteto && (k == "space" || left || right):
