@@ -1,8 +1,8 @@
 package main
 
 // foreman queue: what needs me, one item at a time. Agents that stopped to ask something or
-// finished (with their report and evidence), and my PRs whose CI failed, got changes requested or
-// conflict. It runs in its own Rex pane beside the board and reads the board's state file.
+// finished (with their report and evidence), my PRs whose CI failed, got changes requested or
+// conflict, and my approved PRs, ready to merge. It runs in its own Rex pane beside the board and reads the board's state file.
 
 import (
 	"encoding/json"
@@ -33,7 +33,7 @@ type group int
 
 const (
 	needsYou group = iota // an agent that asks something or failed, a PR of mine that's blocked
-	toReview              // a finished agent's report I haven't marked reviewed
+	toReview              // a finished agent's report I haven't marked reviewed, an approved PR of mine
 	working               // an agent still working
 	idle                  // an agent with an open session and nothing new for me
 	closed                // an agent whose session is closed
@@ -79,7 +79,16 @@ func (it queueItem) pending() bool { return it.Group == needsYou || it.Group == 
 
 // urgent is whether the item is blocked on me rather than done.
 func (it queueItem) urgent() bool {
-	return it.Kind == prItem || it.Agent == "blocked" || it.Agent == "error"
+	if it.Kind == prItem {
+		return it.Pr.Category == "Blocked"
+	}
+	return it.Agent == "blocked" || it.Agent == "error"
+}
+
+// queuedPr is whether the PR waits on me: mine and blocked, or mine and approved (the board files
+// an approved PR whose CI isn't running under Done).
+func queuedPr(p Pr) bool {
+	return p.Mine && (p.Category == "Blocked" || p.Category == "Done")
 }
 
 var (
@@ -149,8 +158,12 @@ func queueItems(s State, sessions []rexSession, prs []Pr) []queueItem {
 	}
 	for _, p := range prs {
 		// A PR has no session to keep listing: marked reviewed, it goes until its status changes.
-		if p.Mine && p.Category == "Blocked" && s.Dismissed[prDismissKey(p.Key)] != p.Status {
-			items = append(items, queueItem{Kind: prItem, Group: needsYou, Key: p.Key, Title: p.Summary, Pr: &p, Sig: p.Status})
+		if queuedPr(p) && s.Dismissed[prDismissKey(p.Key)] != p.Status {
+			it := queueItem{Kind: prItem, Group: toReview, Key: p.Key, Title: p.Summary, Pr: &p, Sig: p.Status}
+			if it.urgent() {
+				it.Group = needsYou
+			}
+			items = append(items, it)
 		}
 	}
 	slices.SortFunc(items, func(a, b queueItem) int {
@@ -182,13 +195,13 @@ func sessionFixes(s State, sessions []rexSession) map[string]string {
 }
 
 // staleDismissals are the dismissed keys that can't show again: neither a dispatched ticket or
-// review nor one of my PRs still blocked on me. Without pruning, every PR I ever dismissed stays
+// review nor one of my PRs still blocked on me or approved. Without pruning, every PR I ever dismissed stays
 // in the state file. Called only after a successful PR load, so a failed one prunes nothing.
 func staleDismissals(s State, prs []Pr) []string {
 	var out []string
 	for key := range s.Dismissed {
 		if pr, ok := strings.CutPrefix(key, "pr:"); ok {
-			if slices.ContainsFunc(prs, func(p Pr) bool { return p.Key == pr && p.Mine && p.Category == "Blocked" }) {
+			if slices.ContainsFunc(prs, func(p Pr) bool { return p.Key == pr && queuedPr(p) }) {
 				continue
 			}
 		} else if _, ok := s.Dispatched[key]; ok {
@@ -745,6 +758,9 @@ var groupNames = map[group]string{needsYou: "needs you", toReview: "review", wor
 // itemLabel is the item's coloured mark and its state.
 func itemLabel(it queueItem) (string, string) {
 	if it.Kind == prItem {
+		if !it.urgent() {
+			return fg(cGreen, "✓"), fg(cGreen, it.Pr.Status)
+		}
 		return fg(cRed, "✗"), fg(cRed, it.Pr.Status)
 	}
 	what := "done"

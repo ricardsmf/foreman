@@ -453,7 +453,7 @@ func TestQueueItems(t *testing.T) {
 	sessions := []rexSession{{"s1", "fld-1-a", "done"}, {"s2", "fld-2-b", "blocked"}, {"s3", "fld-3-c", "working"}, {"s7", "review-repo-7", "idle"}, {"s5", "fld-5-e", "done"}}
 	prs := []Pr{
 		{Key: "repo#9", Mine: true, Category: "Blocked", Status: "in review ✗"},
-		{Key: "repo#10", Mine: true, Category: "Done"},
+		{Key: "repo#10", Mine: true, Category: "Done", Status: "approved ✓"},
 		{Key: "repo#11", Category: "Blocked"},
 	}
 	groups := func(items []queueItem) map[string]group {
@@ -464,7 +464,7 @@ func TestQueueItems(t *testing.T) {
 		return out
 	}
 	items := queueItems(s, sessions, prs)
-	want := map[string]group{"FLD-2": needsYou, "repo#9": needsYou, "FLD-1": toReview, "FLD-4": toReview, "repo#7": toReview, "FLD-3": working, "FLD-5": idle}
+	want := map[string]group{"FLD-2": needsYou, "repo#9": needsYou, "FLD-1": toReview, "FLD-4": toReview, "repo#7": toReview, "repo#10": toReview, "FLD-3": working, "FLD-5": idle}
 	if got := groups(items); !maps.Equal(got, want) {
 		t.Fatalf("groups = %v, want %v", got, want)
 	}
@@ -781,7 +781,7 @@ func TestStaleDismissals(t *testing.T) {
 		Dispatched: map[string]string{"FLD-1": "/w/1"},
 		Dismissed:  map[string]string{"FLD-1": "a", "FLD-9": "b", "pr:repo#2": "c", "pr:repo#3": "d", "repo#2": "e"},
 	}
-	prs := []Pr{{Key: "repo#2", Mine: true, Category: "Blocked"}, {Key: "repo#3", Mine: true, Category: "Done"}}
+	prs := []Pr{{Key: "repo#2", Mine: true, Category: "Blocked"}, {Key: "repo#3", Mine: true, Category: "In Progress"}}
 	got := staleDismissals(s, prs)
 	slices.Sort(got)
 	if !slices.Equal(got, []string{"FLD-9", "pr:repo#3", "repo#2"}) {

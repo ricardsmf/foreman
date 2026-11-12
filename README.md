@@ -94,7 +94,8 @@ grouped most urgent first:
    without one, the end of their screen; then your PRs with failed CI, changes requested or a
    conflict (`✗`).
 2. **review**: agents that finished with a report you haven't marked reviewed (`✓`), newest first,
-   with their evidence (`▣ 3` screenshots or captures, `▶ video`).
+   with their evidence (`▣ 3` screenshots or captures, `▶ video`); then your approved PRs whose CI
+   passed or has no checks (`✓`), ready to merge.
 3. **working**: agents still working (`●` yellow), with the end of their screen, refreshed every poll.
 4. **idle**: agents whose session is open with nothing new for you (`○`), reviewed or without a report.
 5. **closed**: agents whose session is closed (`◇`), until `K` drops them from the queue or `^x` on
