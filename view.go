@@ -233,6 +233,10 @@ func (m *model) renderBoard(width, h int) []string {
 	}
 
 	out = append(out, fg(cSurface, strings.Repeat("─", width)))
+	if m.picker != nil {
+		out = append(out, m.renderPicker(width, detailRows)...)
+		return append(out, fg(cOverlay, m.pickerKeys()))
+	}
 	var detail []string
 	if hasCurrent {
 		if lines := m.details[current.Key]; lines != nil {
@@ -246,7 +250,7 @@ func (m *model) renderBoard(width, h int) []string {
 	if isPrs {
 		out = append(out, fg(cOverlay, "↑↓ pick · enter review · tab tickets · ^o requested/mine · ^a author · ^u/^d scroll · ^b browser · ^s session · ^t task · ^g orchestrator · ^x clean up · ^r refresh · esc quit"))
 	} else {
-		out = append(out, fg(cOverlay, "↑↓ pick · enter dispatch · tab PRs · ^o mine · ^a assignee · ^u/^d scroll · ^b browser · ^s session · ^t task · ^g orchestrator · ^x clean up · ^r refresh · esc quit"))
+		out = append(out, fg(cOverlay, "↑↓ pick · enter dispatch · tab PRs · ^o mine · ^a assignee · ^w set status · ^y set assignee · ^u/^d scroll · ^b browser · ^s session · ^t task · ^g orchestrator · ^x clean up · ^r refresh · esc quit"))
 	}
 	return out
 }

@@ -195,10 +195,7 @@ func (j *Jira) issues(ctx context.Context, jql string) (issues []Issue, truncate
 				if f.Status.StatusCategory != nil {
 					is.Category = f.Status.StatusCategory.Name
 				}
-				// Jira's categories are only To Do, In Progress and Done; a blocked status is In Progress.
-				if strings.Contains(strings.ToLower(is.Status), "blocked") {
-					is.Category = "Blocked"
-				}
+				is.Category = boardCategory(is.Status, is.Category)
 			}
 			if f.Assignee != nil {
 				is.Assignee = f.Assignee.DisplayName

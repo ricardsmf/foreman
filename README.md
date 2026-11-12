@@ -28,7 +28,8 @@ write takes at most 4 KB. The OAuth callback listens on `localhost:3127`.
 
 Board: type or paste to filter (every word must match), `↑↓` pick, `enter` dispatch, `tab`
 tickets/PRs, `^o` mine (on PRs: cycles review requested, mine, everyone), `^a` cycle assignee (on
-PRs: author), `^u`/`^d` scroll the description, `^b` open in browser, `^s` go to the agent's Rex
+PRs: author), `^w` set the ticket's status, `^y` set its assignee (see [Changing a
+ticket](#changing-a-ticket)), `^u`/`^d` scroll the description, `^b` open in browser, `^s` go to the agent's Rex
 session, `^t` a [task](#tasks), `^g` the [orchestrator](#orchestrator), `^x` clean up worktrees, `^r` refresh, `esc` quit.
 
 Dispatch form: `tab`/`↑↓` field, `←→` agent or repo, `space` worktree or poteto-mode on/off, type to filter repos
@@ -39,6 +40,22 @@ Both views reload when the board regains focus after five minutes or more, and e
 
 A search loads at most 500 tickets; past that the count reads `500+` and the status line says so.
 The PR view stops at 500 open PRs the same way.
+
+## Changing a ticket
+
+`^w` and `^y` change the selected ticket's status and assignee in Jira, in a picker that takes the
+detail pane's place. Type to filter, `↑↓` pick, `enter` set, `esc` back.
+
+- `^w` lists the transitions Jira allows the ticket now, by the status each leads to (`via …`
+  names a transition called something else); the current status is marked `(now)`.
+- `^y` starts with you and `unassigned`, then the users who can be assigned the ticket. Typing
+  asks Jira for the matching ones, since it returns at most 50 at a time.
+- After the change the board reads the ticket back and its row shows the new status or assignee
+  where it is; the next reload sorts it. A failure is shown on the status line and the picker stays
+  open.
+- These are the only Jira writes foreman makes, and only from these keys: no command does them, so
+  the orchestrator and agents can't. They go through the MCP's `transitionJiraIssue` and
+  `editJiraIssue`; the sign-in's `write:jira:agent-interface` scope covers them.
 
 ## Dispatching
 

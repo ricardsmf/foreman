@@ -412,6 +412,7 @@ func connect(ctx context.Context, log func(string)) (*Mcp, error) {
 }
 
 // call runs a tool and decodes its JSON text result, unwrapped from a top-level `data` if present.
+// A nil out ignores the result: a write's reply needn't be JSON for the write to have worked.
 func (m *Mcp) call(ctx context.Context, tool string, args map[string]any, out any) error {
 	res, err := m.session.CallTool(ctx, &mcp.CallToolParams{Name: tool, Arguments: args})
 	if err != nil {
@@ -429,6 +430,9 @@ func (m *Mcp) call(ctx context.Context, tool string, args map[string]any, out an
 			text = text[:500]
 		}
 		return fmt.Errorf("%s: %s", tool, text)
+	}
+	if out == nil {
+		return nil
 	}
 	var wrapper struct {
 		Data json.RawMessage `json:"data"`
