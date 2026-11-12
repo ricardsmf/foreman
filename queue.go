@@ -55,6 +55,8 @@ type queueItem struct {
 	Pr      *Pr
 	// Watcher marks a watcher's session rather than a dispatched agent's.
 	Watcher bool
+	// Orchestrator marks the orchestrator's session.
+	Orchestrator bool
 	// Sig is what the item showed; marking it reviewed holds until this changes.
 	Sig string
 }
@@ -155,6 +157,9 @@ func queueItems(s State, sessions []rexSession, prs []Pr) []queueItem {
 	}
 	for _, w := range watchers {
 		items = append(items, watcherItem(w, sessions))
+	}
+	if it, ok := orchestratorItem(sessions, s.Orchestrator); ok {
+		items = append(items, it)
 	}
 	for _, p := range prs {
 		// A PR has no session to keep listing: marked reviewed, it goes until its status changes.
@@ -508,7 +513,7 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 		}
 	case "o":
 		switch {
-		case it.Watcher:
+		case it.Watcher, it.Orchestrator:
 		case isTask(it.Key):
 			q.say("A task has no ticket or PR to open", cOverlay)
 		case it.Pr != nil:
@@ -814,6 +819,9 @@ func itemLabel(it queueItem) (string, string) {
 	}
 	if it.Report == "" {
 		what = "no report"
+	}
+	if it.Orchestrator {
+		what = "waiting for you"
 	}
 	if it.Watcher {
 		what = "between passes"

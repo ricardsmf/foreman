@@ -20,7 +20,7 @@ import (
 const commandsUsage = `usage: foreman agents [--json] [--prs]   every dispatched agent and watcher, by queue group
        foreman report KEY                the agent's report and its evidence files
        foreman screen [--lines N] KEY     the end of the agent's pane (0: all of it)
-       foreman reply [--now] KEY TEXT|-   type TEXT into the agent's pane and press enter
+       foreman reply [--now] KEY TEXT|-   type TEXT into the agent's pane and press enter (options before KEY)
        foreman wait [--timeout D] KEY     block until the agent stops working
        foreman cleanup [--dry-run] [KEY…] remove finished worktrees, as ^x on the board
 
@@ -52,6 +52,8 @@ func kindName(it queueItem) string {
 		return "pr"
 	case it.Watcher:
 		return "watcher"
+	case it.Orchestrator:
+		return "orchestrator"
 	case it.review():
 		return "review"
 	case isTask(it.Key):
@@ -70,7 +72,10 @@ func agentInfoOf(it queueItem, s State) agentInfo {
 		a.State, a.Session, a.URL, a.Status = "", "", it.Pr.URL, it.Pr.Status
 		return a
 	}
-	if !it.Watcher {
+	switch {
+	case it.Orchestrator:
+		a.Agent = agentClaude
+	case !it.Watcher:
 		a.Agent = s.Agents[it.Key]
 	}
 	if it.Report != "" {
@@ -113,7 +118,7 @@ func runAgents(argv []string, out io.Writer) error {
 	fs := newFlags("agents")
 	asJSON := fs.Bool("json", false, "")
 	withPrs := fs.Bool("prs", false, "")
-	if err := parseFlags(fs, argv, 0); err != nil {
+	if _, err := parseFlags(fs, argv, 0); err != nil {
 		return err
 	}
 	sessions, err := agentSessions()
@@ -163,10 +168,11 @@ func writeAgents(out io.Writer, infos []agentInfo) error {
 
 func runReport(argv []string, out io.Writer) error {
 	fs := newFlags("report")
-	if err := parseFlags(fs, argv, 1); err != nil {
+	args, err := parseFlags(fs, argv, 1)
+	if err != nil {
 		return err
 	}
-	_, it, err := lookup(fs.Arg(0))
+	_, it, err := lookup(args[0])
 	if err != nil {
 		return err
 	}
@@ -191,10 +197,11 @@ func runReport(argv []string, out io.Writer) error {
 func runScreen(argv []string, out io.Writer) error {
 	fs := newFlags("screen")
 	lines := fs.Int("lines", 40, "")
-	if err := parseFlags(fs, argv, 1); err != nil {
+	args, err := parseFlags(fs, argv, 1)
+	if err != nil {
 		return err
 	}
-	_, it, err := lookup(fs.Arg(0))
+	_, it, err := lookup(args[0])
 	if err != nil {
 		return err
 	}
@@ -266,10 +273,11 @@ func replyAllowed(it queueItem, now bool) error {
 func runWait(argv []string, out io.Writer) error {
 	fs := newFlags("wait")
 	timeout := fs.Duration("timeout", 30*time.Minute, "")
-	if err := parseFlags(fs, argv, 1); err != nil {
+	args, err := parseFlags(fs, argv, 1)
+	if err != nil {
 		return err
 	}
-	key := fs.Arg(0)
+	key := args[0]
 	look := func() (queueItem, error) {
 		_, it, err := lookup(key)
 		return it, err
@@ -313,8 +321,9 @@ func waitIdle(look func() (queueItem, error), timeout, settle, poll time.Duratio
 func runCleanup(argv []string, out io.Writer) error {
 	fs := newFlags("cleanup")
 	dryRun := fs.Bool("dry-run", false, "")
-	if err := fs.Parse(argv); err != nil {
-		return usageError(err)
+	keys, err := parseFlags(fs, argv, -1)
+	if err != nil {
+		return err
 	}
 	states, err := agentStates()
 	if err != nil {
@@ -331,7 +340,7 @@ func runCleanup(argv []string, out io.Writer) error {
 	for _, f := range found.failed {
 		fmt.Fprintln(os.Stderr, "couldn't check "+f)
 	}
-	picked, err := pickCandidates(found.candidates, fs.Args())
+	picked, err := pickCandidates(found.candidates, keys)
 	if err != nil {
 		return err
 	}
@@ -408,15 +417,23 @@ func newFlags(name string) *flag.FlagSet {
 	return fs
 }
 
-// parseFlags parses argv and wants exactly args positional arguments.
-func parseFlags(fs *flag.FlagSet, argv []string, args int) error {
-	if err := fs.Parse(argv); err != nil {
-		return usageError(err)
+// parseFlags parses argv, options before or after the keys, and returns the keys: exactly args
+// of them, or any number when args is -1.
+func parseFlags(fs *flag.FlagSet, argv []string, args int) ([]string, error) {
+	var keys []string
+	for {
+		if err := fs.Parse(argv); err != nil {
+			return nil, usageError(err)
+		}
+		if fs.NArg() == 0 {
+			break
+		}
+		keys, argv = append(keys, fs.Arg(0)), fs.Args()[1:]
 	}
-	if fs.NArg() != args {
-		return usageError(fmt.Errorf("%s takes %d argument(s), got %d", fs.Name(), args, fs.NArg()))
+	if args >= 0 && len(keys) != args {
+		return nil, usageError(fmt.Errorf("%s takes %d argument(s), got %d", fs.Name(), args, len(keys)))
 	}
-	return nil
+	return keys, nil
 }
 
 func usageError(err error) error { return fmt.Errorf("%w\n\n%s", err, commandsUsage) }

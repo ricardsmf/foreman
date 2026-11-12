@@ -29,7 +29,7 @@ write takes at most 4 KB. The OAuth callback listens on `localhost:3127`.
 Board: type or paste to filter (every word must match), `↑↓` pick, `enter` dispatch, `tab`
 tickets/PRs, `^o` mine (on PRs: cycles review requested, mine, everyone), `^a` cycle assignee (on
 PRs: author), `^u`/`^d` scroll the description, `^b` open in browser, `^s` go to the agent's Rex
-session, `^t` a [task](#tasks), `^x` clean up worktrees, `^r` refresh, `esc` quit.
+session, `^t` a [task](#tasks), `^g` the [orchestrator](#orchestrator), `^x` clean up worktrees, `^r` refresh, `esc` quit.
 
 Dispatch form: `tab`/`↑↓` field, `←→` agent or repo, `space` worktree or poteto-mode on/off, type to filter repos
 or write extra context, `alt+enter` new line, paste works, `^e` writes the context in `$VISUAL` /
@@ -106,6 +106,8 @@ ticket or PR whose agent session is still open needs `--again`, like the board's
 What the queue shows and does, as commands. KEY is a dispatch's key (`FLD-1700`,
 `reports-app#1185`, `task:foreman-3`) or a watcher's name, in any case.
 
+Options go before or after KEY, except `reply`'s, which go before it.
+
 ```
 foreman agents [--json] [--prs]     every agent and watcher by queue group; --prs adds my PRs that need me
 foreman report KEY                  the report and the paths of its evidence; fails when there is none
@@ -123,6 +125,25 @@ foreman cleanup [--dry-run] [KEY…]  list finished dispatches and remove what ^
 - `wait` gives an agent that isn't working ten seconds to start, so `reply` then `wait` waits for the
   answer rather than returning at once.
 - `cleanup` never forces: git refuses a worktree with changes, and branches stay.
+
+## Orchestrator
+
+A Claude Code session to talk to: tell it what you want done and it dispatches agents, follows
+them and summarises their reports. `^g` on the board goes to its Rex session, `foreman-orchestrator`,
+starting it when it isn't running; the queue lists it while it runs, with **needs you** when it
+waits on a permission prompt.
+
+- It runs `foreman orchestrator`: Claude Code in `~/.local/state/foreman/orchestrator`, outside
+  every repo, continuing its last conversation (`--new` starts a fresh one). Its instructions are
+  the `CLAUDE.md` there, rewritten from foreman's source on each start: hand every piece of work to
+  an agent, brief it fully, bring permission prompts and scope questions to me, never push or post.
+- It runs in the manual permission mode, whatever your settings say. The read-only commands
+  (`agents`, `report`, `screen`, `wait`) run without asking; `dispatch`, `reply` and `cleanup`,
+  `--dry-run` too, ask each time through `ask` rules, so a reply can't answer another agent's
+  permission prompt unseen. Manual mode alone doesn't do it: Claude Code runs `foreman dispatch`
+  unasked there.
+- It has the MCP servers in `~/.config/mcp/mcp.json`, to read Jira tickets.
+- It is tracked by its session ID, recorded when it starts, so renaming its session doesn't lose it.
 
 ## Reviews
 

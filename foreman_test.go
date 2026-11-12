@@ -1543,12 +1543,73 @@ func TestPickCandidates(t *testing.T) {
 }
 
 func TestCommandArgs(t *testing.T) {
-	if err := parseFlags(newFlags("report"), nil, 1); err == nil || !strings.Contains(err.Error(), "takes 1 argument") {
+	if _, err := parseFlags(newFlags("report"), nil, 1); err == nil || !strings.Contains(err.Error(), "takes 1 argument") {
 		t.Errorf("report without a key: %v", err)
 	}
-	fs := newFlags("screen")
-	lines := fs.Int("lines", 40, "")
-	if err := parseFlags(fs, []string{"--lines", "0", "FLD-1"}, 1); err != nil || *lines != 0 || fs.Arg(0) != "FLD-1" {
-		t.Errorf("screen: %v, lines %d", err, *lines)
+	// Options go before or after the key.
+	for _, argv := range [][]string{{"--lines", "0", "FLD-1"}, {"FLD-1", "--lines", "0"}} {
+		fs := newFlags("screen")
+		lines := fs.Int("lines", 40, "")
+		if keys, err := parseFlags(fs, argv, 1); err != nil || *lines != 0 || !slices.Equal(keys, []string{"FLD-1"}) {
+			t.Errorf("screen %q: %q, %v, lines %d", argv, keys, err, *lines)
+		}
+	}
+	fs := newFlags("cleanup")
+	dry := fs.Bool("dry-run", false, "")
+	if keys, err := parseFlags(fs, []string{"FLD-1", "--dry-run", "FLD-2"}, -1); err != nil || !*dry || len(keys) != 2 {
+		t.Errorf("cleanup: %q, %v, dry %t", keys, err, *dry)
+	}
+}
+
+// The orchestrator is listed while it runs, with the agents that need me when it waits on a
+// permission prompt.
+func TestOrchestratorItem(t *testing.T) {
+	if _, ok := orchestratorItem(nil, ""); ok {
+		t.Error("listed an orchestrator that isn't running")
+	}
+	// A session whose label only starts with the name is someone else's.
+	if _, ok := orchestratorItem([]rexSession{{ID: "x", Label: orchestratorName + "-chat"}}, ""); ok {
+		t.Error("took foreman-orchestrator-chat for the orchestrator")
+	}
+	if it, ok := orchestratorItem([]rexSession{{ID: "o2", Label: "renamed-it"}}, "o2"); !ok || it.Session != "o2" {
+		t.Errorf("a renamed orchestrator: %+v, %t", it, ok)
+	}
+	for state, want := range map[string]group{"blocked": needsYou, "working": working, "idle": idle, "open": idle} {
+		it, ok := orchestratorItem([]rexSession{{ID: "o1", Label: orchestratorName, State: state}}, "")
+		if !ok || it.Group != want || it.Session != "o1" || kindName(it) != "orchestrator" {
+			t.Errorf("%s: %+v, %t", state, it, ok)
+		}
+	}
+}
+
+// Read-only foreman commands run unasked; --allowedTools takes a list, so it comes last.
+func TestOrchestratorCommand(t *testing.T) {
+	cmd := orchestratorCommand(true)
+	at := slices.Index(cmd, "--allowedTools")
+	mode := slices.Index(cmd, "--permission-mode")
+	if mode < 0 || cmd[mode+1] != "manual" {
+		t.Errorf("the orchestrator follows my default permission mode: %q", cmd)
+	}
+	if !slices.Contains(cmd, "--continue") || at < 0 || !slices.Equal(cmd[at+1:], orchestratorTools) {
+		t.Errorf("command = %q", cmd)
+	}
+	if slices.Contains(orchestratorCommand(false), "--continue") {
+		t.Error("a new conversation continues the last one")
+	}
+	for _, tool := range orchestratorTools {
+		for _, writes := range []string{"dispatch:", "reply", "cleanup"} {
+			if strings.Contains(tool, writes) {
+				t.Errorf("%s runs without asking", tool)
+			}
+		}
+	}
+	settings := cmd[slices.Index(cmd, "--settings")+1]
+	for _, ask := range []string{"Bash(foreman dispatch:*)", "Bash(foreman reply:*)", "Bash(foreman cleanup:*)"} {
+		if !strings.Contains(settings, `"`+ask+`"`) {
+			t.Errorf("%s doesn't always ask: %s", ask, settings)
+		}
+	}
+	if err := runOrchestrator([]string{"--old"}); err == nil {
+		t.Error("took an unknown option")
 	}
 }

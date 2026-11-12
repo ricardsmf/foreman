@@ -29,6 +29,8 @@ type State struct {
 	// Hidden holds the dispatched keys whose closed session I dropped from the queue. The worktree
 	// stays dispatched, for the board's cleanup; reopening the session or dispatching again shows it.
 	Hidden map[string]bool `json:"hidden,omitempty"`
+	// Orchestrator is the orchestrator's Rex session ID: it may rename the session.
+	Orchestrator string `json:"orchestrator,omitempty"`
 	// TaskSeq holds the last task number used in each repo, by the repo's directory name.
 	TaskSeq map[string]int `json:"taskSeq,omitempty"`
 	// FormRequest asks the board to open its dispatch form on a ticket: the queue's enter on a PR

@@ -87,6 +87,13 @@ func (m *model) boardInput(msg tea.KeyPressMsg) tea.Cmd {
 		return m.findCleanup()
 	case k == "ctrl+t":
 		m.openTaskForm()
+	case k == "ctrl+g":
+		return func() tea.Msg {
+			if err := goToOrchestrator(); err != nil {
+				return statusMsg{"Orchestrator: " + err.Error(), cRed, false}
+			}
+			return nil
+		}
 	case k == "enter":
 		if ok {
 			m.openForm(current)
