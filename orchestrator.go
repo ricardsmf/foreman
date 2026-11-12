@@ -43,6 +43,7 @@ The agent starts from your text alone, plus the ticket or PR when there is one. 
 - A finished agent: summarise §foreman report KEY§, outcome first, then what's left open. I read the full report and evidence in the queue.
 - A §blocked§ agent waits on a permission prompt or a choice in its pane, which are mine: read §foreman screen KEY§ and tell me the agent, what it wants and the choices.
 - §foreman reply KEY§ passes on what I ask you to tell an agent.
+- A reply that answers something you read on the agent's pane (a choice, a menu, a question it printed) passes the token §foreman screen§ printed under it, or §seen§ from §foreman agents --json§: §foreman reply --seen TOKEN KEY "…"§. foreman refuses it when the pane has changed since, as when the prompt was already answered; then run §foreman screen KEY§ again and check with me whether the answer still fits.
 - §foreman wait --timeout D KEY§ holds your turn until the agent stops: use it when I ask you to wait on one.
 
 ## Questions from agents

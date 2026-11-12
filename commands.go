@@ -6,6 +6,8 @@ package main
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -14,14 +16,18 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
 const commandsUsage = `usage: foreman agents [--json] [--prs]   every dispatched agent and watcher, by queue group
        foreman report KEY                the agent's report and its evidence files
-       foreman screen [--lines N] KEY     the end of the agent's pane (0: all of it)
-       foreman reply [--now] KEY TEXT|-   type TEXT into the agent's pane and press enter (options before KEY);
-                                          to an agent waiting in foreman ask, TEXT is the answer
+       foreman screen [--lines N] KEY     the end of the agent's pane (0: all of it), then its seen token
+       foreman reply [--now] [--seen TOKEN] KEY TEXT|-
+                                          type TEXT into the agent's pane and press enter (options before KEY);
+                                          to an agent waiting in foreman ask, TEXT is the answer.
+                                          --seen TOKEN: refuse unless the pane still shows what screen or
+                                          agents --json printed TOKEN for; answer what you read with it
        foreman ask [--timeout D] TEXT|-   from an agent: put a question to the orchestrator and print the answer
        foreman answer KEY TEXT|-          answer the question KEY waits on
        foreman escalate KEY NOTE|-        hand KEY's question to me in the queue, with a suggestion
@@ -46,6 +52,8 @@ type agentInfo struct {
 	ReportAt    *time.Time `json:"reportAt,omitempty"`
 	Screenshots int        `json:"screenshots,omitempty"`
 	Videos      int        `json:"videos,omitempty"`
+	// Seen is the token reply --seen takes, for what the pane shows now.
+	Seen string `json:"seen,omitempty"`
 	// Question is the one the agent waits on in foreman ask.
 	Question *Question `json:"question,omitempty"`
 	URL      string    `json:"url,omitempty"`    // a PR's
@@ -139,10 +147,12 @@ func runAgents(argv []string, out io.Writer) error {
 	}
 	s := loadState()
 	infos := []agentInfo{}
-	for _, it := range queueItems(s, sessions, prs) {
+	items := queueItems(s, sessions, prs)
+	for _, it := range items {
 		infos = append(infos, agentInfoOf(it, s))
 	}
 	if *asJSON {
+		addSeen(infos, items, capturePane)
 		enc := json.NewEncoder(out)
 		enc.SetIndent("", "  ")
 		return enc.Encode(infos)
@@ -219,11 +229,7 @@ func runScreen(argv []string, out io.Writer) error {
 	if it.Agent == "" {
 		return fmt.Errorf("%s's session is closed", it.Key)
 	}
-	block, err := agentBlock(it.Session)
-	if err != nil {
-		return err
-	}
-	screen, err := sh("", "rex", "capture", "-s", it.Session, "-b", block, "--trim")
+	screen, err := capturePane(it)
 	if err != nil {
 		return err
 	}
@@ -232,12 +238,82 @@ func runScreen(argv []string, out io.Writer) error {
 		all = all[max(0, len(all)-*lines):]
 	}
 	fmt.Fprintln(out, strings.Join(all, "\n"))
+	token := seenToken(it.Agent, screen)
+	fmt.Fprintf(out, "\nseen %s: foreman reply --seen %s %s TEXT answers what this shows\n", token, token, it.Key)
 	return nil
+}
+
+// capturePane is the text of the agent's pane, its scrollback included.
+func capturePane(it queueItem) (string, error) {
+	block, err := agentBlock(it.Session)
+	if err != nil {
+		return "", err
+	}
+	return sh("", "rex", "capture", "-s", it.Session, "-b", block, "--trim")
+}
+
+// seenLines is how many of the pane's last non-blank lines a seen token covers. Twelve hold what
+// a reply answers: Claude Code's permission prompt or menu with its options and footer, which
+// replace its input box at the bottom, and pi's question or editor above its four-line footer.
+// Output further up, a clock or a scrolled spinner, doesn't change the token.
+const seenLines = 12
+
+// seenToken stands for what an agent showed: the state it reports over OSC 7501 and a hash of its
+// pane's last seenLines non-blank lines, trailing spaces dropped, so redrawn padding doesn't count.
+func seenToken(state, screen string) string {
+	var tail []string
+	for _, l := range strings.Split(screen, "\n") {
+		if l = strings.TrimRight(l, " \t\r"); l != "" {
+			tail = append(tail, l)
+		}
+	}
+	tail = tail[max(0, len(tail)-seenLines):]
+	sum := sha256.Sum256([]byte(strings.Join(tail, "\n")))
+	return cmp.Or(state, "closed") + "-" + hex.EncodeToString(sum[:4])
+}
+
+// addSeen gives each agent with an open session its seen token, reading the panes side by side.
+// An agent whose pane can't be read gets none.
+func addSeen(infos []agentInfo, items []queueItem, capture func(queueItem) (string, error)) {
+	var wg sync.WaitGroup
+	for n, it := range items {
+		if it.Kind != agentItem || it.Agent == "" {
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if screen, err := capture(it); err == nil {
+				infos[n].Seen = seenToken(it.Agent, screen)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+// stillSeen reads the agent's pane again and refuses when it no longer matches the seen token:
+// what the caller answers may have been answered already, and the text would land as a message.
+func stillSeen(it queueItem, seen string, capture func(queueItem) (string, error)) error {
+	screen, err := capture(it)
+	if err != nil {
+		return fmt.Errorf("reading %s's pane to check --seen: %w", it.Key, err)
+	}
+	now := seenToken(it.Agent, screen)
+	if now == seen {
+		return nil
+	}
+	changed := "its pane changed"
+	if was, _, _ := strings.Cut(seen, "-"); was != cmp.Or(it.Agent, "closed") {
+		changed = fmt.Sprintf("it was %s and is %s now", was, cmp.Or(it.Agent, "closed"))
+	}
+	return fmt.Errorf("not sent: %s since you read it (seen %s, now %s), so what you answer may be gone. Run foreman screen %s again and reply to what it shows now",
+		changed, seen, now, it.Key)
 }
 
 func runReply(argv []string, stdin io.Reader, out io.Writer) error {
 	fs := newFlags("reply")
 	now := fs.Bool("now", false, "")
+	seen := fs.String("seen", "", "")
 	if err := fs.Parse(argv); err != nil {
 		return usageError(err)
 	}
@@ -261,7 +337,11 @@ func runReply(argv []string, stdin io.Reader, out io.Writer) error {
 	}
 	by := role()
 	// An agent waiting in foreman ask gets the reply as its answer, not as typing.
-	if _, waiting := s.Questions[it.Key]; waiting {
+	if q, waiting := s.Questions[it.Key]; waiting {
+		// What the caller read on the pane isn't what this answers.
+		if *seen != "" {
+			return fmt.Errorf("not sent: %s now waits in foreman ask on %q; answer that with foreman answer %s", it.Key, q.Text, it.Key)
+		}
 		if err := answerQuestion(it.Key, text, by); err != nil {
 			return err
 		}
@@ -270,6 +350,11 @@ func runReply(argv []string, stdin io.Reader, out io.Writer) error {
 	}
 	if err := replyAllowed(it, *now, by); err != nil {
 		return err
+	}
+	if *seen != "" {
+		if err := stillSeen(it, *seen, capturePane); err != nil {
+			return err
+		}
 	}
 	if err := sendToAgent(it.Session, text); err != nil {
 		return fmt.Errorf("reply to %s: %w", it.Key, err)

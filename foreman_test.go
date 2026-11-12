@@ -1480,6 +1480,80 @@ func TestReplyAllowed(t *testing.T) {
 	}
 }
 
+// A seen token covers the agent's state and its pane's last lines, not output further up.
+func TestSeenToken(t *testing.T) {
+	var older []string
+	for n := range 30 {
+		older = append(older, fmt.Sprintf("output %d", n))
+	}
+	prompt := "Bash command\n  rm -rf dist\nDo you want to proceed?\n❯ 1. Yes\n  2. No\n\nEsc to cancel\n"
+	screen := strings.Join(older, "\n") + "\n" + prompt
+	token := seenToken("blocked", screen)
+	if !strings.HasPrefix(token, "blocked-") || len(token) != len("blocked-")+8 {
+		t.Errorf("token = %q", token)
+	}
+	for name, same := range map[string]string{
+		"a clock further up":  strings.Replace(screen, "output 2\n", "output 2 12:31\n", 1),
+		"padding":             strings.ReplaceAll(screen, "\n", "  \n") + "\n\n",
+		"blank lines between": strings.Replace(screen, "Esc to cancel", "\n\nEsc to cancel", 1),
+	} {
+		if got := seenToken("blocked", same); got != token {
+			t.Errorf("%s changed the token: %s, was %s", name, got, token)
+		}
+	}
+	answered := strings.Join(older, "\n") + "\n⏺ Bash(rm -rf dist)\n✻ Working… (2s)\n❯ \n"
+	for name, other := range map[string]string{
+		"the prompt answered": seenToken("blocked", answered),
+		"the state":           seenToken("idle", screen),
+	} {
+		if other == token {
+			t.Errorf("%s left the token as it was", name)
+		}
+	}
+	if got := seenToken("", ""); got != seenToken("", "\n \n") || !strings.HasPrefix(got, "closed-") {
+		t.Errorf("an empty pane: %q", got)
+	}
+}
+
+// reply --seen types only while the pane shows what the token was made from: a permission prompt
+// answered in the meantime refuses the reply, rather than typing "1" as a message.
+func TestReplyRefusesAfterTheScreenChanged(t *testing.T) {
+	it := queueItem{Kind: agentItem, Key: "reports-app#1260", Agent: "blocked", Session: "s1"}
+	prompt := "Do you want to proceed?\n❯ 1. Yes\n  2. No\n"
+	screen := prompt
+	capture := func(got queueItem) (string, error) {
+		if got.Session != "s1" {
+			t.Errorf("captured session %q", got.Session)
+		}
+		return screen, nil
+	}
+	infos := []agentInfo{{Key: it.Key}, {Key: "closed"}}
+	addSeen(infos, []queueItem{it, {Kind: agentItem, Key: "closed"}}, capture)
+	seen := infos[0].Seen
+	if seen != seenToken("blocked", prompt) || infos[1].Seen != "" {
+		t.Fatalf("agents --json tokens: %+v", infos)
+	}
+	if err := stillSeen(it, seen, capture); err != nil {
+		t.Errorf("unchanged pane: %v", err)
+	}
+
+	screen = "⏺ Bash(npm test)\n✻ Working…\n❯ \n"
+	err := stillSeen(it, seen, capture)
+	if err == nil || !strings.Contains(err.Error(), "foreman screen reports-app#1260 again") || !strings.Contains(err.Error(), "its pane changed") {
+		t.Errorf("answered prompt: %v", err)
+	}
+
+	screen, it.Agent = prompt, "idle"
+	if err := stillSeen(it, seen, capture); err == nil || !strings.Contains(err.Error(), "it was blocked and is idle now") {
+		t.Errorf("state changed: %v", err)
+	}
+
+	failing := func(queueItem) (string, error) { return "", errors.New("no session s1") }
+	if err := stillSeen(it, seen, failing); err == nil {
+		t.Error("sent without reading the pane")
+	}
+}
+
 // The agents command reports what the queue shows, by key in any case, watchers included.
 func TestAgentsCommand(t *testing.T) {
 	tempState(t)
