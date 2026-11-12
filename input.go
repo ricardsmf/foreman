@@ -105,6 +105,8 @@ func (m *model) boardInput(msg tea.KeyPressMsg) tea.Cmd {
 	case k == "backspace":
 		m.query = dropLast(m.query)
 		move(0)
+	case text == "?" && m.query == "":
+		m.help = true
 	case text != "":
 		m.query += text
 		move(0)

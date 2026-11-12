@@ -176,6 +176,11 @@ type model struct {
 	status       string
 	statusColor  Color
 	statusSticky bool
+	statusAt     time.Time // when the status line was set: it clears after statusTTL
+	help         bool      // the list of keys is showing
+	theme        theme
+	rexLive      bool      // Rex's events arrive, so the sessions needn't be listed every tick
+	sessionsAt   time.Time // when the sessions were last listed
 	detailScroll int
 	details      map[string][]string // nil value = loading
 	detailOK     map[string]bool     // the cached detail is the real thing, not an error
@@ -191,7 +196,31 @@ type model struct {
 
 func (m *model) loading() bool { return m.inFlight[m.view] }
 
-func (m *model) say(text string, c Color) { m.status, m.statusColor, m.statusSticky = text, c, false }
+func (m *model) say(text string, c Color) {
+	m.status, m.statusColor, m.statusSticky, m.statusAt = text, c, false, time.Now()
+}
+
+// statusTTL is how long a status line stays: an error long enough to be seen on coming back to
+// the pane, a warning long enough to act on, anything else a glance.
+func statusTTL(c Color) time.Duration {
+	switch c {
+	case cRed:
+		return time.Minute
+	case cYellow:
+		return 20 * time.Second
+	}
+	return 10 * time.Second
+}
+
+// expireStatus clears a status line past its time. One that says something is under way ("…")
+// stays until its result replaces it, as does any line while a load or a dispatch runs.
+func (m *model) expireStatus() {
+	busy := len(m.inFlight) > 0 || (m.form != nil && m.form.busy) || (m.picker != nil && m.picker.busy) ||
+		(m.cleanup != nil && m.cleanup.busy) || strings.HasSuffix(m.status, "…")
+	if m.status != "" && !busy && time.Since(m.statusAt) > statusTTL(m.statusColor) {
+		m.say("", cOverlay)
+	}
+}
 
 func (m *model) rows() []Row {
 	if m.view == prs {
@@ -498,8 +527,11 @@ func pollAgents() tea.Msg {
 	return agentsMsg{states, loadState()}
 }
 
+// pollBoardState reads the state file alone, for the ticks between Rex's events.
+func pollBoardState() tea.Msg { return agentsMsg{nil, loadState()} }
+
 func (m *model) Init() tea.Cmd {
-	return tea.Batch(m.reload(tickets), m.reload(prs), pollAgents, agentsTick(),
+	return tea.Batch(m.reload(tickets), m.reload(prs), pollAgents, agentsTick(), requestTheme(),
 		tea.Tick(refreshInterval, func(time.Time) tea.Msg { return refreshTickMsg{} }))
 }
 
@@ -521,6 +553,9 @@ func (m *model) refreshStale() tea.Cmd {
 }
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.theme.take(msg) {
+		return m, nil
+	}
 	if cmd, ok := m.pickerUpdate(msg); ok {
 		return m, cmd
 	}
@@ -569,6 +604,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.say(fmt.Sprintf("Showing the first %d tickets; narrow the JQL to see the rest", maxIssues), cYellow)
 			}
 		}
+		if msg.which == tickets {
+			return m, tea.Batch(m.scheduleDetail(), m.dropFinished())
+		}
 	case detailTickMsg:
 		if msg.seq != m.detailSeq || m.form != nil {
 			return m, nil
@@ -609,11 +647,20 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Coming back to the board after a while: show what changed since.
 		return m, tea.Batch(m.refreshStale(), pollAgents)
 	case agentsTickMsg:
-		return m, tea.Batch(pollAgents, agentsTick())
+		m.expireStatus()
+		poll := pollAgents
+		if m.rexLive && time.Since(m.sessionsAt) < sessionsFallback {
+			poll = pollBoardState
+		}
+		return m, tea.Batch(poll, agentsTick())
+	case rexEventMsg:
+		return m, pollAgents
+	case rexLiveMsg:
+		m.rexLive = bool(msg)
 	case agentsMsg:
 		m.state = msg.state
 		if msg.states != nil {
-			m.agents = msg.states
+			m.agents, m.sessionsAt = msg.states, time.Now()
 		}
 		return m, m.takeFormRequest()
 	case formRowMsg:
@@ -647,6 +694,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.paste(msg.Content)
 		return m, m.scheduleDetail()
 	case tea.KeyPressMsg:
+		if m.help {
+			m.help = false
+			return m, nil
+		}
 		var cmd tea.Cmd
 		switch {
 		case m.cleanup != nil:
@@ -741,6 +792,9 @@ func run() error {
 		repos:       listRepos(),
 	}
 	prog = tea.NewProgram(m)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go watchRex(ctx, func(msg tea.Msg) { prog.Send(msg) })
 	go func() {
 		started, err := startWatchers()
 		switch {

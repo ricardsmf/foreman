@@ -3,34 +3,78 @@ package main
 import (
 	"cmp"
 	"fmt"
+	"image/color"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
-// Catppuccin Macchiato
+// A Color is an SGR foreground: the terminal's palette for hues, so the board follows its theme,
+// and for the greys, which a palette of sixteen doesn't hold, shades between the terminal's
+// background and its text (see setTheme).
 type Color string
 
 const (
-	cText    Color = "202;211;245"
-	cSubtext Color = "165;173;203"
-	cOverlay Color = "128;135;162"
-	cSurface Color = "73;77;100"
-	cMauve   Color = "198;160;246"
-	cBlue    Color = "138;173;244"
-	cYellow  Color = "238;212;159"
-	cGreen   Color = "166;218;149"
-	cRed     Color = "237;135;150"
-	cPeach   Color = "245;169;127"
+	cText   Color = "39"
+	cMauve  Color = "35"
+	cBlue   Color = "34"
+	cYellow Color = "33"
+	cGreen  Color = "32"
+	cRed    Color = "31"
+	cCode   Color = "36"
 )
 
-// Surface0: the selected row's background.
-const cSelected Color = "54;58;79"
+// The greys, and the selected row's background, until the terminal says what its colours are:
+// Catppuccin Macchiato's.
+var (
+	cSubtext   Color = "38;2;165;173;203"
+	cOverlay   Color = "38;2;128;135;162"
+	cSurface   Color = "38;2;73;77;100"
+	bgSelected       = "48;2;54;58;79"
+)
 
-func fg(c Color, s string) string { return "\x1b[38;2;" + string(c) + "m" + s + "\x1b[39m" }
+// setTheme derives the greys from the terminal's own background and text colours: each sits a
+// share of the way from the background to the text, the shares Catppuccin's greys have.
+func setTheme(text, background color.Color) {
+	fr, fgc, fb, _ := text.RGBA()
+	br, bgc, bb, _ := background.RGBA()
+	shade := func(share float64) string {
+		mix := func(b, f uint32) int { return int((float64(b)+(float64(f)-float64(b))*share)/257 + 0.5) }
+		return fmt.Sprintf("%d;%d;%d", mix(br, fr), mix(bgc, fgc), mix(bb, fb))
+	}
+	cSubtext, cOverlay, cSurface = Color("38;2;"+shade(0.78)), Color("38;2;"+shade(0.55)), Color("38;2;"+shade(0.22))
+	bgSelected = "48;2;" + shade(0.11)
+}
+
+// A theme collects the terminal's answers about its colours; the greys follow once both are in.
+type theme struct{ text, background color.Color }
+
+// requestTheme asks the terminal for its text and background colours.
+func requestTheme() tea.Cmd {
+	return tea.Batch(tea.RequestForegroundColor, tea.RequestBackgroundColor)
+}
+
+// take applies the terminal's answer, and says whether msg was one.
+func (t *theme) take(msg tea.Msg) bool {
+	switch msg := msg.(type) {
+	case tea.ForegroundColorMsg:
+		t.text = msg.Color
+	case tea.BackgroundColorMsg:
+		t.background = msg.Color
+	default:
+		return false
+	}
+	if t.text != nil && t.background != nil {
+		setTheme(t.text, t.background)
+	}
+	return true
+}
+
+func fg(c Color, s string) string { return "\x1b[" + string(c) + "m" + s + "\x1b[39m" }
 func bold(s string) string        { return "\x1b[1m" + s + "\x1b[22m" }
 
 func fit(text string, width int) string {
@@ -43,7 +87,7 @@ func fit(text string, width int) string {
 
 // selected is a list's row under the cursor, on a background across the whole width.
 func selected(line string, width int) string {
-	return "\x1b[48;2;" + string(cSelected) + "m" + fit(line, width) + "\x1b[49m"
+	return "\x1b[" + bgSelected + "m" + fit(line, width) + "\x1b[49m"
 }
 
 // hints lays out a footer's keys, "key what · key what", on as many lines as width needs, breaking
@@ -98,7 +142,7 @@ func markdownLine(l string) string {
 		return bold(fg(cBlue, subheading.ReplaceAllString(l, "")))
 	}
 	l = boldRe.ReplaceAllStringFunc(l, func(m string) string { return bold(m[2 : len(m)-2]) })
-	return codeRe.ReplaceAllStringFunc(l, func(m string) string { return fg(cPeach, m[1:len(m)-1]) })
+	return codeRe.ReplaceAllStringFunc(l, func(m string) string { return fg(cCode, m[1:len(m)-1]) })
 }
 
 func wrap(s string, width int) []string {
@@ -207,6 +251,8 @@ func (m *model) View() tea.View {
 	inner := m.width - 2
 	var body []string
 	switch {
+	case m.help:
+		body = renderHelp("foreman", boardHelp, inner, m.height-1)
 	case m.cleanup != nil:
 		body = m.renderCleanup(inner, m.height-1)
 	case m.form != nil:
@@ -218,14 +264,93 @@ func (m *model) View() tea.View {
 	return v
 }
 
+// A helpKey is a line of the key list: a key and what it does, or with no key, a heading.
+type helpKey struct{ key, what string }
+
+var boardHelp = []helpKey{
+	{"", "The list"},
+	{"↑↓  ^p ^n", "pick a row; pgup and pgdn move ten"},
+	{"type, paste", "filter: every word must match"},
+	{"esc", "clear the filter, then quit"},
+	{"tab", "tickets or open PRs"},
+	{"^o", "mine (PRs: review requested, mine, everyone)"},
+	{"^a", "cycle the assignee (PRs: the author)"},
+	{"^u  ^d", "scroll the description"},
+	{"^r", "reload"},
+	{"", "The row"},
+	{"enter", "dispatch an agent on it (PRs: a review, or a fix)"},
+	{"^s", "go to its agent's Rex session"},
+	{"^b", "open it in the browser"},
+	{"^w", "set the ticket's status"},
+	{"^y", "set the ticket's assignee"},
+	{"", "Anywhere"},
+	{"^t", "a task: work with no ticket or PR"},
+	{"^g", "the orchestrator"},
+	{"^x", "clean up the worktrees of finished work"},
+	{"?", "this list, while the filter is empty"},
+	{"", "Marks"},
+	{"◆", "dispatched: yellow working, red waiting for you or failed, green idle or done"},
+	{"◇", "dispatched, its session closed"},
+}
+
+var queueHelp = []helpKey{
+	{"", "The list"},
+	{"↑↓  j k", "pick a row"},
+	{"^u  ^d  space", "scroll the report or screen"},
+	{"c", "show or fold the closed agents"},
+	{"^r", "reload"},
+	{"q", "quit (cmd+alt+j brings the pane back)"},
+	{"", "The row"},
+	{"enter", "go to the agent's session; resume a closed agent; start a stopped watcher"},
+	{"f", "type a reply into the agent's pane, or answer its question"},
+	{"y  n", "on an agent that waits on a prompt: press enter, or esc, in its pane"},
+	{"x", "mark reviewed"},
+	{"d", "the worktree's diff"},
+	{"v", "open the screenshots and videos"},
+	{"o", "open the ticket or PR in the browser"},
+	{"K K", "close the agent's session, or drop a closed agent from the queue"},
+	{"?", "this list"},
+}
+
+// renderHelp is the full list of keys, which the footer has no room for.
+func renderHelp(title string, keys []helpKey, width, h int) []string {
+	out := []string{bold(fg(cMauve, title)) + fg(cSurface, " · ") + "keys", fg(cMauve, strings.Repeat("─", width))}
+	keyW := 0
+	for _, k := range keys {
+		keyW = max(keyW, ansi.StringWidth(k.key))
+	}
+	for _, k := range keys {
+		if k.key == "" {
+			out = append(out, "", bold(k.what))
+			continue
+		}
+		for n, l := range wrap(k.what, width-keyW-4) {
+			key := ""
+			if n == 0 {
+				key = k.key
+			}
+			out = append(out, "  "+fg(cSubtext, fit(key, keyW))+"  "+l)
+		}
+	}
+	// A short pane: the blank lines between the groups go first.
+	if len(out) > h-1 {
+		out = slices.DeleteFunc(out, func(l string) bool { return l == "" })
+	}
+	for len(out) < h-1 {
+		out = append(out, "")
+	}
+	return append(out[:max(0, h-1)], hints("any key back", width)...)
+}
+
 func (m *model) renderBoard(width, h int) []string {
 	items := m.visible()
 	current, hasCurrent := m.current()
 
 	isPrs := m.view == prs
-	keys := "↑↓ pick · enter dispatch · tab PRs · ^o mine · ^a assignee · ^w set status · ^y set assignee · ^u/^d scroll · ^b browser · ^s session · ^t task · ^g orchestrator · ^x clean up · ^r refresh · esc quit"
+	// The keys of every moment; ? lists the rest.
+	keys := "↑↓ pick · enter dispatch · tab PRs · ^o mine · ^t task · ? all keys · esc quit"
 	if isPrs {
-		keys = "↑↓ pick · enter review · tab tickets · ^o requested/mine · ^a author · ^u/^d scroll · ^b browser · ^s session · ^t task · ^g orchestrator · ^x clean up · ^r refresh · esc quit"
+		keys = "↑↓ pick · enter review · tab tickets · ^o requested/mine · ^t task · ? all keys · esc quit"
 	}
 	footer := hints(keys, width)
 	if m.picker != nil {

@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image/color"
 	"io"
 	"maps"
 	"net/http"
@@ -1324,7 +1326,7 @@ func TestPrAgent(t *testing.T) {
 			Sessions:   map[string]string{"FLD-1": "s1", "FLD-2": "s2"},
 			Titles:     map[string]string{"FLD-2": "Two"},
 		},
-		items: []queueItem{{Kind: agentItem, Key: "FLD-1", Agent: "idle", Session: "s1"}},
+		all: []queueItem{{Kind: agentItem, Key: "FLD-1", Agent: "idle", Session: "s1"}},
 	}
 	if it, ok := q.prAgent(Pr{Summary: "Fix it", Branch: "rf/fld-1-fix-it"}); !ok || it.Agent != "idle" {
 		t.Errorf("by branch: got %+v, %t", it, ok)
@@ -2386,5 +2388,172 @@ func TestRexStatus(t *testing.T) {
 		if got := rexStatus(c.needs, c.review); got != c.want {
 			t.Errorf("rexStatus(%d, %d) = %q, want %q", c.needs, c.review, got, c.want)
 		}
+	}
+}
+
+// The closed agents fold into one row that counts them; a stopped watcher stays, since enter starts it.
+func TestFoldClosed(t *testing.T) {
+	items := []queueItem{
+		{Key: "FLD-1", Group: idle},
+		{Key: "FLD-2", Group: closed},
+		{Key: "watch", Group: closed, Watcher: true},
+		{Key: "FLD-3", Group: closed},
+	}
+	got := foldClosed(items, false)
+	if len(got) != 3 || got[0].Key != "FLD-1" || got[1].Key != "watch" || got[2].Fold != 2 {
+		t.Errorf("folded: %+v", got)
+	}
+	if got := foldClosed(items, true); len(got) != 4 {
+		t.Errorf("shown: %+v", got)
+	}
+	if got := foldClosed(items[:1], false); len(got) != 1 || got[0].Fold != 0 {
+		t.Errorf("nothing closed: %+v", got)
+	}
+	if detail := strings.Join(foldDetail(items), "\n"); !strings.Contains(detail, "FLD-2") || strings.Contains(detail, "watch") {
+		t.Errorf("fold detail:\n%s", detail)
+	}
+}
+
+// c shows the closed agents, and enter on the fold does too.
+func TestQueueFoldKeys(t *testing.T) {
+	old := evidenceRoot
+	evidenceRoot = t.TempDir()
+	t.Cleanup(func() { evidenceRoot = old })
+	t.Setenv("REX_SESSION", "")
+	q := &queueModel{details: map[string][]string{}, state: State{Dispatched: map[string]string{"FLD-1": "/w/1", "FLD-2": "/w/2"}}}
+	q.rebuild()
+	if len(q.items) != 1 || q.items[0].Fold != 2 || q.count(closed) != 2 {
+		t.Fatalf("rows: %+v", q.items)
+	}
+	q.input(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if len(q.items) != 2 || !q.showClosed {
+		t.Fatalf("after enter on the fold: %+v", q.items)
+	}
+	q.input(tea.KeyPressMsg{Code: 'c', Text: "c"})
+	if len(q.items) != 1 {
+		t.Errorf("after c: %+v", q.items)
+	}
+}
+
+// Each item that waits on me is a record of its own, with what it waits for; the rest have none.
+func TestItemRecords(t *testing.T) {
+	got := itemRecords([]queueItem{
+		{Key: "FLD-1", Title: "One", Group: needsYou, Agent: "blocked"},
+		{Key: "task:repo-2", Group: needsYou, Agent: "working", Question: &Question{Text: "Which\none?", Escalated: "the first"}},
+		{Key: "repo#9", Group: toReview, Kind: prItem, Pr: &Pr{Status: "approved", Category: "Done"}},
+		{Key: "FLD-4", Group: toReview, Agent: "idle"},
+		{Key: "FLD-5", Group: working, Agent: "working"},
+	})
+	b64 := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
+	want := map[string]string{
+		"FLD-1":       "\x1b]7501;state=blocked:id=FLD-1:app=foreman:kind=permission:title=" + b64("FLD-1: One") + ":msg=" + b64("waits on a prompt") + "\x1b\\",
+		"task-repo-2": "\x1b]7501;state=blocked:id=task-repo-2:app=foreman:kind=question:title=" + b64("task:repo-2") + ":msg=" + b64("asks: Which one?") + "\x1b\\",
+		"pr-repo-9":   "\x1b]7501;state=done:id=pr-repo-9:app=foreman:title=" + b64("repo#9") + ":msg=" + b64("PR approved") + "\x1b\\",
+		"FLD-4":       "\x1b]7501;state=done:id=FLD-4:app=foreman:title=" + b64("FLD-4") + ":msg=" + b64("report ready") + "\x1b\\",
+	}
+	if !maps.Equal(got, want) {
+		t.Errorf("itemRecords:\n%q\nwant\n%q", got, want)
+	}
+}
+
+// An item that stops waiting on me has its record cleared, and nothing is sent when nothing changed.
+func TestReportClearsRecords(t *testing.T) {
+	t.Setenv("REX_SESSION", "session:x")
+	q := &queueModel{all: []queueItem{{Key: "FLD-1", Group: toReview, Agent: "idle"}}}
+	if q.report() == nil || q.records["FLD-1"] == "" {
+		t.Fatalf("first report: records %q", q.records)
+	}
+	if q.report() != nil {
+		t.Error("an unchanged queue reported again")
+	}
+	q.all = nil
+	raw, ok := q.report()().(tea.RawMsg)
+	if !ok || !strings.Contains(fmt.Sprint(raw.Msg), "state=clear:id=FLD-1") || len(q.records) != 0 {
+		t.Errorf("after the item left: %q, records %q", raw, q.records)
+	}
+}
+
+// What a blocked pane asks heads its detail, with the token y and n check before pressing a key.
+func TestPromptDetail(t *testing.T) {
+	screen := "old output\n────────────\n Bash command\n   rm -rf build\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n"
+	it := queueItem{Key: "FLD-1", Agent: "blocked"}
+	lines, seen := promptDetail(it, func(queueItem) (string, error) { return screen, nil })
+	if text := strings.Join(lines, "\n"); !strings.Contains(text, "rm -rf build") || !strings.Contains(text, "1. Yes") {
+		t.Errorf("prompt:\n%s", text)
+	}
+	if seen != seenToken("blocked", screen) {
+		t.Errorf("seen %q", seen)
+	}
+	if lines, seen := promptDetail(it, func(queueItem) (string, error) { return "", errors.New("no pane") }); lines != nil || seen != "" {
+		t.Errorf("an unreadable pane: %q, %q", lines, seen)
+	}
+}
+
+// y on a row whose prompt isn't shown presses nothing.
+func TestPromptKeysNeedTheShownPrompt(t *testing.T) {
+	q := &queueModel{details: map[string][]string{}, seen: map[string]string{}}
+	q.all = []queueItem{{Key: "FLD-1", Group: needsYou, Agent: "blocked", Sig: "s"}}
+	q.items = q.all
+	if cmd := q.input(tea.KeyPressMsg{Code: 'y', Text: "y"}); cmd != nil || !strings.Contains(q.status, "no prompt") {
+		t.Errorf("y without a shown prompt: cmd %v, status %q", cmd != nil, q.status)
+	}
+	q.seen[detailKey(q.items[0])] = "blocked-abcd"
+	if cmd := q.input(tea.KeyPressMsg{Code: 'y', Text: "y"}); cmd == nil || q.seen[detailKey(q.items[0])] != "" {
+		t.Errorf("y with a shown prompt: cmd %v, seen %q", cmd != nil, q.seen)
+	}
+}
+
+// A status line clears after its time, an error later than a note, and not while work is under way.
+func TestStatusExpires(t *testing.T) {
+	m := &model{inFlight: map[viewKind]bool{}}
+	m.say("Marked", cOverlay)
+	m.expireStatus()
+	if m.status == "" {
+		t.Error("a fresh status was cleared")
+	}
+	m.statusAt = time.Now().Add(-30 * time.Second)
+	m.expireStatus()
+	if m.status != "" {
+		t.Errorf("status %q after 30s", m.status)
+	}
+	m.say("Failed", cRed)
+	m.statusAt = time.Now().Add(-30 * time.Second)
+	m.expireStatus()
+	if m.status == "" {
+		t.Error("an error was cleared after 30s")
+	}
+	m.say("Checking…", cSubtext)
+	m.statusAt = time.Now().Add(-time.Hour)
+	m.expireStatus()
+	if m.status == "" {
+		t.Error("a line about work under way was cleared")
+	}
+}
+
+// ? lists the keys only while the filter is empty, and any key goes back.
+func TestBoardHelp(t *testing.T) {
+	m := &model{inFlight: map[viewKind]bool{}, details: map[string][]string{}, width: 100, height: 40}
+	m.boardInput(tea.KeyPressMsg{Code: '?', Text: "?"})
+	if !m.help || !strings.Contains(m.View().Content, "clean up the worktrees") {
+		t.Fatalf("after ?: help %t", m.help)
+	}
+	m.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
+	if m.help || m.query != "" {
+		t.Errorf("after a key: help %t, query %q", m.help, m.query)
+	}
+	m.query = "why"
+	m.boardInput(tea.KeyPressMsg{Code: '?', Text: "?"})
+	if m.help || m.query != "why?" {
+		t.Errorf("? in a filter: help %t, query %q", m.help, m.query)
+	}
+}
+
+// The greys sit between the terminal's background and its text, so they follow its theme.
+func TestSetTheme(t *testing.T) {
+	sub, over, sur, sel := cSubtext, cOverlay, cSurface, bgSelected
+	t.Cleanup(func() { cSubtext, cOverlay, cSurface, bgSelected = sub, over, sur, sel })
+	setTheme(color.RGBA{0, 0, 0, 255}, color.RGBA{200, 200, 200, 255})
+	if cOverlay != "38;2;90;90;90" || bgSelected != "48;2;178;178;178" {
+		t.Errorf("on a light terminal: overlay %q, selected %q", cOverlay, bgSelected)
 	}
 }

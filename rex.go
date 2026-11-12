@@ -1,11 +1,18 @@
 package main
 
 import (
+	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"time"
+
+	tea "charm.land/bubbletea/v2"
 )
 
 // attachLua attaches the script to a session: without it, listing another session's blocks fails
@@ -193,4 +200,65 @@ func freeSessionLabel(base string) (string, error) {
 		label = fmt.Sprintf("%s-%d", base, n)
 	}
 	return label, nil
+}
+
+// rexEventsScript prints a line whenever something an agent's row shows may have changed, in any
+// session: a program's status, or a session or a pane opening, closing or being renamed.
+const rexEventsScript = `
+for _, name in ipairs({
+  "terminal.program_status_changed", "terminal.program_status_removed", "terminal.child_exited",
+  "session_created", "session_destroyed", "session_label_changed", "block_created", "block_closed",
+}) do
+  rex.on(name, function() print("event") end)
+end
+print("listening")
+`
+
+type (
+	// rexEventMsg says the sessions changed: list them now rather than at the next tick.
+	rexEventMsg struct{}
+	// rexLiveMsg says whether Rex's events arrive. While they do, the sessions are listed on an
+	// event and every sessionsFallback; without them, on every tick.
+	rexLiveMsg bool
+)
+
+const (
+	sessionsFallback = 15 * time.Second
+	// A program that redraws its status line reports in bursts: one listing answers them all.
+	rexEventSettle = 300 * time.Millisecond
+	rexEventsRetry = 10 * time.Second
+)
+
+// watchRex follows Rex's events until ctx ends, sending a rexEventMsg after each burst and a
+// rexLiveMsg as the stream starts and stops. A stream that ends is started again.
+func watchRex(ctx context.Context, send func(tea.Msg)) {
+	for ctx.Err() == nil {
+		cmd := exec.CommandContext(ctx, "rex", "do", "--all", "-e", rexEventsScript)
+		out, err := cmd.StdoutPipe()
+		if err == nil && cmd.Start() == nil {
+			var pending atomic.Bool
+			lines := bufio.NewScanner(out)
+			for lines.Scan() {
+				if lines.Text() == "listening" {
+					send(rexLiveMsg(true))
+					continue
+				}
+				if pending.CompareAndSwap(false, true) {
+					time.AfterFunc(rexEventSettle, func() {
+						pending.Store(false)
+						send(rexEventMsg{})
+					})
+				}
+			}
+			_ = cmd.Wait()
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		send(rexLiveMsg(false))
+		select {
+		case <-ctx.Done():
+		case <-time.After(rexEventsRetry):
+		}
+	}
 }

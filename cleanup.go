@@ -128,26 +128,12 @@ func checkCleanup(ctx context.Context, jira *Jira, key, dir string, sessionOpen 
 			return c, false, nil
 		}
 		c.Reason = "session closed"
-	} else if _, num, isPr := strings.Cut(key, "#"); isPr {
-		// gh finds the GitHub repo from the worktree's remote.
-		state, err := sh(dir, "gh", "pr", "view", num, "--json", "state", "-q", ".state")
-		if err != nil {
-			return c, false, err
-		}
-		state = strings.TrimSpace(state)
-		if state != "MERGED" && state != "CLOSED" {
-			return c, false, nil
-		}
-		c.Reason = strings.ToLower(state)
 	} else {
-		category, err := jira.category(ctx, key)
-		if err != nil {
+		reason, err := finished(ctx, jira, key, dir)
+		if err != nil || reason == "" {
 			return c, false, err
 		}
-		if category != "Done" {
-			return c, false, nil
-		}
-		c.Reason = "done"
+		c.Reason = reason
 	}
 	var err error
 	if c.Repo, c.Main, err = owner(dir); err != nil {
@@ -160,6 +146,69 @@ func checkCleanup(ctx context.Context, jira *Jira, key, dir string, sessionOpen 
 	dirty, err := sh("", "git", "-C", dir, "status", "--porcelain")
 	c.Dirty = err != nil || strings.TrimSpace(dirty) != ""
 	return c, true, nil
+}
+
+// finished is why a ticket's or a PR's dispatch is over: its ticket is "done", its PR "merged" or
+// "closed". "" while it is open.
+func finished(ctx context.Context, jira *Jira, key, dir string) (string, error) {
+	if _, num, isPr := strings.Cut(key, "#"); isPr {
+		// gh finds the GitHub repo from the worktree's remote.
+		state, err := sh(dir, "gh", "pr", "view", num, "--json", "state", "-q", ".state")
+		if err != nil {
+			return "", err
+		}
+		if state = strings.TrimSpace(state); state == "MERGED" || state == "CLOSED" {
+			return strings.ToLower(state), nil
+		}
+		return "", nil
+	}
+	category, err := jira.category(ctx, key)
+	if err != nil || category != "Done" {
+		return "", err
+	}
+	return "done", nil
+}
+
+// dropFinished drops from the queue the closed agents with nothing left to read whose ticket is
+// Done or whose PR is merged or closed, as K twice does: the worktree stays for ^x. A task has
+// nothing outside to say it's done, so it stays. One that can't be checked stays too.
+func dropFinished(ctx context.Context, jira *Jira) []string {
+	sessions, err := agentSessions()
+	if err != nil {
+		return nil
+	}
+	var keys []string
+	for _, it := range queueItems(loadState(), sessions, nil) {
+		if it.Kind != agentItem || it.Watcher || it.Orchestrator || it.Group != closed || isTask(it.Key) || !exists(it.Dir) {
+			continue
+		}
+		if reason, err := finished(ctx, jira, it.Key, it.Dir); err == nil && reason != "" {
+			keys = append(keys, it.Key)
+		}
+	}
+	if len(keys) > 0 {
+		_, _ = updateState(func(s *State) {
+			for _, k := range keys {
+				s.Hidden[k] = true
+			}
+		})
+	}
+	slices.Sort(keys)
+	return keys
+}
+
+// dropFinished runs after the tickets load, when Jira is known to answer.
+func (m *model) dropFinished() tea.Cmd {
+	jira := m.jira
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), jiraTimeout)
+		defer cancel()
+		keys := dropFinished(ctx, jira)
+		if len(keys) == 0 {
+			return nil
+		}
+		return statusMsg{text: "Dropped " + strings.Join(keys, ", ") + " from the queue: done, merged or closed. ^x cleans up the worktrees", color: cSubtext}
+	}
 }
 
 // owner is the main checkout that owns dir, and whether dir is that checkout itself rather than a

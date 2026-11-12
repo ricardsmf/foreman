@@ -31,6 +31,7 @@ tickets/PRs, `^o` mine (on PRs: cycles review requested, mine, everyone), `^a` c
 PRs: author), `^w` set the ticket's status, `^y` set its assignee (see [Changing a
 ticket](#changing-a-ticket)), `^u`/`^d` scroll the description, `^b` open in browser, `^s` go to the agent's Rex
 session, `^t` a [task](#tasks), `^g` the [orchestrator](#orchestrator), `^x` clean up worktrees, `^r` refresh, `esc` quit.
+The footer names the keys of every moment; `?`, while the filter is empty, lists them all.
 
 Dispatch form: `tab`/`↑↓` field, `←→` agent or repo, `space` worktree, poteto-mode or (on a PR) fix on/off, type to filter repos
 or write extra context, `alt+enter` new line, paste works, `^e` writes the context in `$VISUAL` /
@@ -41,6 +42,13 @@ Both views reload when the board regains focus after five minutes or more, and e
 The row under the cursor has a background. The key footer wraps between keys onto as many lines as
 the pane needs, and the rule over a description, report or screen names the lines shown (`1–24 of
 88`) when there are more. The queue does the same.
+
+Colours follow the terminal's theme: the hues are its palette's, and the greys and the selected
+row's background are shades between its background and its text, which the board asks it for. A
+terminal that doesn't answer gets Catppuccin Macchiato's greys.
+
+A status line clears by itself: after ten seconds, a warning after twenty, an error after a minute.
+On the board, one about work under way (`…`) stays until its result replaces it.
 
 A search loads at most 500 tickets; past that the count reads `500+` and the status line says so.
 The PR view stops at 500 open PRs the same way.
@@ -257,30 +265,55 @@ grouped most urgent first:
    passed or has no checks (`✓`), ready to merge.
 3. **working**: agents still working (`●` yellow), with the end of their screen, refreshed every poll.
 4. **idle**: agents whose session is open with nothing new for you (`○`), reviewed or without a report.
-5. **closed**: agents whose session is closed (`◇`), until `K` drops them from the queue or `^x` on
-   the board cleans up their worktree. A dropped agent shows again if its session reopens. `enter`
-   resumes one: a new session in its worktree runs the dispatched agent with `--continue`, which
+5. **closed**: agents whose session is closed (`◇`), folded into one row that counts them (`▸ 8
+   closed`); `c`, or `enter` on that row, lists them, and `c` folds them again. A stopped watcher
+   is always listed. They stay until `K` drops them from the queue or `^x` on the board cleans up
+   their worktree, and the board drops one whose ticket is Done or whose PR is merged or closed,
+   each time its tickets load (a task stays: nothing outside says it's done). A dropped agent shows
+   again if its session reopens. `enter` resumes one: a new session in its worktree runs the dispatched agent with `--continue`, which
    picks the newest conversation in that directory, so without a worktree it may be another one.
    Dispatches from before the agent was recorded take the agent with the newest conversation there.
 
 An agent is found by the session ID recorded at dispatch, else by a session whose label still starts
 with its key (`fld-1704`, `review-reports-app-1185`), whose ID is then recorded. It reads the board's
-state file and the Rex sessions every few seconds, and your PRs every five minutes. Its pane title
-carries the count of items in the first two groups, `queue (3)`.
+state file every few seconds and your PRs every five minutes. The Rex sessions it lists when Rex
+says something changed: it runs a Lua listener (`rex do --all`) for programs reporting a status and
+sessions and panes opening, closing or being renamed, so a row moves as its agent stops. It lists
+them every 15 seconds besides, and every few seconds while the listener isn't running. The board
+does the same. Its pane title carries the count of items in the first two groups, `queue (3)`.
 
 It also reports that count to Rex in the Program Status Protocol (OSC 7501), so the `foreman`
 session is marked in Rex's session picker whatever session you are in: `blocked` while anything is
 under **needs you**, else `done` while anything is under **review**, else `idle`. Agents at work
-aren't reported, since their own sessions show that. Quitting the queue clears it.
+aren't reported, since their own sessions show that. Each item in those two groups is a record of
+its own under the queue's, with its key and title and what it waits for (`kind=permission` for a
+prompt, `kind=question` for a question handed to you), cleared when it leaves them. Quitting the
+queue clears them all.
 
 Keys: `↑↓` pick, `enter` go to the agent's session, resuming a closed one (a PR goes to the agent of
 the ticket its title or branch names; with no agent, to the board's dispatch form on that ticket;
 with no ticket, the browser), `f` type a reply that is sent to the agent's pane (the one whose
-program reports a status), `v` open the screenshots and videos, `d` the worktree's diff in git's
+program reports a status), `y` or `n` answer the prompt an agent waits on (see [Answering a
+prompt](#answering-a-prompt)), `v` open the screenshots and videos, `d` the worktree's diff in git's
 pager, `o` the ticket or PR in the browser, `x` mark reviewed (the agent moves to idle or closed
 until it writes a new report; a PR goes until its status changes), `K` twice close the agent's Rex
-session, or on a closed one drop it from the queue (its worktree and report stay), `^u`/`^d` scroll,
-`^r` reload, `q` quit (`cmd+alt+j` brings the pane back).
+session, or on a closed one drop it from the queue (its worktree and report stay), `c` list or fold
+the closed agents, `^u`/`^d` scroll, `^r` reload, `?` every key, `q` quit (`cmd+alt+j` brings the
+pane back).
+
+### Answering a prompt
+
+An agent that reports `blocked` waits on a permission prompt or a menu. Its detail starts with
+what its pane asks, read again on every poll, and `y` presses `enter` there, `n` presses `esc`:
+in Claude Code's permission prompt, the highlighted "Yes" and a cancel.
+
+- The key is pressed only while the pane still shows what the detail showed: the queue keeps the
+  [seen token](#reading-and-steering-agents) of the pane it read and reads the pane again before
+  pressing. A prompt answered meanwhile, or replaced by the next one, gets nothing, and the detail
+  is read again.
+- They are keys in the pane, not answers: on a menu, `enter` picks whatever is highlighted. Read
+  the prompt in the detail first; `enter` on the row goes to the session for anything else.
+- Only these keys do it. No command presses a key in a pane, so the orchestrator can't.
 
 ### Reports and evidence
 

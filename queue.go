@@ -5,16 +5,20 @@ package main
 // conflict, and my approved PRs, ready to merge. It runs in its own Rex pane beside the board and reads the board's state file.
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -64,6 +68,8 @@ type queueItem struct {
 	Question *Question
 	// Sig is what the item showed; marking it reviewed holds until this changes.
 	Sig string
+	// Fold marks the row that stands for the closed agents while they are folded, and counts them.
+	Fold int
 }
 
 // dismissKey is the item's key in State.Dismissed. A review agent and its PR share a key, so the
@@ -243,6 +249,7 @@ type (
 	queueDetailMsg struct {
 		sig   string
 		lines []string
+		seen  string // the seen token of the prompt the lines show, for an agent that waits on one
 	}
 )
 
@@ -253,13 +260,22 @@ type queueModel struct {
 	prs           []Pr
 	prsAt         time.Time // the last load attempt, failed or not, so a failing gh isn't retried every poll
 	prsLoading    bool
-	items         []queueItem
+	all           []queueItem // every item
+	items         []queueItem // the rows: all, with the closed agents folded into one unless showClosed
+	showClosed    bool
 	cursor, top   int
 	scroll        int
 	details       map[string][]string // by key + sig
 	feedback      *reply              // the reply being typed to an agent
 	confirmKill   string              // the session the first K asked to close
+	seen          map[string]string   // by key + sig: the seen token of the prompt a detail shows
 	reported      string              // the last status reported to Rex
+	records       map[string]string   // the last record reported to Rex for each item that waits on me
+	statusAt      time.Time           // when the status line was set: it clears after statusTTL
+	help          bool                // the list of keys is showing
+	theme         theme
+	live          bool      // Rex's events arrive, so the sessions needn't be listed every tick
+	sessionsAt    time.Time // when the sessions were last listed
 	status        string
 	statusColor   Color
 }
@@ -284,7 +300,7 @@ func (q *queueModel) current() (queueItem, bool) {
 // count is how many items are in the group.
 func (q *queueModel) count(g group) int {
 	n := 0
-	for _, it := range q.items {
+	for _, it := range q.all {
 		if it.Group == g {
 			n++
 		}
@@ -295,11 +311,55 @@ func (q *queueModel) count(g group) int {
 // needYou counts the items that wait on me: those that ask and the reports to read.
 func (q *queueModel) needYou() int { return q.count(needsYou) + q.count(toReview) }
 
-func (q *queueModel) say(text string, c Color) { q.status, q.statusColor = text, c }
+func (q *queueModel) say(text string, c Color) {
+	q.status, q.statusColor, q.statusAt = text, c, time.Now()
+}
 
 func pollQueue() tea.Msg {
 	sessions, err := agentSessions()
 	return queueStateMsg{loadState(), sessions, err == nil}
+}
+
+// pollQueueState reads the state file alone, for the ticks between Rex's events.
+func pollQueueState() tea.Msg { return queueStateMsg{state: loadState()} }
+
+// foldClosed is the rows of items: the closed agents become one row that counts them, unless show.
+// What is closed has nothing for me, and a list of it buries what has. A stopped watcher stays:
+// enter starts it.
+func foldClosed(items []queueItem, show bool) []queueItem {
+	if show {
+		return items
+	}
+	var out []queueItem
+	n := 0
+	for _, it := range items {
+		if it.Group == closed && !it.Watcher {
+			n++
+			continue
+		}
+		out = append(out, it)
+	}
+	if n > 0 {
+		out = append(out, queueItem{Kind: agentItem, Group: closed, Fold: n, Sig: "fold"})
+	}
+	return out
+}
+
+// foldDetail lists the closed agents the fold stands for.
+func foldDetail(items []queueItem) []string {
+	out := []string{"# Closed agents", "",
+		"`c` lists them here, where `enter` resumes one and `K` twice drops it. The board drops one whose ticket is Done or whose PR is merged or closed, and `^x` there cleans up the worktrees.", ""}
+	for _, it := range items {
+		if it.Group == closed && !it.Watcher {
+			_, what := itemLabel(it)
+			line := "- `" + it.Key + "` " + it.Title + fg(cSurface, " · ") + what
+			if a := age(it.When); a != "" {
+				line += fg(cSurface, " · ") + fg(cOverlay, a)
+			}
+			out = append(out, line)
+		}
+	}
+	return out
 }
 
 func (q *queueModel) loadPrs() tea.Cmd {
@@ -313,7 +373,9 @@ func (q *queueModel) loadPrs() tea.Cmd {
 	}
 }
 
-func (q *queueModel) Init() tea.Cmd { return tea.Batch(pollQueue, queueTick(), q.loadPrs()) }
+func (q *queueModel) Init() tea.Cmd {
+	return tea.Batch(pollQueue, queueTick(), q.loadPrs(), requestTheme())
+}
 
 // queueTick schedules the next poll. Only queueTickMsg reschedules it, so ^r doesn't start another loop.
 func queueTick() tea.Cmd {
@@ -323,7 +385,8 @@ func queueTick() tea.Cmd {
 // rebuild recomputes the items, keeping the cursor on the same item when it is still there.
 func (q *queueModel) rebuild() tea.Cmd {
 	prev, had := q.current()
-	q.items = queueItems(q.state, q.sessions, q.prs)
+	q.all = queueItems(q.state, q.sessions, q.prs)
+	q.items = foldClosed(q.all, q.showClosed)
 	if had {
 		// The kind too: a review agent and the PR it reviews share a key.
 		if n := slices.IndexFunc(q.items, func(it queueItem) bool { return it.Key == prev.Key && it.Kind == prev.Kind }); n >= 0 {
@@ -352,17 +415,88 @@ func rexStatus(needs, review int) string {
 	return report + "\x1b\\"
 }
 
-// report tells Rex the queue's status when it changed.
+// oneLine is text as a Program Status value takes it: no control characters, at most limit bytes.
+func oneLine(text string, limit int) string {
+	text = strings.Map(func(r rune) rune {
+		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
+			return ' '
+		}
+		return r
+	}, text)
+	for len(text) > limit {
+		_, size := utf8.DecodeLastRuneInString(text)
+		text = text[:len(text)-size]
+	}
+	return text
+}
+
+var recordIDRe = regexp.MustCompile(`[^A-Za-z0-9_.+-]+`)
+
+// itemRecords are the reports of the items that wait on me, each a record of its own under the
+// queue's, by record id: blocked with what it waits for, or done. Rex lists a terminal's records
+// one by one wherever it shows them.
+func itemRecords(items []queueItem) map[string]string {
+	out := map[string]string{}
+	for _, it := range items {
+		if !it.pending() {
+			continue
+		}
+		id := it.Key
+		state, kind, msg := "done", "", "report ready"
+		switch {
+		case it.Kind == prItem:
+			id, msg = "pr-"+id, "PR "+it.Pr.Status
+			if it.urgent() {
+				state = "blocked"
+			}
+		case it.Question != nil && it.Question.Escalated != "":
+			state, kind, msg = "blocked", "question", "asks: "+it.Question.Text
+		case it.Agent == "blocked":
+			state, kind, msg = "blocked", "permission", "waits on a prompt"
+		case it.Agent == "error":
+			state, msg = "error", "failed"
+		}
+		id = oneLine(recordIDRe.ReplaceAllString(id, "-"), 32)
+		report := "\x1b]7501;state=" + state + ":id=" + id + ":app=foreman"
+		if kind != "" {
+			report += ":kind=" + kind
+		}
+		title := it.Key
+		if it.Title != "" {
+			title += ": " + it.Title
+		}
+		out[id] = report + ":title=" + base64.StdEncoding.EncodeToString([]byte(oneLine(title, 180))) +
+			":msg=" + base64.StdEncoding.EncodeToString([]byte(oneLine(msg, 1000))) + "\x1b\\"
+	}
+	return out
+}
+
+// report tells Rex what changed: the queue's status, and the record of each item that waits on me.
 func (q *queueModel) report() tea.Cmd {
 	if os.Getenv("REX_SESSION") == "" {
 		return nil
 	}
-	status := rexStatus(q.count(needsYou), q.count(toReview))
-	if status == q.reported {
+	var out strings.Builder
+	if status := rexStatus(q.count(needsYou), q.count(toReview)); status != q.reported {
+		q.reported = status
+		out.WriteString(status)
+	}
+	want := itemRecords(q.all)
+	for _, id := range slices.Sorted(maps.Keys(want)) {
+		if q.records[id] != want[id] {
+			out.WriteString(want[id])
+		}
+	}
+	for _, id := range slices.Sorted(maps.Keys(q.records)) {
+		if _, ok := want[id]; !ok {
+			out.WriteString("\x1b]7501;state=clear:id=" + id + "\x1b\\")
+		}
+	}
+	q.records = want
+	if out.Len() == 0 {
 		return nil
 	}
-	q.reported = status
-	return tea.Raw(status)
+	return tea.Raw(out.String())
 }
 
 func (q *queueModel) loadDetail() tea.Cmd {
@@ -371,13 +505,53 @@ func (q *queueModel) loadDetail() tea.Cmd {
 		return nil
 	}
 	key := detailKey(it)
-	// A working agent's screen changes, so it is read again on every poll, keeping the old one meanwhile.
-	if _, cached := q.details[key]; cached && !it.working() {
+	if it.Fold > 0 {
+		q.details[key] = foldDetail(q.all)
+		return nil
+	}
+	// A working agent's screen changes, as does the prompt an agent waits on, so they are read
+	// again on every poll, keeping the old one meanwhile.
+	prompt := it.Agent == "blocked"
+	if _, cached := q.details[key]; cached && !it.working() && !prompt {
 		return nil
 	} else if !cached {
 		q.details[key] = nil
 	}
-	return func() tea.Msg { return queueDetailMsg{key, itemDetail(it)} }
+	return func() tea.Msg {
+		if prompt {
+			if asks, seen := promptDetail(it, capturePane); seen != "" {
+				return queueDetailMsg{key, append(asks, itemDetail(it)...), seen}
+			}
+		}
+		return queueDetailMsg{key, itemDetail(it), ""}
+	}
+}
+
+// promptDetail is what a blocked agent's pane asks, to head its detail, and the seen token of the
+// pane it was read from: y and n press a key there only while the pane still shows it.
+func promptDetail(it queueItem, capture func(queueItem) (string, error)) ([]string, string) {
+	screen, err := capture(it)
+	if err != nil {
+		return nil, ""
+	}
+	out := []string{"# It waits on this", "", "```"}
+	out = append(out, paneAsks(screen)...)
+	return append(out, "```", "", "`y` presses enter in its pane and `n` presses esc, while it still shows this. `enter` goes there.", ""),
+		seenToken(it.Agent, screen)
+}
+
+// pressPrompt presses key in the agent's pane, unless the pane no longer shows what seen stands
+// for: the prompt was answered meanwhile, and the key would land on whatever replaced it.
+func pressPrompt(it queueItem, seen, key string) error {
+	if err := stillSeen(it, seen, capturePane); err != nil {
+		return fmt.Errorf("%s's pane changed since it was read, so nothing was pressed; it is read again", it.Key)
+	}
+	block, err := agentBlock(it.Session)
+	if err != nil {
+		return err
+	}
+	_, err = sh("", "rex", "send-key", "-s", it.Session, "-b", block, key)
+	return err
 }
 
 // itemDetail is the item's report, its evidence and terminal captures, or for an agent that wrote
@@ -437,11 +611,22 @@ func itemDetail(it queueItem) []string {
 }
 
 func (q *queueModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if q.theme.take(msg) {
+		return q, nil
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		q.width, q.height = msg.Width, msg.Height
 	case queueTickMsg:
-		cmds := []tea.Cmd{pollQueue, queueTick()}
+		if q.status != "" && time.Since(q.statusAt) > statusTTL(q.statusColor) {
+			q.say("", cOverlay)
+			q.confirmKill = ""
+		}
+		poll := pollQueue
+		if q.live && time.Since(q.sessionsAt) < sessionsFallback {
+			poll = pollQueueState
+		}
+		cmds := []tea.Cmd{poll, queueTick()}
 		if time.Since(q.prsAt) >= refreshInterval {
 			cmds = append(cmds, q.loadPrs())
 		}
@@ -449,7 +634,7 @@ func (q *queueModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case queueStateMsg:
 		q.state = msg.state
 		if msg.ok {
-			q.sessions = msg.sessions
+			q.sessions, q.sessionsAt = msg.sessions, time.Now()
 			if fixes := sessionFixes(q.state, q.sessions); len(fixes) > 0 {
 				q.state, _ = updateState(func(s *State) {
 					for k, id := range fixes {
@@ -474,8 +659,16 @@ func (q *queueModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			})
 		}
 		return q, q.rebuild()
+	case rexEventMsg:
+		return q, pollQueue
+	case rexLiveMsg:
+		q.live = bool(msg)
 	case queueDetailMsg:
 		q.details[msg.sig] = msg.lines
+		if q.seen == nil {
+			q.seen = map[string]string{}
+		}
+		q.seen[msg.sig] = msg.seen
 	case statusMsg:
 		q.say(msg.text, msg.color)
 	case tea.FocusMsg:
@@ -487,6 +680,10 @@ func (q *queueModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			q.feedback.text += strings.Join(strings.Fields(msg.Content), " ")
 		}
 	case tea.KeyPressMsg:
+		if q.help {
+			q.help = false
+			return q, nil
+		}
 		if q.feedback != nil {
 			return q, q.feedbackInput(msg)
 		}
@@ -519,11 +716,42 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 	case "ctrl+r":
 		q.details = map[string][]string{}
 		return tea.Batch(pollQueue, q.loadPrs())
+	case "?":
+		q.help = true
+		return nil
+	case "c":
+		q.showClosed = !q.showClosed
+		return q.rebuild()
 	}
 	if !ok {
 		return nil
 	}
+	if it.Fold > 0 {
+		if k := msg.String(); k == "enter" || k == "s" {
+			q.showClosed = true
+			return q.rebuild()
+		}
+		return nil
+	}
 	switch msg.String() {
+	case "y", "n":
+		seen := q.seen[detailKey(it)]
+		if it.Kind != agentItem || it.Agent != "blocked" || seen == "" {
+			q.say(it.Key+" shows no prompt to answer here", cOverlay)
+			return nil
+		}
+		key, did := "enter", "✓ Pressed enter in "
+		if msg.String() == "n" {
+			key, did = "escape", "✓ Pressed esc in "
+		}
+		// Read again whatever happens: the prompt is gone, or it wasn't the one shown.
+		delete(q.seen, detailKey(it))
+		return tea.Sequence(func() tea.Msg {
+			if err := pressPrompt(it, seen, key); err != nil {
+				return statusMsg{text: firstLine(err.Error()), color: cRed}
+			}
+			return statusMsg{text: did + it.Key + "'s pane", color: cGreen}
+		}, pollQueue)
 	case "enter", "s":
 		if it.Kind == prItem {
 			agent, ok := q.prAgent(*it.Pr)
@@ -649,8 +877,8 @@ func (q *queueModel) prAgent(p Pr) (queueItem, bool) {
 	if key == "" || !ok {
 		return queueItem{}, false
 	}
-	if n := slices.IndexFunc(q.items, func(it queueItem) bool { return it.Kind == agentItem && it.Key == key }); n >= 0 {
-		return q.items[n], true
+	if n := slices.IndexFunc(q.all, func(it queueItem) bool { return it.Kind == agentItem && it.Key == key }); n >= 0 {
+		return q.all[n], true
 	}
 	return queueItem{Kind: agentItem, Key: key, Title: q.state.Titles[key], Session: q.state.Sessions[key], Dir: dir}, true
 }
@@ -864,7 +1092,11 @@ func (q *queueModel) View() tea.View {
 		return v
 	}
 	inner := q.width - 2
-	v.SetContent(frame(q.render(inner, q.height-1), q.status, q.statusColor, inner))
+	body := q.render(inner, q.height-1)
+	if q.help {
+		body = renderHelp("queue", queueHelp, inner, q.height-1)
+	}
+	v.SetContent(frame(body, q.status, q.statusColor, inner))
 	return v
 }
 
@@ -954,7 +1186,16 @@ func (q *queueModel) render(width, h int) []string {
 	}
 	out := []string{head}
 
-	keys := "↑↓ pick · enter go/resume · f reply · v evidence · d diff · x reviewed · K close/drop · o open · ^u/^d scroll · ^r reload · q quit"
+	// The keys of every moment, and those the row under the cursor adds; ? lists the rest.
+	keys := "↑↓ pick · enter go/resume · f reply · x reviewed · d diff · ? all keys"
+	if it, ok := q.current(); ok && it.Fold > 0 {
+		keys = "↑↓ pick · enter list them · ? all keys"
+	} else if ok && it.Agent == "blocked" && q.seen[detailKey(it)] != "" {
+		keys = "y press enter · n press esc · " + keys
+	}
+	if q.showClosed {
+		keys += " · c fold closed"
+	}
 	if q.feedback != nil {
 		keys = "type the reply · enter send · esc cancel"
 	}
@@ -998,6 +1239,14 @@ func (q *queueModel) render(width, h int) []string {
 			groupColor = cMauve
 		}
 		line += fg(groupColor, fit(name, 9)) + " "
+		if it.Fold > 0 {
+			row := line + fg(cOverlay, "▸") + " " + fg(cSubtext, fmt.Sprintf("%d closed", it.Fold)) + fg(cOverlay, "  c lists them")
+			if sel {
+				row = selected(row, width)
+			}
+			out = append(out, row)
+			continue
+		}
 		mark, what := itemLabel(it)
 		var ev []string
 		if it.Shots > 0 {
@@ -1057,9 +1306,13 @@ func runQueue() error {
 		statusColor: cOverlay,
 		state:       loadState(),
 	}
-	_, err := tea.NewProgram(q).Run()
+	p := tea.NewProgram(q)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go watchRex(ctx, func(msg tea.Msg) { p.Send(msg) })
+	_, err := p.Run()
 	if q.reported != "" {
-		// A done record outlives the program: without this the session would stay marked.
+		// A done record outlives the program: without this the session and its items would stay marked.
 		fmt.Print("\x1b]7501;state=clear\x1b\\")
 	}
 	return err
