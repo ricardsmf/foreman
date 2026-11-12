@@ -85,6 +85,10 @@ func (m *model) boardInput(msg tea.KeyPressMsg) tea.Cmd {
 		}
 	case k == "ctrl+x":
 		return m.findCleanup()
+	case k == "ctrl+w":
+		return m.openPicker(pickStatus)
+	case k == "ctrl+y":
+		return m.openPicker(pickAssignee)
 	case k == "ctrl+t":
 		m.openTaskForm()
 	case k == "ctrl+g":

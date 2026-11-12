@@ -180,6 +180,8 @@ type model struct {
 	repos        []string
 	form         *form
 	cleanup      *cleanupView
+	picker       *picker   // the selected ticket's status or assignee being changed
+	me           *JiraUser // the signed-in user, once the assignee picker has asked Jira
 }
 
 func (m *model) loading() bool { return m.inFlight[m.view] }
@@ -510,6 +512,9 @@ func (m *model) refreshStale() tea.Cmd {
 }
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if cmd, ok := m.pickerUpdate(msg); ok {
+		return m, cmd
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -639,6 +644,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmd = m.cleanupInput(msg)
 		case m.form != nil:
 			cmd = m.formInput(msg)
+		case m.picker != nil:
+			cmd = m.pickerInput(msg)
 		default:
 			cmd = m.boardInput(msg)
 		}
