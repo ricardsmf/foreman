@@ -141,10 +141,10 @@ waits on a permission prompt.
   the `CLAUDE.md` there, rewritten from foreman's source on each start: hand every piece of work to
   an agent, brief it fully, bring permission prompts and scope questions to me, never push or post.
 - It runs in the manual permission mode, whatever your settings say. The read-only commands
-  (`agents`, `report`, `screen`, `wait`) and `answer` and `escalate` run without asking; `dispatch`, `reply` and `cleanup`,
-  `--dry-run` too, ask each time through `ask` rules, so a reply can't answer another agent's
-  permission prompt unseen. Manual mode alone doesn't do it: Claude Code runs `foreman dispatch`
-  unasked there.
+  (`agents`, `report`, `screen`, `wait`), `answer`, `escalate`, `reply` and `cleanup` run without
+  asking: `reply` refuses a `blocked` agent, so it can't answer a permission prompt, and the
+  instructions keep `cleanup` to `--dry-run` unless you ask. The rest, `dispatch` among them,
+  follow manual mode, which asks unless Claude Code judges the command safe.
 - It has the MCP servers in `~/.config/mcp/mcp.json`, to read Jira tickets.
 - It is tracked by its session ID, recorded when it starts, so renaming its session doesn't lose it.
 

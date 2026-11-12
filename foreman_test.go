@@ -1598,16 +1598,13 @@ func TestOrchestratorCommand(t *testing.T) {
 		t.Error("a new conversation continues the last one")
 	}
 	for _, tool := range orchestratorTools {
-		for _, writes := range []string{"dispatch:", "reply", "cleanup"} {
-			if strings.Contains(tool, writes) {
-				t.Errorf("%s runs without asking", tool)
-			}
+		if strings.Contains(tool, "dispatch") {
+			t.Errorf("%s runs without asking", tool)
 		}
 	}
-	settings := cmd[slices.Index(cmd, "--settings")+1]
-	for _, ask := range []string{"Bash(foreman dispatch:*)", "Bash(foreman reply:*)", "Bash(foreman cleanup:*)"} {
-		if !strings.Contains(settings, `"`+ask+`"`) {
-			t.Errorf("%s doesn't always ask: %s", ask, settings)
+	for _, tool := range []string{"Bash(foreman reply:*)", "Bash(foreman cleanup:*)"} {
+		if !slices.Contains(orchestratorTools, tool) {
+			t.Errorf("%s asks each time", tool)
 		}
 	}
 	if err := runOrchestrator([]string{"--old"}); err == nil {
