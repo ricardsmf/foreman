@@ -1200,3 +1200,30 @@ func TestPrAgent(t *testing.T) {
 		t.Error("a PR without a key has no agent")
 	}
 }
+
+// The queue asks the board for a dispatch form; the board takes the request once, and ignores a stale one.
+func TestTakeFormRequest(t *testing.T) {
+	old := stateFile
+	stateFile = filepath.Join(t.TempDir(), "state.json")
+	t.Cleanup(func() { stateFile = old })
+	issue := Issue{Key: "FLD-7", Summary: "Seven"}
+	m := &model{issues: []Row{issueRow(issue)}}
+
+	m.state, _ = updateState(func(s *State) { s.FormRequest = &FormRequest{Key: "FLD-7", At: time.Now()} })
+	if cmd := m.takeFormRequest(); cmd != nil {
+		t.Error("a loaded ticket needs no fetch")
+	}
+	if m.form == nil || m.form.row.Key != "FLD-7" {
+		t.Fatalf("form = %+v, want FLD-7", m.form)
+	}
+	if loadState().FormRequest != nil {
+		t.Error("the request is still in the state file")
+	}
+
+	m.form = nil
+	m.state, _ = updateState(func(s *State) { s.FormRequest = &FormRequest{Key: "FLD-7", At: time.Now().Add(-2 * formRequestTTL)} })
+	m.takeFormRequest()
+	if m.form != nil {
+		t.Error("a stale request opened the form")
+	}
+}

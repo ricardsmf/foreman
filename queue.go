@@ -467,8 +467,7 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 		if it.Kind == prItem {
 			agent, ok := q.prAgent(*it.Pr)
 			if !ok {
-				openURL(it.Pr.URL)
-				return nil
+				return q.requestForm(*it.Pr)
 			}
 			it = agent
 		}
@@ -587,6 +586,23 @@ func (q *queueModel) prAgent(p Pr) (queueItem, bool) {
 		return q.items[n], true
 	}
 	return queueItem{Kind: agentItem, Key: key, Title: q.state.Titles[key], Session: q.state.Sessions[key], Dir: dir}, true
+}
+
+// requestForm asks the board to open its dispatch form on the PR's ticket, and focuses the board,
+// which reads the request on focus. A PR that names no ticket opens in the browser.
+func (q *queueModel) requestForm(p Pr) tea.Cmd {
+	key := jiraKey(p, nil)
+	if key == "" {
+		openURL(p.URL)
+		return nil
+	}
+	q.state, _ = updateState(func(s *State) { s.FormRequest = &FormRequest{Key: key, At: time.Now()} })
+	return func() tea.Msg {
+		if _, err := sh("", "rex", "block", "focus", "-s", os.Getenv("REX_SESSION"), "board"); err != nil {
+			return statusMsg{text: "Focusing the board for " + key + ": " + firstLine(err.Error()), color: cRed}
+		}
+		return statusMsg{text: "Dispatch form for " + key + " on the board", color: cSubtext}
+	}
 }
 
 // resume reopens a closed agent: a new Rex session in its worktree that continues its latest

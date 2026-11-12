@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 )
 
 type State struct {
@@ -28,7 +29,19 @@ type State struct {
 	// Hidden holds the dispatched keys whose closed session I dropped from the queue. The worktree
 	// stays dispatched, for the board's cleanup; reopening the session or dispatching again shows it.
 	Hidden map[string]bool `json:"hidden,omitempty"`
+	// FormRequest asks the board to open its dispatch form on a ticket: the queue's enter on a PR
+	// whose ticket has no agent. The board takes it when it next reads the state.
+	FormRequest *FormRequest `json:"formRequest,omitempty"`
 }
+
+type FormRequest struct {
+	Key string    `json:"key"`
+	At  time.Time `json:"at"`
+}
+
+// formRequestTTL bounds how long a request waits: one made while the board wasn't running
+// shouldn't open a form when it next starts.
+const formRequestTTL = time.Minute
 
 // stateMu serialises read-modify-write cycles: the board and dispatch goroutines both update the file.
 var stateMu sync.Mutex

@@ -126,6 +126,11 @@ type (
 		states map[string]string // nil when listing the sessions failed
 		state  State
 	}
+	// formRowMsg carries a requested ticket the board hadn't loaded.
+	formRowMsg struct {
+		row Row
+		err error
+	}
 	editedMsg struct {
 		text string
 		err  error
@@ -352,6 +357,52 @@ func (m *model) followRepo() {
 	}
 }
 
+// takeFormRequest opens the dispatch form the queue asked for, loading the ticket when the board's
+// search doesn't hold it, and clears the request.
+func (m *model) takeFormRequest() tea.Cmd {
+	req := m.state.FormRequest
+	if req == nil {
+		return nil
+	}
+	m.state, _ = updateState(func(s *State) {
+		if s.FormRequest != nil && s.FormRequest.Key == req.Key && s.FormRequest.At.Equal(req.At) {
+			s.FormRequest = nil
+		}
+	})
+	if time.Since(req.At) > formRequestTTL {
+		return nil
+	}
+	if n := slices.IndexFunc(m.issues, func(r Row) bool { return r.Key == req.Key }); n >= 0 {
+		m.openRequested(m.issues[n])
+		return nil
+	}
+	m.say("Loading "+req.Key+"…", cSubtext)
+	jira, key := m.jira, req.Key
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), jiraTimeout)
+		defer cancel()
+		list, _, err := jira.issues(ctx, "key = "+key)
+		if err == nil && len(list) == 0 {
+			err = fmt.Errorf("%s isn't in Jira", key)
+		}
+		if err != nil {
+			return formRowMsg{err: fmt.Errorf("%s: %w", key, err)}
+		}
+		return formRowMsg{row: issueRow(list[0])}
+	}
+}
+
+// openRequested opens the form on a requested ticket, unless a dispatch is running from the form.
+func (m *model) openRequested(row Row) {
+	if m.form != nil && m.form.busy {
+		m.say("A dispatch is running; "+row.Key+" waits until it ends, then press enter on its PR again", cYellow)
+		return
+	}
+	m.cleanup = nil
+	m.openForm(row)
+	m.say("Dispatch "+row.Key+" from the queue", cSubtext)
+}
+
 var prog *tea.Program
 
 func (m *model) submit() tea.Cmd {
@@ -526,7 +577,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.states != nil {
 			m.agents = msg.states
 		}
-		return m, nil
+		return m, m.takeFormRequest()
+	case formRowMsg:
+		if msg.err != nil {
+			m.say(msg.err.Error(), cRed)
+			break
+		}
+		m.openRequested(msg.row)
 	case editedMsg:
 		if msg.err != nil {
 			m.say("Editor: "+msg.err.Error(), cRed)
