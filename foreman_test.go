@@ -1175,3 +1175,28 @@ func TestDispatchedAgent(t *testing.T) {
 		t.Errorf("newest is Claude: got %q", got)
 	}
 }
+
+// enter on a PR goes to the agent of the ticket its title or branch names.
+func TestPrAgent(t *testing.T) {
+	q := &queueModel{
+		state: State{
+			Dispatched: map[string]string{"FLD-1": "/w/1", "FLD-2": "/w/2"},
+			Sessions:   map[string]string{"FLD-1": "s1", "FLD-2": "s2"},
+			Titles:     map[string]string{"FLD-2": "Two"},
+		},
+		items: []queueItem{{Kind: agentItem, Key: "FLD-1", Agent: "idle", Session: "s1"}},
+	}
+	if it, ok := q.prAgent(Pr{Summary: "Fix it", Branch: "rf/fld-1-fix-it"}); !ok || it.Agent != "idle" {
+		t.Errorf("by branch: got %+v, %t", it, ok)
+	}
+	// Dropped from the queue: built from the state, closed.
+	if it, ok := q.prAgent(Pr{Summary: "[FLD-2] Two"}); !ok || it.Agent != "" || it.Dir != "/w/2" || it.Title != "Two" {
+		t.Errorf("dropped: got %+v, %t", it, ok)
+	}
+	if _, ok := q.prAgent(Pr{Summary: "FLD-3 not dispatched"}); ok {
+		t.Error("an undispatched ticket has no agent")
+	}
+	if _, ok := q.prAgent(Pr{Summary: "Bump deps"}); ok {
+		t.Error("a PR without a key has no agent")
+	}
+}

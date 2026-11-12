@@ -465,8 +465,12 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 	switch msg.String() {
 	case "enter", "s":
 		if it.Kind == prItem {
-			openURL(it.Pr.URL)
-			return nil
+			agent, ok := q.prAgent(*it.Pr)
+			if !ok {
+				openURL(it.Pr.URL)
+				return nil
+			}
+			it = agent
 		}
 		if it.Agent == "" && it.Watcher {
 			q.say("Starting "+it.Key+"…", cSubtext)
@@ -569,6 +573,20 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 		return tea.Sequence(kill, pollQueue)
 	}
 	return nil
+}
+
+// prAgent is the agent dispatched on the PR's ticket, found by the Jira key in its title or branch.
+// One I dropped from the queue isn't listed, but it is closed, so it is built from the state.
+func (q *queueModel) prAgent(p Pr) (queueItem, bool) {
+	key := jiraKey(p, nil)
+	dir, ok := q.state.Dispatched[key]
+	if key == "" || !ok {
+		return queueItem{}, false
+	}
+	if n := slices.IndexFunc(q.items, func(it queueItem) bool { return it.Kind == agentItem && it.Key == key }); n >= 0 {
+		return q.items[n], true
+	}
+	return queueItem{Kind: agentItem, Key: key, Title: q.state.Titles[key], Session: q.state.Sessions[key], Dir: dir}, true
 }
 
 // resume reopens a closed agent: a new Rex session in its worktree that continues its latest

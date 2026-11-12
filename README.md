@@ -109,13 +109,13 @@ with its key (`fld-1704`, `review-reports-app-1185`), whose ID is then recorded.
 state file and the Rex sessions every few seconds, and your PRs every five minutes. Its pane title
 carries the count of items in the first two groups, `queue (3)`.
 
-Keys: `↑↓` pick, `enter` go to the agent's session, resuming a closed one (a PR opens in the browser), `f` type a reply
-that is sent to the agent's pane (the one whose program reports a status), `v` open the screenshots
-and videos, `d` the worktree's diff in git's pager, `o` the ticket or PR in the browser, `x` mark
-reviewed (the agent moves to idle or closed until it writes a new report; a PR goes until its status
-changes), `K` twice close the agent's Rex session, or on a closed one drop it from the queue (its
-worktree and report stay), `^u`/`^d` scroll, `^r` reload, `q` quit (`cmd+alt+j` brings the pane
-back).
+Keys: `↑↓` pick, `enter` go to the agent's session, resuming a closed one (a PR goes to the agent of
+the ticket its title or branch names, else opens in the browser), `f` type a reply that is sent to
+the agent's pane (the one whose program reports a status), `v` open the screenshots and videos, `d`
+the worktree's diff in git's pager, `o` the ticket or PR in the browser, `x` mark reviewed (the
+agent moves to idle or closed until it writes a new report; a PR goes until its status changes), `K`
+twice close the agent's Rex session, or on a closed one drop it from the queue (its worktree and
+report stay), `^u`/`^d` scroll, `^r` reload, `q` quit (`cmd+alt+j` brings the pane back).
 
 ### Reports and evidence
 

@@ -25,6 +25,7 @@ type Pr struct {
 	Repo      string // owner/name
 	Number    int
 	URL       string
+	Branch    string // the head branch
 	Checkout  string
 	Requested bool
 	Mine      bool
@@ -111,7 +112,7 @@ func ghLogin() (string, error) {
 const prsQuery = `query($all: String!, $requested: String!, $mine: String!, $first: Boolean!, $after: String) {
   all: search(query: $all, type: ISSUE, first: 100, after: $after) {
     pageInfo { hasNextPage endCursor }
-    nodes { ... on PullRequest { number title url isDraft updatedAt repository { name nameWithOwner } author { __typename login } } }
+    nodes { ... on PullRequest { number title url headRefName isDraft updatedAt repository { name nameWithOwner } author { __typename login } } }
   }
   requested: search(query: $requested, type: ISSUE, first: 100) @include(if: $first) {
     nodes { ... on PullRequest { number repository { nameWithOwner } } }
@@ -128,6 +129,7 @@ type prNode struct {
 	Number     int    `json:"number"`
 	Title      string `json:"title"`
 	URL        string `json:"url"`
+	Branch     string `json:"headRefName"`
 	IsDraft    bool   `json:"isDraft"`
 	UpdatedAt  string `json:"updatedAt"`
 	Repository struct {
@@ -300,6 +302,7 @@ func openPrs() (prs []Pr, truncated bool, err error) {
 			Repo:      repo,
 			Number:    p.Number,
 			URL:       p.URL,
+			Branch:    p.Branch,
 			Checkout:  repos[strings.ToLower(repo)],
 			Requested: isRequested,
 			Mine:      isMine,
@@ -395,7 +398,7 @@ var jiraKeyRe = regexp.MustCompile(`\b[A-Z][A-Z0-9]+-\d+\b`)
 
 // jiraKey is the first Jira key in the PR's title or branch, e.g. FLD-1574.
 func jiraKey(pr Pr, v *PrView) string {
-	branch := ""
+	branch := pr.Branch
 	if v != nil {
 		branch = v.HeadRefName
 	}
