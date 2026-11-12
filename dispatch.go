@@ -263,8 +263,7 @@ func dispatch(ctx context.Context, jira *Jira, d Dispatch, progress func(string)
 			return "", err
 		}
 	}
-	words := strings.Split(slug(issue.Summary), "-")
-	label := keyLower + "-" + strings.Join(words[:min(3, len(words))], "-")
+	label := sessionLabel(issue.Key, issue.Summary)
 	if err := resetEvidence(issue.Key); err != nil {
 		return "", err
 	}
@@ -272,8 +271,23 @@ func dispatch(ctx context.Context, jira *Jira, d Dispatch, progress func(string)
 	if err != nil {
 		return "", err
 	}
-	markDispatched(issue.Key, issue.Summary, cwd, session)
+	markDispatched(issue.Key, issue.Summary, cwd, session, d.Agent)
 	return fmt.Sprintf("✓ %s is working on %s in session %s · %s (%s)", d.Agent, issue.Key, name, tilde(cwd), branch), nil
+}
+
+// sessionLabel names a dispatch's Rex session: a ticket's key and the start of its summary
+// (fld-1671-my-van-always), a review's PR key (review-reports-app-1185). findSession relies on the key
+// leading it.
+func sessionLabel(key, summary string) string {
+	if strings.Contains(key, "#") {
+		return "review-" + slug(key)
+	}
+	label := strings.ToLower(key)
+	if s := slug(summary); s != "" {
+		words := strings.Split(s, "-")
+		label += "-" + strings.Join(words[:min(3, len(words))], "-")
+	}
+	return label
 }
 
 // ticketPrompt is what the agent starts with. skill is the poteto-mode skill's path, or empty to
@@ -439,11 +453,11 @@ func dispatchReview(ctx context.Context, jira *Jira, d ReviewDispatch, progress 
 	if err := resetEvidence(pr.Key); err != nil {
 		return "", err
 	}
-	session, name, err := start(d.Agent, pr.Key, strings.Join(lines, "\n"), cwd, "review-"+slug(pr.Key), progress)
+	session, name, err := start(d.Agent, pr.Key, strings.Join(lines, "\n"), cwd, sessionLabel(pr.Key, ""), progress)
 	if err != nil {
 		return "", err
 	}
-	markDispatched(pr.Key, v.Title, cwd, session)
+	markDispatched(pr.Key, v.Title, cwd, session, d.Agent)
 	return fmt.Sprintf("✓ %s is reviewing %s in session %s · %s", d.Agent, pr.Key, name, tilde(cwd)), nil
 }
 
@@ -456,19 +470,66 @@ func promptFile(key string) string { return filepath.Join(evidenceDir(key), "pro
 // inside `rex new`; the shell reads it on the far side, where only ARG_MAX (1 MB) applies.
 func agentCommand(agent, file string) []string {
 	// Absolute paths: the fish `claude` function would otherwise add a second --mcp-config.
-	var cmd []string
-	if agent == agentPi {
-		cmd = []string{which("pi")}
-	} else {
-		cmd = []string{which("claude"), "--mcp-config", mcpConfig}
-		if agent == "Claude (yolo)" {
-			cmd = append(cmd, "--dangerously-skip-permissions")
-		}
-		// The report and evidence go outside the working directory.
+	cmd := agentArgs(agent)
+	if agent != agentPi {
 		// --add-dir takes a list, so without `--` it swallows the prompt as a second directory.
-		cmd = append(cmd, "--add-dir", evidenceRoot, "--")
+		cmd = append(cmd, "--")
 	}
 	return append([]string{"/bin/sh", "-c", `p=$(cat "$0") || exit; exec "$@" "$p"`, file}, cmd...)
+}
+
+// agentArgs starts the agent without a prompt.
+func agentArgs(agent string) []string {
+	if agent == agentPi {
+		return []string{which("pi")}
+	}
+	cmd := []string{which("claude"), "--mcp-config", mcpConfig}
+	if agent == "Claude (yolo)" {
+		cmd = append(cmd, "--dangerously-skip-permissions")
+	}
+	// The report and evidence go outside the working directory.
+	return append(cmd, "--add-dir", evidenceRoot)
+}
+
+// resumeCommand continues the agent's latest conversation in its working directory. A worktree is
+// the ticket's alone, so that conversation is the dispatched one.
+func resumeCommand(agent string) []string {
+	cmd := agentArgs(agent)
+	// Before --add-dir, which takes a list.
+	return slices.Insert(cmd, 1, "--continue")
+}
+
+// dispatchedAgent is the agent to resume key with: the one recorded at dispatch, else, for
+// dispatches from before agents were recorded, the one with the newest conversation in dir.
+func dispatchedAgent(s State, key, dir string) (string, error) {
+	if a := s.Agents[key]; a != "" {
+		return a, nil
+	}
+	var newest time.Time
+	agent := ""
+	for _, c := range []struct{ agent, dir string }{
+		{agentClaude, claudeProjectDir(dir)},
+		{agentPi, piSessionDir(dir)},
+	} {
+		if st, err := os.Stat(c.dir); err == nil && st.ModTime().After(newest) {
+			newest, agent = st.ModTime(), c.agent
+		}
+	}
+	if agent == "" {
+		return "", fmt.Errorf("no pi or Claude conversation in %s to resume", tilde(dir))
+	}
+	return agent, nil
+}
+
+// claudeProjectDir is where Claude Code keeps the conversations started in dir.
+func claudeProjectDir(dir string) string {
+	return filepath.Join(home, ".claude", "projects", regexp.MustCompile(`[^A-Za-z0-9]`).ReplaceAllString(dir, "-"))
+}
+
+// piSessionDir is where pi keeps the sessions started in dir.
+func piSessionDir(dir string) string {
+	name := "--" + strings.NewReplacer("/", "-", "\\", "-", ":", "-").Replace(strings.TrimLeft(dir, "/\\")) + "--"
+	return filepath.Join(home, ".pi", "agent", "sessions", name)
 }
 
 // start returns the new session's ID, to track it by, and its label, to show.
@@ -477,14 +538,18 @@ func start(agent, key, prompt, cwd, label string, progress func(string)) (id, na
 	if err := os.WriteFile(file, []byte(prompt), 0o600); err != nil {
 		return "", "", err
 	}
-	cmd := agentCommand(agent, file)
 	progress(fmt.Sprintf("Starting %s…", agent))
-	// `rex new` starts the session in the background; the app stays on the board.
+	return newSession(label, cwd, agent, agentCommand(agent, file))
+}
+
+// newSession starts cmd in a background Rex session named label, or label-2… when that is taken.
+func newSession(label, cwd, window string, cmd []string) (id, name string, err error) {
+	// `rex new` starts the session in the background; the app stays where it is.
 	session, err := freeSessionLabel(label)
 	if err != nil {
 		return "", "", err
 	}
-	args := append([]string{"new", session, "--json", "--cwd", cwd, "--window", agent, "--"}, cmd...)
+	args := append([]string{"new", session, "--json", "--cwd", cwd, "--window", window, "--"}, cmd...)
 	out, err := sh("", "rex", args...)
 	if err != nil {
 		return "", "", err
@@ -499,10 +564,11 @@ func start(agent, key, prompt, cwd, label string, progress func(string)) (id, na
 	return session, session, nil
 }
 
-func markDispatched(key, title, cwd, session string) {
+func markDispatched(key, title, cwd, session, agent string) {
 	_, _ = updateState(func(s *State) {
 		s.Dispatched[key] = cwd
 		s.Sessions[key] = session
+		s.Agents[key] = agent
 		s.Titles[key] = title
 		delete(s.Dismissed, key)
 		delete(s.Hidden, key)

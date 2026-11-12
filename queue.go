@@ -465,8 +465,7 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 			}
 		}
 		if it.Agent == "" {
-			q.say("Its session is closed", cOverlay)
-			return nil
+			return q.resume(it)
 		}
 		session := it.Session
 		return func() tea.Msg {
@@ -557,6 +556,36 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 		return tea.Sequence(kill, pollQueue)
 	}
 	return nil
+}
+
+// resume reopens a closed agent: a new Rex session in its worktree that continues its latest
+// conversation, recorded as the agent's session and shown.
+func (q *queueModel) resume(it queueItem) tea.Cmd {
+	if !exists(it.Dir) {
+		q.say(tilde(it.Dir)+" is gone; dispatch it again from the board", cOverlay)
+		return nil
+	}
+	agent, err := dispatchedAgent(q.state, it.Key, it.Dir)
+	if err != nil {
+		q.say(err.Error(), cOverlay)
+		return nil
+	}
+	q.say("Resuming "+it.Key+"…", cSubtext)
+	key, dir, label := it.Key, it.Dir, sessionLabel(it.Key, it.Title)
+	return func() tea.Msg {
+		id, _, err := newSession(label, dir, agent, resumeCommand(agent))
+		if err != nil {
+			return statusMsg{text: "Resuming " + key + ": " + err.Error(), color: cRed}
+		}
+		_, _ = updateState(func(s *State) {
+			s.Sessions[key] = id
+			s.Agents[key] = agent
+		})
+		if err := switchTo(id); err != nil {
+			return statusMsg{text: "Switching to " + key + "'s session: " + err.Error(), color: cRed}
+		}
+		return pollQueue()
+	}
 }
 
 // hide drops a closed agent from the queue after a second K. Its worktree stays dispatched, so the
@@ -841,7 +870,7 @@ func (q *queueModel) render(width, h int) []string {
 	}
 	out = append(out, window(detail, &q.scroll, detailRows)...)
 
-	keys := "enter go · f reply · v evidence · d diff · x reviewed · K close/drop · o open · ^u/^d scroll"
+	keys := "enter go/resume · f reply · v evidence · d diff · x reviewed · K close/drop · o open · ^u/^d scroll"
 	if q.feedback != nil {
 		keys = "type the reply · enter send · esc cancel"
 	}

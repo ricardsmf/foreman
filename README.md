@@ -98,14 +98,17 @@ grouped most urgent first:
 3. **working**: agents still working (`●` yellow), with the end of their screen, refreshed every poll.
 4. **idle**: agents whose session is open with nothing new for you (`○`), reviewed or without a report.
 5. **closed**: agents whose session is closed (`◇`), until `K` drops them from the queue or `^x` on
-   the board cleans up their worktree. A dropped agent shows again if its session reopens.
+   the board cleans up their worktree. A dropped agent shows again if its session reopens. `enter`
+   resumes one: a new session in its worktree runs the dispatched agent with `--continue`, which
+   picks the newest conversation in that directory, so without a worktree it may be another one.
+   Dispatches from before the agent was recorded take the agent with the newest conversation there.
 
 An agent is found by the session ID recorded at dispatch, else by a session whose label still starts
 with its key (`fld-1704`, `review-reports-app-1185`), whose ID is then recorded. It reads the board's
 state file and the Rex sessions every few seconds, and your PRs every five minutes. Its pane title
 carries the count of items in the first two groups, `queue (3)`.
 
-Keys: `↑↓` pick, `enter` go to the agent's session (a PR opens in the browser), `f` type a reply
+Keys: `↑↓` pick, `enter` go to the agent's session, resuming a closed one (a PR opens in the browser), `f` type a reply
 that is sent to the agent's pane (the one whose program reports a status), `v` open the screenshots
 and videos, `d` the worktree's diff in git's pager, `o` the ticket or PR in the browser, `x` mark
 reviewed (the agent moves to idle or closed until it writes a new report; a PR goes until its status

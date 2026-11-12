@@ -17,6 +17,9 @@ type State struct {
 	// Sessions maps a ticket or PR key to its agent's latest Rex session: its ID, which survives a
 	// rename, or for dispatches before IDs were kept, its label.
 	Sessions map[string]string `json:"sessions,omitempty"`
+	// Agents maps a ticket or PR key to the agent dispatched on it, to resume it with once its
+	// session is closed.
+	Agents map[string]string `json:"agents,omitempty"`
 	// Titles maps a ticket or PR key to its summary, for the queue.
 	Titles map[string]string `json:"titles,omitempty"`
 	// Dismissed maps a queue item to what it showed when marked reviewed: an agent item, by its key,
@@ -74,6 +77,9 @@ func readState() State {
 	}
 	if s.Sessions == nil {
 		s.Sessions = map[string]string{}
+	}
+	if s.Agents == nil {
+		s.Agents = map[string]string{}
 	}
 	if s.Titles == nil {
 		s.Titles = map[string]string{}

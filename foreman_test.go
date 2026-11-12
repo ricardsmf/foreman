@@ -1117,3 +1117,61 @@ func TestConfigReplacesWatchers(t *testing.T) {
 		t.Error("a watcher without a dir and a prompt should be an error")
 	}
 }
+
+func TestSessionLabel(t *testing.T) {
+	for key, want := range map[[2]string]string{
+		{"FLD-1671", "My van, always late"}: "fld-1671-my-van-always",
+		{"FLD-9", ""}:                       "fld-9",
+		{"reports-app#1185", "Anything"}:    "review-reports-app-1185",
+	} {
+		if got := sessionLabel(key[0], key[1]); got != want {
+			t.Errorf("sessionLabel(%q, %q) = %q, want %q", key[0], key[1], got, want)
+		}
+	}
+}
+
+// --add-dir takes a list, so --continue must come before it.
+func TestResumeCommandContinuesBeforeAddDir(t *testing.T) {
+	for _, agent := range []string{agentPi, agentClaude, "Claude (yolo)"} {
+		cmd := resumeCommand(agent)
+		if cmd[1] != "--continue" {
+			t.Errorf("%s: %q should continue right after the binary", agent, cmd)
+		}
+		if agent != agentPi && cmd[len(cmd)-1] != evidenceRoot {
+			t.Errorf("%s: %q should end with the evidence directory", agent, cmd)
+		}
+	}
+}
+
+func TestDispatchedAgent(t *testing.T) {
+	oldHome := home
+	home = t.TempDir()
+	t.Cleanup(func() { home = oldHome })
+	s := State{Agents: map[string]string{"FLD-1": "Claude (yolo)"}}
+	if got, _ := dispatchedAgent(s, "FLD-1", "/w/x"); got != "Claude (yolo)" {
+		t.Errorf("recorded agent: got %q", got)
+	}
+	if _, err := dispatchedAgent(s, "FLD-2", "/w/repo-fld-2"); err == nil {
+		t.Error("no conversation: want an error")
+	}
+	// Before agents were recorded: the newest conversation's agent.
+	dir := "/w/repo.x-fld-2"
+	mk := func(p string, at time.Time) {
+		if err := os.MkdirAll(p, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now()
+	mk(filepath.Join(home, ".claude", "projects", "-w-repo-x-fld-2"), now.Add(-time.Hour))
+	mk(filepath.Join(home, ".pi", "agent", "sessions", "--w-repo.x-fld-2--"), now)
+	if got, err := dispatchedAgent(s, "FLD-2", dir); got != agentPi || err != nil {
+		t.Errorf("newest is pi: got %q, %v", got, err)
+	}
+	mk(filepath.Join(home, ".claude", "projects", "-w-repo-x-fld-2"), now.Add(time.Hour))
+	if got, _ := dispatchedAgent(s, "FLD-2", dir); got != agentClaude {
+		t.Errorf("newest is Claude: got %q", got)
+	}
+}
