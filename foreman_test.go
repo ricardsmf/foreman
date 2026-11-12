@@ -483,7 +483,7 @@ func TestQueueItems(t *testing.T) {
 		Hidden:     map[string]bool{},
 	}
 	// FLD-2 asks, FLD-3 works, FLD-5 finished without a report, FLD-4's session is closed.
-	sessions := []rexSession{{"s1", "fld-1-a", "done"}, {"s2", "fld-2-b", "blocked"}, {"s3", "fld-3-c", "working"}, {"s7", "review-repo-7", "idle"}, {"s5", "fld-5-e", "done"}}
+	sessions := []rexSession{{"s1", "fld-1-a", "done", nil}, {"s2", "fld-2-b", "blocked", nil}, {"s3", "fld-3-c", "working", nil}, {"s7", "review-repo-7", "idle", nil}, {"s5", "fld-5-e", "done", nil}}
 	prs := []Pr{
 		{Key: "repo#9", Mine: true, Category: "Blocked", Status: "in review ✗"},
 		{Key: "repo#10", Mine: true, Category: "Done", Status: "approved ✓"},
@@ -546,7 +546,7 @@ func TestQueueItems(t *testing.T) {
 	if _, ok := groups(queueItems(s, sessions, prs))["FLD-4"]; ok {
 		t.Error("hidden FLD-4 still listed")
 	}
-	sessions = append(sessions, rexSession{"s4", "fld-4-d", "idle"})
+	sessions = append(sessions, rexSession{"s4", "fld-4-d", "idle", nil})
 	if _, ok := groups(queueItems(s, sessions, prs))["FLD-4"]; !ok {
 		t.Error("FLD-4 not listed with its session open again")
 	}
@@ -563,7 +563,7 @@ func TestQueueKeepsItsPlaceAcrossRebuilds(t *testing.T) {
 			Dispatched: map[string]string{"FLD-1": "/w/1", "FLD-2": "/w/2", "repo#9": "/w/9"},
 			Sessions:   map[string]string{"FLD-1": "s1", "FLD-2": "s2", "repo#9": "s9"},
 		},
-		sessions: []rexSession{{"s1", "fld-1-a", "idle"}, {"s2", "fld-2-b", "idle"}, {"s9", "review-repo-9", "working"}},
+		sessions: []rexSession{{"s1", "fld-1-a", "idle", nil}, {"s2", "fld-2-b", "idle", nil}, {"s9", "review-repo-9", "working", nil}},
 		prs:      []Pr{{Key: "repo#9", Mine: true, Category: "Blocked", Status: "changes"}},
 	}
 	q.rebuild()
@@ -598,9 +598,9 @@ func TestQueueKeepsItsPlaceAcrossRebuilds(t *testing.T) {
 
 func TestFindSession(t *testing.T) {
 	sessions := []rexSession{
-		{"session:a", "fld-1704", "done"},
-		{"session:b", "review-reports-app-1185-x", "idle"},
-		{"session:c", "fld-17040-other", "working"},
+		{"session:a", "fld-1704", "done", nil},
+		{"session:b", "review-reports-app-1185-x", "idle", nil},
+		{"session:c", "fld-17040-other", "working", nil},
 	}
 	for _, tc := range []struct{ key, recorded, want string }{
 		{"FLD-1704", "session:c", "session:c"},                 // the recorded ID wins
@@ -1784,5 +1784,35 @@ func TestAgentsAsk(t *testing.T) {
 	}
 	if !slices.Contains(orchestratorTools, "Bash(foreman answer:*)") || !slices.Contains(orchestratorTools, "Bash(foreman escalate:*)") {
 		t.Errorf("the orchestrator would ask before answering: %q", orchestratorTools)
+	}
+}
+
+// A watcher that renamed its session is still found, by its recorded ID or by Claude Code running
+// in its checkout, so the board doesn't start a second one.
+func TestFindWatcherAfterARename(t *testing.T) {
+	w := Watcher{Name: "fld-pr-watch", Dir: "/w/watch", Prompt: "/loop"}
+	renamed := rexSession{ID: "s1", Label: "pr-review-watcher", State: "idle",
+		Procs: []rexProc{{Cmd: "/Users/me/.local/bin/claude", Dir: "/w/watch"}}}
+	if s, ok := findWatcher([]rexSession{renamed}, w, ""); !ok || s.ID != "s1" {
+		t.Errorf("by its checkout: %+v, %t", s, ok)
+	}
+	byID := rexSession{ID: "s2", Label: "anything"}
+	if s, ok := findWatcher([]rexSession{byID}, w, "s2"); !ok || s.ID != "s2" {
+		t.Errorf("by its recorded ID: %+v, %t", s, ok)
+	}
+	for _, other := range []rexSession{
+		{ID: "s3", Label: "shell", Procs: []rexProc{{Cmd: "/bin/zsh", Dir: "/w/watch"}}},
+		{ID: "s4", Label: "x", Procs: []rexProc{{Cmd: "/bin/claude", Dir: "/w/watch-2"}}},
+	} {
+		if _, ok := findWatcher([]rexSession{other}, w, ""); ok {
+			t.Errorf("took %+v for the watcher", other)
+		}
+	}
+	if it := watcherItem(w, []rexSession{renamed}, ""); it.Group != idle || it.Session != "s1" {
+		t.Errorf("queue row: %+v", it)
+	}
+	o := rexSession{ID: "o1", Label: "renamed", Procs: []rexProc{{Cmd: "claude", Dir: orchestratorDir}}}
+	if s, ok := findOrchestrator([]rexSession{o}, ""); !ok || s.ID != "o1" {
+		t.Errorf("orchestrator by its directory: %+v, %t", s, ok)
 	}
 }

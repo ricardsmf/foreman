@@ -229,8 +229,10 @@ A watcher is a Claude Code session that keeps running one of a repo's skills. Mi
 `fld-pr-watch`: `/loop 10m /fld-watch` in `~/work/code/reports-app-watch`, which reviews the PRs
 that request my review and posts the result under my account.
 
-- The board starts each watcher that has no open Rex session named after it, in the background.
-  A session started by hand under that name counts as the watcher.
+- The board starts each watcher that has no open Rex session, in the background, and records
+  each watcher's session ID. A watcher's session is the recorded one, else one named after it, else
+  one running Claude Code in its checkout: Claude renames its session when Rex's startup hook says
+  so, and a watcher started twice would review every PR twice.
 - It runs `claude --permission-mode manual <prompt>`: only the commands its checkout's
   `.claude/settings.local.json` allows run unasked. The skill's own file lists them.
 - The queue always lists it: with **needs you** when it waits on a permission prompt or failed (a

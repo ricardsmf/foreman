@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"maps"
 	"path/filepath"
 	"strings"
 )
@@ -28,35 +29,60 @@ func watcherCommand(w Watcher) []string {
 	return []string{which("claude"), "--permission-mode", "manual", w.Prompt}
 }
 
-// startWatcher starts the watcher in a background Rex session named after it.
-func startWatcher(w Watcher) error {
+// startWatcher starts the watcher in a background Rex session named after it, and returns the
+// session's ID.
+func startWatcher(w Watcher) (string, error) {
 	if !exists(w.Dir) {
-		return fmt.Errorf("%s: its checkout %s doesn't exist", w.Name, tilde(w.Dir))
+		return "", fmt.Errorf("%s: its checkout %s doesn't exist", w.Name, tilde(w.Dir))
 	}
-	args := append([]string{"new", w.Name, "--cwd", w.Dir, "--window", "Claude", "--"}, watcherCommand(w)...)
-	if _, err := sh("", "rex", args...); err != nil {
-		return fmt.Errorf("%s: %w", w.Name, err)
+	id, _, err := newSession(w.Name, w.Dir, agentClaude, watcherCommand(w))
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", w.Name, err)
 	}
-	return nil
+	return id, nil
+}
+
+// findWatcher is the watcher's open session: the recorded one, else one named after it, else one
+// running Claude Code in its checkout. Claude renames its session when Rex's startup hook says so,
+// and a watcher that lost its name must not be started twice: two would review every PR twice.
+func findWatcher(sessions []rexSession, w Watcher, recorded string) (rexSession, bool) {
+	if s, ok := findSession(sessions, w.Name, recorded); ok {
+		return s, true
+	}
+	for _, s := range sessions {
+		if s.runsClaudeIn(w.Dir) {
+			return s, true
+		}
+	}
+	return rexSession{}, false
 }
 
 // startWatchers starts each watcher that has no open session, and returns what it did, one line
-// each. A session I started by hand under the watcher's name counts as it.
+// each. A session I started by hand under the watcher's name, or in its checkout, counts as it.
+// Every watcher's session is recorded by ID.
 func startWatchers() (started []string, err error) {
 	sessions, err := agentSessions()
 	if err != nil {
 		return nil, err
 	}
+	recorded := loadState().WatcherSessions
+	ids := map[string]string{}
 	var failed []string
 	for _, w := range watchers {
-		if _, ok := findSession(sessions, w.Name, ""); ok {
+		if s, ok := findWatcher(sessions, w, recorded[w.Name]); ok {
+			ids[w.Name] = s.ID
 			continue
 		}
-		if e := startWatcher(w); e != nil {
+		id, e := startWatcher(w)
+		if e != nil {
 			failed = append(failed, e.Error())
 			continue
 		}
+		ids[w.Name] = id
 		started = append(started, w.Name)
+	}
+	if _, e := updateState(func(s *State) { maps.Copy(s.WatcherSessions, ids) }); e != nil {
+		failed = append(failed, "recording their sessions: "+e.Error())
 	}
 	if len(failed) > 0 {
 		err = fmt.Errorf("watcher %s", strings.Join(failed, "; "))
@@ -66,9 +92,9 @@ func startWatchers() (started []string, err error) {
 
 // watcherItem is the watcher's line in the queue: with the agents that need me when it waits on a
 // permission prompt or failed, else by whether it works, waits for its next pass or isn't running.
-func watcherItem(w Watcher, sessions []rexSession) queueItem {
+func watcherItem(w Watcher, sessions []rexSession, recorded string) queueItem {
 	it := queueItem{Kind: agentItem, Watcher: true, Key: w.Name, Title: w.Prompt, Dir: w.Dir, Group: closed}
-	if rs, ok := findSession(sessions, w.Name, ""); ok {
+	if rs, ok := findWatcher(sessions, w, recorded); ok {
 		it.Agent, it.Session = rs.State, rs.ID
 		switch {
 		case it.urgent():

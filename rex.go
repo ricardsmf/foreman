@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -16,28 +17,51 @@ end
 `
 
 // agentSessionsScript returns every session with the states its terminals' programs report over
-// OSC 7501 (pi and Claude Code report working, blocked, done…).
+// OSC 7501 (pi and Claude Code report working, blocked, done…), and each terminal's program with
+// its directory.
 const agentSessionsScript = attachLua + `
 local out = {}
 local list = rex.call("session.list")
 for _, s in ipairs((list or {}).sessions or {}) do
   attach(s.session_id)
-  local states = {}
+  local states, procs = {}, {}
   local blocks = rex.call("session.list_blocks", {session_id = s.session_id})
   for _, b in ipairs((blocks or {}).blocks or {}) do
     local ok, st = pcall(rex.call, "block.method", {session_id = s.session_id, block_id = b.block_id, method = "program_status"})
     if ok and st then
       for _, r in ipairs(st.records or {}) do table.insert(states, r.state) end
     end
+    local okp, p = pcall(rex.call, "block.method", {session_id = s.session_id, block_id = b.block_id, method = "process"})
+    if okp and p and p.child then
+      table.insert(procs, {cmd = p.child.argv0 or "", dir = p.child.cwd or ""})
+    end
   end
-  table.insert(out, {id = s.session_id, label = s.label, states = states})
+  table.insert(out, {id = s.session_id, label = s.label, states = states, procs = procs})
 end
 return out
 `
 
-// A rexSession is an open Rex session and its most urgent reported state.
+// A rexSession is an open Rex session, its most urgent reported state, and the programs its
+// terminals run.
 type rexSession struct {
 	ID, Label, State string
+	Procs            []rexProc
+}
+
+// A rexProc is a terminal's program and the directory it runs in.
+type rexProc struct {
+	Cmd string `json:"cmd"`
+	Dir string `json:"dir"`
+}
+
+// runsClaudeIn is whether one of the session's terminals runs Claude Code in dir.
+func (s rexSession) runsClaudeIn(dir string) bool {
+	for _, p := range s.Procs {
+		if filepath.Base(p.Cmd) == "claude" && filepath.Clean(p.Dir) == filepath.Clean(dir) {
+			return true
+		}
+	}
+	return false
 }
 
 // agentSessions lists the open Rex sessions with their most urgent reported state: blocked, error,
@@ -54,6 +78,7 @@ func agentSessions() ([]rexSession, error) {
 		ID     string          `json:"id"`
 		Label  string          `json:"label"`
 		States json.RawMessage `json:"states"`
+		Procs  json.RawMessage `json:"procs"`
 	}
 	if strings.TrimSpace(out) == "{}" {
 		return nil, nil
@@ -64,8 +89,10 @@ func agentSessions() ([]rexSession, error) {
 	sessions := make([]rexSession, 0, len(raw))
 	for _, r := range raw {
 		var list []string
+		var procs []rexProc
 		_ = json.Unmarshal(r.States, &list)
-		sessions = append(sessions, rexSession{r.ID, r.Label, mostUrgent(list)})
+		_ = json.Unmarshal(r.Procs, &procs)
+		sessions = append(sessions, rexSession{ID: r.ID, Label: r.Label, State: mostUrgent(list), Procs: procs})
 	}
 	return sessions, nil
 }

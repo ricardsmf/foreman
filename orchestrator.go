@@ -126,7 +126,8 @@ func runOrchestrator(argv []string) error {
 }
 
 // findOrchestrator is the orchestrator's open session: the recorded one, else one labelled
-// exactly its name. Not by prefix, as agents are found: foreman-orchestrator-… may be anything.
+// exactly its name, else one running Claude Code in its directory. Not by prefix, as agents are
+// found: foreman-orchestrator-… may be anything.
 func findOrchestrator(sessions []rexSession, recorded string) (rexSession, bool) {
 	for _, s := range sessions {
 		if recorded != "" && s.ID == recorded {
@@ -135,6 +136,11 @@ func findOrchestrator(sessions []rexSession, recorded string) (rexSession, bool)
 	}
 	for _, s := range sessions {
 		if s.Label == orchestratorName {
+			return s, true
+		}
+	}
+	for _, s := range sessions {
+		if s.runsClaudeIn(orchestratorDir) {
 			return s, true
 		}
 	}

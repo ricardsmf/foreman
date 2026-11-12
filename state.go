@@ -29,6 +29,8 @@ type State struct {
 	// Hidden holds the dispatched keys whose closed session I dropped from the queue. The worktree
 	// stays dispatched, for the board's cleanup; reopening the session or dispatching again shows it.
 	Hidden map[string]bool `json:"hidden,omitempty"`
+	// WatcherSessions maps each watcher's name to its Rex session ID: it may rename the session.
+	WatcherSessions map[string]string `json:"watcherSessions,omitempty"`
 	// Orchestrator is the orchestrator's Rex session ID: it may rename the session.
 	Orchestrator string `json:"orchestrator,omitempty"`
 	// Questions holds the question each agent waits on in foreman ask, by its key.
@@ -108,6 +110,9 @@ func readState() State {
 	}
 	if s.Hidden == nil {
 		s.Hidden = map[string]bool{}
+	}
+	if s.WatcherSessions == nil {
+		s.WatcherSessions = map[string]string{}
 	}
 	if s.Questions == nil {
 		s.Questions = map[string]Question{}

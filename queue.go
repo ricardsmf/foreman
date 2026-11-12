@@ -165,7 +165,7 @@ func queueItems(s State, sessions []rexSession, prs []Pr) []queueItem {
 		items = append(items, it)
 	}
 	for _, w := range watchers {
-		items = append(items, watcherItem(w, sessions))
+		items = append(items, watcherItem(w, sessions, s.WatcherSessions[w.Name]))
 	}
 	if it, ok := orchestratorItem(sessions, s.Orchestrator); ok {
 		items = append(items, it)
