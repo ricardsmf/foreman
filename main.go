@@ -98,6 +98,7 @@ type form struct {
 	repo        int
 	repoQuery   string
 	context     string
+	contextBack int // the context's cursor, in runes from its end
 	busy        bool
 	// confirmed is set by the first enter on a row whose agent session is still open.
 	confirmed bool
@@ -168,6 +169,7 @@ type model struct {
 	prFilter      string // "all" | "requested" | "mine"
 	cursor, top   int
 	query         string
+	queryBack     int // the filter's cursor, in runes from its end
 	mine          bool
 	assignee      *string // nil = everyone, "" = unassigned
 	// Views with a load in flight. PRs load in the background from the start, so each view tracks its own.
@@ -178,6 +180,7 @@ type model struct {
 	statusSticky bool
 	statusAt     time.Time // when the status line was set: it clears after statusTTL
 	help         bool      // the list of keys is showing
+	helpScroll   int
 	theme        theme
 	rexLive      bool      // Rex's events arrive, so the sessions needn't be listed every tick
 	sessionsAt   time.Time // when the sessions were last listed
@@ -695,7 +698,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.scheduleDetail()
 	case tea.KeyPressMsg:
 		if m.help {
-			m.help = false
+			m.help = helpInput(msg, &m.helpScroll)
 			return m, nil
 		}
 		var cmd tea.Cmd
@@ -790,6 +793,16 @@ func run() error {
 		state:       loadState(),
 		agents:      map[string]string{},
 		repos:       listRepos(),
+	}
+	// The board opens on the view and the filter it was last on.
+	if b := m.state.Board; b != nil {
+		m.mine = b.Mine
+		if b.Prs {
+			m.view = prs
+		}
+		if slices.Contains([]string{"all", "requested", "mine"}, b.PrFilter) {
+			m.prFilter = b.PrFilter
+		}
 	}
 	prog = tea.NewProgram(m)
 	ctx, cancel := context.WithCancel(context.Background())

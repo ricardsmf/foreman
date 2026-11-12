@@ -6,22 +6,15 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
-	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/x/ansi"
 )
 
 const queuePoll = 3 * time.Second
@@ -51,6 +44,7 @@ type queueItem struct {
 	Key     string
 	Title   string
 	Agent   string // the agent's reported state, "" when its session is closed
+	Doing   string // what the agent says it is doing, when it reports that
 	Session string // the open session's ID, else the recorded one
 	Dir     string // the worktree
 	Report  string // report.md's path, "" when the agent wrote none
@@ -133,7 +127,7 @@ func queueItems(s State, sessions []rexSession, prs []Pr) []queueItem {
 	for key, dir := range s.Dispatched {
 		it := queueItem{Kind: agentItem, Key: key, Title: s.Titles[key], Session: s.Sessions[key], Dir: dir}
 		if rs, ok := findSession(sessions, key, s.Sessions[key]); ok {
-			it.Agent, it.Session = rs.State, rs.ID
+			it.Agent, it.Session, it.Doing = rs.State, rs.ID, rs.Msg
 		} else if s.Hidden[key] {
 			continue
 		}
@@ -273,6 +267,7 @@ type queueModel struct {
 	records       map[string]string   // the last record reported to Rex for each item that waits on me
 	statusAt      time.Time           // when the status line was set: it clears after statusTTL
 	help          bool                // the list of keys is showing
+	helpScroll    int
 	theme         theme
 	live          bool      // Rex's events arrive, so the sessions needn't be listed every tick
 	sessionsAt    time.Time // when the sessions were last listed
@@ -284,6 +279,7 @@ type queueModel struct {
 // pressed the row under the cursor may be another agent's.
 type reply struct {
 	key, session, text string
+	back               int  // the text's cursor, in runes from its end
 	answer             bool // the agent waits in foreman ask: the text is its answer
 }
 
@@ -396,109 +392,6 @@ func (q *queueModel) rebuild() tea.Cmd {
 	return tea.Batch(q.loadDetail(), q.report())
 }
 
-// rexStatus is the queue's report to Rex in the Program Status Protocol (OSC 7501), which marks
-// the foreman session in the session picker whatever session is showing: blocked while something
-// asks for me, done while a report or a PR waits to be read, idle otherwise. Agents at work
-// aren't reported, since their own sessions show that.
-func rexStatus(needs, review int) string {
-	state, msg := "idle", ""
-	switch {
-	case needs > 0:
-		state, msg = "blocked", fmt.Sprintf("%d need you", needs)
-	case review > 0:
-		state, msg = "done", fmt.Sprintf("%d to review", review)
-	}
-	report := "\x1b]7501;state=" + state + ":app=foreman"
-	if msg != "" {
-		report += ":msg=" + base64.StdEncoding.EncodeToString([]byte(msg))
-	}
-	return report + "\x1b\\"
-}
-
-// oneLine is text as a Program Status value takes it: no control characters, at most limit bytes.
-func oneLine(text string, limit int) string {
-	text = strings.Map(func(r rune) rune {
-		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
-			return ' '
-		}
-		return r
-	}, text)
-	for len(text) > limit {
-		_, size := utf8.DecodeLastRuneInString(text)
-		text = text[:len(text)-size]
-	}
-	return text
-}
-
-var recordIDRe = regexp.MustCompile(`[^A-Za-z0-9_.+-]+`)
-
-// itemRecords are the reports of the items that wait on me, each a record of its own under the
-// queue's, by record id: blocked with what it waits for, or done. Rex lists a terminal's records
-// one by one wherever it shows them.
-func itemRecords(items []queueItem) map[string]string {
-	out := map[string]string{}
-	for _, it := range items {
-		if !it.pending() {
-			continue
-		}
-		id := it.Key
-		state, kind, msg := "done", "", "report ready"
-		switch {
-		case it.Kind == prItem:
-			id, msg = "pr-"+id, "PR "+it.Pr.Status
-			if it.urgent() {
-				state = "blocked"
-			}
-		case it.Question != nil && it.Question.Escalated != "":
-			state, kind, msg = "blocked", "question", "asks: "+it.Question.Text
-		case it.Agent == "blocked":
-			state, kind, msg = "blocked", "permission", "waits on a prompt"
-		case it.Agent == "error":
-			state, msg = "error", "failed"
-		}
-		id = oneLine(recordIDRe.ReplaceAllString(id, "-"), 32)
-		report := "\x1b]7501;state=" + state + ":id=" + id + ":app=foreman"
-		if kind != "" {
-			report += ":kind=" + kind
-		}
-		title := it.Key
-		if it.Title != "" {
-			title += ": " + it.Title
-		}
-		out[id] = report + ":title=" + base64.StdEncoding.EncodeToString([]byte(oneLine(title, 180))) +
-			":msg=" + base64.StdEncoding.EncodeToString([]byte(oneLine(msg, 1000))) + "\x1b\\"
-	}
-	return out
-}
-
-// report tells Rex what changed: the queue's status, and the record of each item that waits on me.
-func (q *queueModel) report() tea.Cmd {
-	if os.Getenv("REX_SESSION") == "" {
-		return nil
-	}
-	var out strings.Builder
-	if status := rexStatus(q.count(needsYou), q.count(toReview)); status != q.reported {
-		q.reported = status
-		out.WriteString(status)
-	}
-	want := itemRecords(q.all)
-	for _, id := range slices.Sorted(maps.Keys(want)) {
-		if q.records[id] != want[id] {
-			out.WriteString(want[id])
-		}
-	}
-	for _, id := range slices.Sorted(maps.Keys(q.records)) {
-		if _, ok := want[id]; !ok {
-			out.WriteString("\x1b]7501;state=clear:id=" + id + "\x1b\\")
-		}
-	}
-	q.records = want
-	if out.Len() == 0 {
-		return nil
-	}
-	return tea.Raw(out.String())
-}
-
 func (q *queueModel) loadDetail() tea.Cmd {
 	it, ok := q.current()
 	if !ok {
@@ -525,33 +418,6 @@ func (q *queueModel) loadDetail() tea.Cmd {
 		}
 		return queueDetailMsg{key, itemDetail(it), ""}
 	}
-}
-
-// promptDetail is what a blocked agent's pane asks, to head its detail, and the seen token of the
-// pane it was read from: y and n press a key there only while the pane still shows it.
-func promptDetail(it queueItem, capture func(queueItem) (string, error)) ([]string, string) {
-	screen, err := capture(it)
-	if err != nil {
-		return nil, ""
-	}
-	out := []string{"# It waits on this", "", "```"}
-	out = append(out, paneAsks(screen)...)
-	return append(out, "```", "", "`y` presses enter in its pane and `n` presses esc, while it still shows this. `enter` goes there.", ""),
-		seenToken(it.Agent, screen)
-}
-
-// pressPrompt presses key in the agent's pane, unless the pane no longer shows what seen stands
-// for: the prompt was answered meanwhile, and the key would land on whatever replaced it.
-func pressPrompt(it queueItem, seen, key string) error {
-	if err := stillSeen(it, seen, capturePane); err != nil {
-		return fmt.Errorf("%s's pane changed since it was read, so nothing was pressed; it is read again", it.Key)
-	}
-	block, err := agentBlock(it.Session)
-	if err != nil {
-		return err
-	}
-	_, err = sh("", "rex", "send-key", "-s", it.Session, "-b", block, key)
-	return err
 }
 
 // itemDetail is the item's report, its evidence and terminal captures, or for an agent that wrote
@@ -604,6 +470,10 @@ func itemDetail(it queueItem) []string {
 			out = append(out, fg(cRed, firstLine(err.Error())))
 		} else {
 			lines := strings.Split(strings.TrimRight(screen, "\n"), "\n")
+			// A prompt lives in the agent's own frame, so a blocked agent's screen keeps it.
+			if it.Agent != "blocked" {
+				lines = withoutInputBox(lines)
+			}
 			out = append(out, lines[max(0, len(lines)-40):]...)
 		}
 	}
@@ -677,11 +547,11 @@ func (q *queueModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tea.PasteMsg:
 		if q.feedback != nil {
-			q.feedback.text += strings.Join(strings.Fields(msg.Content), " ")
+			q.feedback.text = insertText(q.feedback.text, q.feedback.back, strings.Join(strings.Fields(msg.Content), " "))
 		}
 	case tea.KeyPressMsg:
 		if q.help {
-			q.help = false
+			q.help = helpInput(msg, &q.helpScroll)
 			return q, nil
 		}
 		if q.feedback != nil {
@@ -1001,8 +871,6 @@ func (q *queueModel) feedbackInput(msg tea.KeyPressMsg) tea.Cmd {
 		q.feedback = nil
 	case "ctrl+c":
 		return tea.Quit
-	case "backspace":
-		q.feedback.text = dropLast(q.feedback.text)
 	case "enter":
 		r := *q.feedback
 		q.feedback = nil
@@ -1024,280 +892,11 @@ func (q *queueModel) feedbackInput(msg tea.KeyPressMsg) tea.Cmd {
 			return statusMsg{text: "✓ Sent to " + r.key, color: cGreen}
 		}
 	default:
-		q.feedback.text += msg.Key().Text
+		if text, back, ok := editText(q.feedback.text, q.feedback.back, msg); ok {
+			q.feedback.text, q.feedback.back = text, back
+		}
 	}
 	return nil
-}
-
-// agentBlockScript finds the session's pane whose program reports a status (pi or Claude Code),
-// else its first placed pane: a session can hold a shell split beside the agent.
-const agentBlockScript = attachLua + `
-local label = %s
-for _, s in ipairs(rex.call("session.list").sessions or {}) do
-  if s.session_id == label or s.label == label then
-    attach(s.session_id)
-    local first
-    for _, b in ipairs((rex.call("session.list_blocks", {session_id = s.session_id}) or {}).blocks or {}) do
-      if b.placement == "placed" then
-        local ok, st = pcall(rex.call, "block.method", {session_id = s.session_id, block_id = b.block_id, method = "program_status"})
-        if ok and st and #(st.records or {}) > 0 then return b.block_id end
-        first = first or b.block_id
-      end
-    end
-    if first then return first end
-    error("no pane in session " .. label, 0)
-  end
-end
-error("no session " .. label, 0)
-`
-
-// agentBlock is the session's pane where the agent runs.
-func agentBlock(session string) (string, error) {
-	out, err := sh("", "rex", "do", "--all", "-e", fmt.Sprintf(agentBlockScript, strconv.Quote(session)), "--json")
-	if err != nil {
-		return "", err
-	}
-	var block string
-	if err := json.Unmarshal([]byte(out), &block); err != nil {
-		return "", fmt.Errorf("finding the agent's pane: %w", err)
-	}
-	return block, nil
-}
-
-// sendToAgent types text into the agent's pane and presses enter, as if I had replied there.
-func sendToAgent(session, text string) error {
-	block, err := agentBlock(session)
-	if err != nil {
-		return err
-	}
-	// After --: a reply that starts with a dash isn't a flag.
-	if _, err := sh("", "rex", "send", "-s", session, "-b", block, "--", text); err != nil {
-		return err
-	}
-	// A separate key press: in one write the agent's editor takes the newline as pasted text.
-	time.Sleep(150 * time.Millisecond)
-	_, err = sh("", "rex", "send-key", "-s", session, "-b", block, "enter")
-	return err
-}
-
-func (q *queueModel) View() tea.View {
-	v := tea.NewView("")
-	v.AltScreen = true
-	v.ReportFocus = true
-	v.WindowTitle = "queue"
-	if n := q.needYou(); n > 0 {
-		v.WindowTitle = fmt.Sprintf("queue (%d)", n)
-	}
-	if q.width == 0 {
-		return v
-	}
-	inner := q.width - 2
-	body := q.render(inner, q.height-1)
-	if q.help {
-		body = renderHelp("queue", queueHelp, inner, q.height-1)
-	}
-	v.SetContent(frame(body, q.status, q.statusColor, inner))
-	return v
-}
-
-func age(t time.Time) string {
-	if t.IsZero() {
-		return ""
-	}
-	d := time.Since(t)
-	switch {
-	case d < time.Minute:
-		return "now"
-	case d < time.Hour:
-		return fmt.Sprintf("%dm", int(d.Minutes()))
-	case d < 48*time.Hour:
-		return fmt.Sprintf("%dh", int(d.Hours()))
-	}
-	return fmt.Sprintf("%dd", int(d.Hours()/24))
-}
-
-var groupNames = map[group]string{needsYou: "needs you", toReview: "review", working: "working", idle: "idle", closed: "closed"}
-
-// itemLabel is the item's coloured mark and its state.
-func itemLabel(it queueItem) (string, string) {
-	if it.Kind == prItem {
-		if !it.urgent() {
-			return fg(cGreen, "✓"), fg(cGreen, it.Pr.Status)
-		}
-		return fg(cRed, "✗"), fg(cRed, it.Pr.Status)
-	}
-	what := "done"
-	if it.review() {
-		what = "reviewed"
-	}
-	if it.Report == "" {
-		what = "no report"
-	}
-	if it.Orchestrator {
-		what = "waiting for you"
-	}
-	if it.Watcher {
-		what = "between passes"
-		if it.Polled {
-			what = "waits for a PR to change"
-		}
-		if it.Agent == "" {
-			what = "not running, enter starts it"
-		}
-	}
-	switch {
-	case it.Question != nil && it.Question.Escalated != "":
-		return fg(cRed, "●"), fg(cRed, "asks you")
-	case it.Question != nil:
-		return fg(cYellow, "●"), fg(cYellow, "asks the orchestrator")
-	case it.Agent == "working":
-		return fg(cYellow, "●"), fg(cYellow, "working")
-	case it.Agent == "blocked":
-		return fg(cRed, "●"), fg(cRed, "asks you")
-	case it.Agent == "error":
-		return fg(cRed, "●"), fg(cRed, "failed")
-	case it.Group == toReview && it.Agent == "":
-		return fg(cGreen, "✓"), fg(cGreen, what) + fg(cOverlay, " (closed)")
-	case it.Group == toReview:
-		return fg(cGreen, "✓"), fg(cGreen, what)
-	case it.Group == idle:
-		return fg(cGreen, "○"), fg(cOverlay, what)
-	}
-	return fg(cOverlay, "◇"), fg(cOverlay, what)
-}
-
-func (q *queueModel) render(width, h int) []string {
-	dot := fg(cSurface, " · ")
-	need := fg(cGreen, "nothing needs you")
-	if n := q.needYou(); n > 0 {
-		need = bold(fg(cRed, fmt.Sprintf("%d need you", n)))
-	}
-	head := bold(fg(cMauve, "queue")) + dot + need
-	for _, g := range []struct {
-		g group
-		c Color
-	}{{working, cYellow}, {idle, cGreen}, {closed, cOverlay}} {
-		if n := q.count(g.g); n > 0 {
-			head += dot + fg(g.c, fmt.Sprintf("%d %s", n, groupNames[g.g]))
-		}
-	}
-	if q.prsLoading {
-		head += fg(cYellow, "  loading PRs…")
-	}
-	out := []string{head}
-
-	// The keys of every moment, and those the row under the cursor adds; ? lists the rest.
-	keys := "↑↓ pick · enter go/resume · f reply · x reviewed · d diff · ? all keys"
-	if it, ok := q.current(); ok && it.Fold > 0 {
-		keys = "↑↓ pick · enter list them · ? all keys"
-	} else if ok && it.Agent == "blocked" && q.seen[detailKey(it)] != "" {
-		keys = "y press enter · n press esc · " + keys
-	}
-	if q.showClosed {
-		keys += " · c fold closed"
-	}
-	if q.feedback != nil {
-		keys = "type the reply · enter send · esc cancel"
-	}
-	footer := hints(keys, width)
-	listRows := max(3, min(len(q.items), (h-2-len(footer))*40/100))
-	detailRows := h - listRows - 2 - len(footer)
-	q.top = scrollTo(q.top, q.cursor, listRows, len(q.items))
-
-	keyW := 8
-	for _, it := range q.items {
-		keyW = max(keyW, len(it.Key))
-	}
-	keyW = min(22, keyW)
-	// Ages line up in a column of their own at the right edge.
-	ageW := 0
-	for _, it := range q.items {
-		ageW = max(ageW, len(age(it.When)))
-	}
-	for n := q.top; n < q.top+listRows; n++ {
-		if n >= len(q.items) {
-			empty := ""
-			if n == 0 {
-				empty = fg(cOverlay, "  no agents dispatched")
-			}
-			out = append(out, empty)
-			continue
-		}
-		it := q.items[n]
-		sel := n == q.cursor
-		line := " "
-		if sel {
-			line = fg(cMauve, "▌")
-		}
-		// The group's name on its first row, and on the top row when the group starts above it.
-		name := ""
-		if n == q.top || q.items[n-1].Group != it.Group {
-			name = groupNames[it.Group]
-		}
-		groupColor := cOverlay
-		if it.pending() {
-			groupColor = cMauve
-		}
-		line += fg(groupColor, fit(name, 9)) + " "
-		if it.Fold > 0 {
-			row := line + fg(cOverlay, "▸") + " " + fg(cSubtext, fmt.Sprintf("%d closed", it.Fold)) + fg(cOverlay, "  c lists them")
-			if sel {
-				row = selected(row, width)
-			}
-			out = append(out, row)
-			continue
-		}
-		mark, what := itemLabel(it)
-		var ev []string
-		if it.Shots > 0 {
-			ev = append(ev, fmt.Sprintf("▣ %d", it.Shots))
-		}
-		if it.Videos > 0 {
-			ev = append(ev, "▶ video")
-		}
-		meta := what
-		if len(ev) > 0 {
-			meta += "  " + fg(cBlue, strings.Join(ev, " "))
-		}
-		if ageW > 0 {
-			meta += "  " + fg(cOverlay, fmt.Sprintf("%*s", ageW, age(it.When)))
-		}
-		keyColor, title := cOverlay, fg(cSubtext, it.Title)
-		if it.Group == closed {
-			title = fg(cOverlay, it.Title)
-		}
-		if sel {
-			keyColor, title = cText, bold(fg(cText, it.Title))
-		}
-		left := line + mark + " " + fg(keyColor, fit(it.Key, keyW)) + "  "
-		titleW := width - ansi.StringWidth(left) - ansi.StringWidth(meta) - 2
-		row := left + fit(title, max(0, titleW)) + "  " + meta
-		if sel {
-			row = selected(row, width)
-		}
-		out = append(out, row)
-	}
-
-	var detail []string
-	if q.feedback != nil {
-		verb := "Reply to "
-		if q.feedback.answer {
-			verb = "Answer "
-		}
-		detail = append(detail, bold(fg(cMauve, verb+q.feedback.key)), "")
-		for _, l := range wrap(q.feedback.text+"█", width-2) {
-			detail = append(detail, "  "+l)
-		}
-	} else if it, ok := q.current(); ok {
-		lines := q.details[detailKey(it)]
-		if lines == nil {
-			lines = []string{"# " + it.Key + ": " + it.Title, "", fg(cOverlay, "Loading…")}
-		}
-		detail = renderMarkdown(lines, width)
-	}
-	shown := window(detail, &q.scroll, detailRows)
-	out = append(out, divider(width, q.scroll, detailRows, len(detail)))
-	return append(append(out, shown...), footer...)
 }
 
 func runQueue() error {

@@ -6,7 +6,6 @@ import (
 	"image/color"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -252,7 +251,7 @@ func (m *model) View() tea.View {
 	var body []string
 	switch {
 	case m.help:
-		body = renderHelp("foreman", boardHelp, inner, m.height-1)
+		body = renderHelp("foreman", boardHelp, inner, m.height-1, &m.helpScroll)
 	case m.cleanup != nil:
 		body = m.renderCleanup(inner, m.height-1)
 	case m.form != nil:
@@ -312,9 +311,9 @@ var queueHelp = []helpKey{
 	{"?", "this list"},
 }
 
-// renderHelp is the full list of keys, which the footer has no room for.
-func renderHelp(title string, keys []helpKey, width, h int) []string {
-	out := []string{bold(fg(cMauve, title)) + fg(cSurface, " · ") + "keys", fg(cMauve, strings.Repeat("─", width))}
+// renderHelp is the full list of keys, which the footer has no room for, scrolled to *scroll.
+func renderHelp(title string, keys []helpKey, width, h int, scroll *int) []string {
+	var out []string
 	keyW := 0
 	for _, k := range keys {
 		keyW = max(keyW, ansi.StringWidth(k.key))
@@ -332,14 +331,11 @@ func renderHelp(title string, keys []helpKey, width, h int) []string {
 			out = append(out, "  "+fg(cSubtext, fit(key, keyW))+"  "+l)
 		}
 	}
-	// A short pane: the blank lines between the groups go first.
-	if len(out) > h-1 {
-		out = slices.DeleteFunc(out, func(l string) bool { return l == "" })
-	}
-	for len(out) < h-1 {
-		out = append(out, "")
-	}
-	return append(out[:max(0, h-1)], hints("any key back", width)...)
+	footer := hints("↑↓ scroll · any other key back", width)
+	rows := max(0, h-2-len(footer))
+	shown := window(out[1:], scroll, rows)
+	head := []string{bold(fg(cMauve, title)) + fg(cSurface, " · ") + "keys", divider(width, *scroll, rows, len(out)-1)}
+	return append(append(head, shown...), footer...)
 }
 
 func (m *model) renderBoard(width, h int) []string {
@@ -374,9 +370,9 @@ func (m *model) renderBoard(width, h int) []string {
 		if isPrs {
 			noun = "PRs"
 		}
-		hint = fg(cOverlay, " fuzzy search "+noun+"…")
+		hint = fg(cOverlay, " type to filter "+noun+": every word must match")
 	}
-	out = append(out, fg(cMauve, "› ")+m.query+fg(cMauve, "█")+hint)
+	out = append(out, fg(cMauve, "› ")+cursorText(m.query, m.queryBack)+hint)
 
 	keyW, statusW, whoW := 7, 6, 10
 	for _, i := range items {
@@ -385,6 +381,11 @@ func (m *model) renderBoard(width, h int) []string {
 		whoW = max(whoW, ansi.StringWidth(cmp.Or(i.Assignee, "unassigned")))
 	}
 	keyW, statusW, whoW = min(24, keyW), min(14, statusW), min(18, whoW)
+	// A list filtered to one person needn't name them on every row.
+	showWho := m.assignee == nil && !(isPrs && m.prFilter == "mine") && !(!isPrs && m.mine)
+	if !showWho {
+		whoW = -2
+	}
 	sumW := width - keyW - statusW - whoW - 9
 	for n := m.top; n < m.top+listRows; n++ {
 		if n >= len(items) {
@@ -424,12 +425,11 @@ func (m *model) renderBoard(width, h int) []string {
 		if sel {
 			keyColor, summary = cText, bold(fg(cText, fit(i.Summary, sumW)))
 		}
-		line += strings.Join([]string{
-			fg(keyColor, fit(i.Key, keyW)),
-			fg(statusColor, fit(i.Status, statusW)),
-			fg(whoColor, fit(cmp.Or(i.Assignee, "unassigned"), whoW)),
-			summary,
-		}, "  ")
+		cols := []string{fg(keyColor, fit(i.Key, keyW)), fg(statusColor, fit(i.Status, statusW))}
+		if showWho {
+			cols = append(cols, fg(whoColor, fit(cmp.Or(i.Assignee, "unassigned"), whoW)))
+		}
+		line += strings.Join(append(cols, summary), "  ")
 		if sel {
 			line = selected(line, width)
 		}
@@ -562,12 +562,12 @@ func (m *model) renderFormFields(out []string, verb string, width, h int) []stri
 		out = append(out, "", label(fieldContext, bold("Extra context")+" "+fg(cOverlay, "(optional)")))
 	}
 	if f.context != "" || f.field == fieldContext {
-		cursor := ""
+		text := f.context
 		if f.field == fieldContext {
-			cursor = "█"
+			text = cursorText(text, f.contextBack)
 		}
 		var lines []string
-		for _, para := range strings.Split(f.context+cursor, "\n") {
+		for _, para := range strings.Split(text, "\n") {
 			lines = append(lines, wrap(para, width-4)...)
 		}
 		// Keep the end, where the cursor is, in view when the text outgrows the screen.

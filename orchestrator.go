@@ -179,7 +179,7 @@ func orchestratorItem(sessions []rexSession, recorded string) (queueItem, bool) 
 		return queueItem{}, false
 	}
 	it := queueItem{Kind: agentItem, Orchestrator: true, Key: orchestratorName, Title: "talk to it here, or ^g on the board",
-		Dir: orchestratorDir, Agent: s.State, Session: s.ID, Group: idle}
+		Dir: orchestratorDir, Agent: s.State, Session: s.ID, Doing: s.Msg, Group: idle}
 	switch {
 	case it.urgent():
 		it.Group = needsYou

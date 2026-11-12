@@ -124,7 +124,7 @@ func startWatchers() (started []string, err error) {
 func watcherItem(w Watcher, sessions []rexSession, recorded string) queueItem {
 	it := queueItem{Kind: agentItem, Watcher: true, Polled: len(w.PRs) > 0, Key: w.Name, Title: w.Prompt, Dir: w.Dir, Group: closed}
 	if rs, ok := findWatcher(sessions, w, recorded); ok {
-		it.Agent, it.Session = rs.State, rs.ID
+		it.Agent, it.Session, it.Doing = rs.State, rs.ID, rs.Msg
 		switch {
 		case it.urgent():
 			it.Group = needsYou

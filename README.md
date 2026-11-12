@@ -31,7 +31,17 @@ tickets/PRs, `^o` mine (on PRs: cycles review requested, mine, everyone), `^a` c
 PRs: author), `^w` set the ticket's status, `^y` set its assignee (see [Changing a
 ticket](#changing-a-ticket)), `^u`/`^d` scroll the description, `^b` open in browser, `^s` go to the agent's Rex
 session, `^t` a [task](#tasks), `^g` the [orchestrator](#orchestrator), `^x` clean up worktrees, `^r` refresh, `esc` quit.
-The footer names the keys of every moment; `?`, while the filter is empty, lists them all.
+The footer names the keys of every moment; `?`, while the filter is empty, lists them all, and
+`↑↓` scroll that list in a short pane.
+
+The board opens on the view (tickets or PRs) and the `^o` filter it was last on. A list filtered to
+one person, by `^o` or `^a`, leaves the assignee column to the summary.
+
+Every text field (the filter, a picker's, the dispatch form's context, the queue's reply) has a
+cursor: `←→` move it, `alt+←→` or `alt+b`/`alt+f` by word, `home`/`end` to the line's ends,
+`alt+backspace` deletes the word before it, `delete` the character under it, `ctrl+k` to the
+line's end. Where the board doesn't use them itself, `ctrl+a`/`ctrl+e` are `home`/`end`, `ctrl+w`
+deletes a word and `ctrl+u` to the line's start. What is pasted lands at the cursor.
 
 Dispatch form: `tab`/`↑↓` field, `←→` agent or repo, `space` worktree, poteto-mode or (on a PR) fix on/off, type to filter repos
 or write extra context, `alt+enter` new line, paste works, `^e` writes the context in `$VISUAL` /
@@ -258,12 +268,15 @@ context names.
 grouped most urgent first:
 
 1. **needs you**: agents that stopped to ask something or failed (`●` red), with their report or,
-   without one, the end of their screen; then your PRs with failed CI, changes requested or a
+   without one, the end of their screen (less the input box Claude Code ends it with, so it ends on
+   what the agent last wrote); then your PRs with failed CI, changes requested or a
    conflict (`✗`).
 2. **review**: agents that finished with a report you haven't marked reviewed (`✓`), newest first,
    with their evidence (`▣ 3` screenshots or captures, `▶ video`); then your approved PRs whose CI
    passed or has no checks (`✓`), ready to merge.
-3. **working**: agents still working (`●` yellow), with the end of their screen, refreshed every poll.
+3. **working**: agents still working (`●` yellow), with the end of their screen, refreshed every
+   poll. The row says what the agent reports doing, when it does (Claude Code names its current
+   step over OSC 7501), rather than `working`.
 4. **idle**: agents whose session is open with nothing new for you (`○`), reviewed or without a report.
 5. **closed**: agents whose session is closed (`◇`), folded into one row that counts them (`▸ 8
    closed`); `c`, or `enter` on that row, lists them, and `c` folds them again. A stopped watcher

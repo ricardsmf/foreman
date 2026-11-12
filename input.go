@@ -20,7 +20,7 @@ func (m *model) boardInput(msg tea.KeyPressMsg) tea.Cmd {
 		if m.query == "" {
 			return tea.Quit
 		}
-		m.query = ""
+		m.query, m.queryBack = "", 0
 	case k == "ctrl+c":
 		return tea.Quit
 	case k == "up" || k == "ctrl+p":
@@ -37,8 +37,9 @@ func (m *model) boardInput(msg tea.KeyPressMsg) tea.Cmd {
 		m.detailScroll += 10
 	case k == "tab":
 		m.view = 1 - m.view
-		m.assignee, m.query = nil, ""
+		m.assignee, m.query, m.queryBack = nil, "", 0
 		move(0)
+		m.saveView()
 		if m.view == prs && !m.prsLoaded {
 			return m.reload(prs) // the startup load failed
 		}
@@ -50,6 +51,7 @@ func (m *model) boardInput(msg tea.KeyPressMsg) tea.Cmd {
 		}
 		m.assignee = nil
 		move(0)
+		m.saveView()
 	case k == "ctrl+a":
 		list := append([]*string{nil}, ptrs(m.assignees())...)
 		at := slices.IndexFunc(list, func(s *string) bool {
@@ -102,16 +104,42 @@ func (m *model) boardInput(msg tea.KeyPressMsg) tea.Cmd {
 		if ok {
 			m.openForm(current)
 		}
-	case k == "backspace":
-		m.query = dropLast(m.query)
-		move(0)
 	case text == "?" && m.query == "":
 		m.help = true
-	case text != "":
-		m.query += text
-		move(0)
+	default:
+		// The filter is a text field for every key the board doesn't use itself.
+		if query, back, ok := editText(m.query, m.queryBack, msg); ok {
+			if query != m.query {
+				move(0)
+			}
+			m.query, m.queryBack = query, back
+		}
 	}
 	return nil
+}
+
+// saveView records the view and the filter for the board's next start.
+func (m *model) saveView() {
+	view := &BoardView{Prs: m.view == prs, Mine: m.mine, PrFilter: m.prFilter}
+	m.state, _ = updateState(func(s *State) { s.Board = view })
+}
+
+// helpInput scrolls the list of keys, and says whether it stays up: any other key closes it.
+func helpInput(msg tea.KeyPressMsg, scroll *int) bool {
+	switch msg.String() {
+	case "up", "k", "ctrl+p":
+		*scroll--
+	case "down", "j", "ctrl+n":
+		*scroll++
+	case "pgup", "ctrl+u":
+		*scroll -= 10
+	case "pgdown", "ctrl+d", "space":
+		*scroll += 10
+	default:
+		*scroll = 0
+		return false
+	}
+	return true
 }
 
 func (m *model) formInput(msg tea.KeyPressMsg) tea.Cmd {
@@ -174,13 +202,10 @@ func (m *model) formInput(msg tea.KeyPressMsg) tea.Cmd {
 		}
 		m.followRepo()
 	case f.field == fieldContext:
-		switch k {
-		case "backspace":
-			f.context = dropLast(f.context)
-		case "alt+enter", "shift+enter":
-			f.context += "\n"
-		default:
-			f.context += text
+		if k == "alt+enter" || k == "shift+enter" {
+			f.context = insertText(f.context, f.contextBack, "\n")
+		} else if context, back, ok := editText(f.context, f.contextBack, msg); ok {
+			f.context, f.contextBack = context, back
 		}
 	}
 	return nil
@@ -194,12 +219,12 @@ func (m *model) paste(text string) {
 		case fieldRepo:
 			f.repoQuery, f.repo = f.repoQuery+strings.Join(strings.Fields(text), " "), 0
 		case fieldContext:
-			f.context += text
+			f.context = insertText(f.context, f.contextBack, text)
 		}
 		return
 	}
 	if m.cleanup == nil {
-		m.query += strings.Join(strings.Fields(text), " ")
+		m.query = insertText(m.query, m.queryBack, strings.Join(strings.Fields(text), " "))
 		m.cursor, m.detailScroll = 0, 0
 	}
 }

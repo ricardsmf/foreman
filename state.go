@@ -46,6 +46,14 @@ type State struct {
 	// FormRequest asks the board to open its dispatch form on a ticket: the queue's enter on a PR
 	// whose ticket has no agent. The board takes it when it next reads the state.
 	FormRequest *FormRequest `json:"formRequest,omitempty"`
+	// Board is the view and the filter the board was last on, which it opens on.
+	Board *BoardView `json:"board,omitempty"`
+}
+
+type BoardView struct {
+	Prs      bool   `json:"prs,omitempty"`      // the PR view rather than the tickets
+	Mine     bool   `json:"mine,omitempty"`     // the tickets filtered to mine
+	PrFilter string `json:"prFilter,omitempty"` // "all", "requested" or "mine"
 }
 
 type FormRequest struct {

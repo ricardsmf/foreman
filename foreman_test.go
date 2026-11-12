@@ -563,7 +563,7 @@ func TestQueueItems(t *testing.T) {
 		Hidden:     map[string]bool{},
 	}
 	// FLD-2 asks, FLD-3 works, FLD-5 finished without a report, FLD-4's session is closed.
-	sessions := []rexSession{{"s1", "fld-1-a", "done", nil}, {"s2", "fld-2-b", "blocked", nil}, {"s3", "fld-3-c", "working", nil}, {"s7", "review-repo-7", "idle", nil}, {"s5", "fld-5-e", "done", nil}}
+	sessions := []rexSession{{"s1", "fld-1-a", "done", nil, ""}, {"s2", "fld-2-b", "blocked", nil, ""}, {"s3", "fld-3-c", "working", nil, ""}, {"s7", "review-repo-7", "idle", nil, ""}, {"s5", "fld-5-e", "done", nil, ""}}
 	prs := []Pr{
 		{Key: "repo#9", Mine: true, Category: "Blocked", Status: "in review ✗"},
 		{Key: "repo#10", Mine: true, Category: "Done", Status: "approved ✓"},
@@ -626,7 +626,7 @@ func TestQueueItems(t *testing.T) {
 	if _, ok := groups(queueItems(s, sessions, prs))["FLD-4"]; ok {
 		t.Error("hidden FLD-4 still listed")
 	}
-	sessions = append(sessions, rexSession{"s4", "fld-4-d", "idle", nil})
+	sessions = append(sessions, rexSession{"s4", "fld-4-d", "idle", nil, ""})
 	if _, ok := groups(queueItems(s, sessions, prs))["FLD-4"]; !ok {
 		t.Error("FLD-4 not listed with its session open again")
 	}
@@ -643,7 +643,7 @@ func TestQueueKeepsItsPlaceAcrossRebuilds(t *testing.T) {
 			Dispatched: map[string]string{"FLD-1": "/w/1", "FLD-2": "/w/2", "repo#9": "/w/9"},
 			Sessions:   map[string]string{"FLD-1": "s1", "FLD-2": "s2", "repo#9": "s9"},
 		},
-		sessions: []rexSession{{"s1", "fld-1-a", "idle", nil}, {"s2", "fld-2-b", "idle", nil}, {"s9", "review-repo-9", "working", nil}},
+		sessions: []rexSession{{"s1", "fld-1-a", "idle", nil, ""}, {"s2", "fld-2-b", "idle", nil, ""}, {"s9", "review-repo-9", "working", nil, ""}},
 		prs:      []Pr{{Key: "repo#9", Mine: true, Category: "Blocked", Status: "changes"}},
 	}
 	q.rebuild()
@@ -678,10 +678,10 @@ func TestQueueKeepsItsPlaceAcrossRebuilds(t *testing.T) {
 
 func TestFindSession(t *testing.T) {
 	sessions := []rexSession{
-		{"session:a", "fld-1704", "done", nil},
-		{"session:b", "review-reports-app-1185-x", "idle", nil},
-		{"session:d", "fix-reports-app-1185-address-review", "idle", nil},
-		{"session:c", "fld-17040-other", "working", nil},
+		{"session:a", "fld-1704", "done", nil, ""},
+		{"session:b", "review-reports-app-1185-x", "idle", nil, ""},
+		{"session:d", "fix-reports-app-1185-address-review", "idle", nil, ""},
+		{"session:c", "fld-17040-other", "working", nil, ""},
 	}
 	for _, tc := range []struct{ key, recorded, want string }{
 		{"FLD-1704", "session:c", "session:c"},                 // the recorded ID wins
@@ -2555,5 +2555,156 @@ func TestSetTheme(t *testing.T) {
 	setTheme(color.RGBA{0, 0, 0, 255}, color.RGBA{200, 200, 200, 255})
 	if cOverlay != "38;2;90;90;90" || bgSelected != "48;2;178;178;178" {
 		t.Errorf("on a light terminal: overlay %q, selected %q", cOverlay, bgSelected)
+	}
+}
+
+// No test writes my state file: each runs against one of its own unless it names another.
+func TestMain(m *testing.M) {
+	// The writers TestUpdateStateAcrossProcesses starts name theirs.
+	if os.Getenv("FOREMAN_TEST_STATE_WRITER") == "" {
+		dir, err := os.MkdirTemp("", "foreman-test-*")
+		if err != nil {
+			panic(err)
+		}
+		stateFile = filepath.Join(dir, "state.json")
+		code := m.Run()
+		_ = os.RemoveAll(dir)
+		os.Exit(code)
+	}
+	os.Exit(m.Run())
+}
+
+func key(name string) tea.KeyPressMsg {
+	switch name {
+	case "left":
+		return tea.KeyPressMsg{Code: tea.KeyLeft}
+	case "home":
+		return tea.KeyPressMsg{Code: tea.KeyHome}
+	case "backspace":
+		return tea.KeyPressMsg{Code: tea.KeyBackspace}
+	case "alt+backspace":
+		return tea.KeyPressMsg{Code: tea.KeyBackspace, Mod: tea.ModAlt}
+	case "alt+left":
+		return tea.KeyPressMsg{Code: tea.KeyLeft, Mod: tea.ModAlt}
+	case "ctrl+u":
+		return tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl}
+	case "ctrl+k":
+		return tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl}
+	}
+	return tea.KeyPressMsg{Code: []rune(name)[0], Text: name}
+}
+
+// A field's cursor moves by character, word and line, and what is typed or deleted is at it.
+func TestEditText(t *testing.T) {
+	text, back := "fix the login", 0
+	for _, step := range []struct{ key, want string }{
+		{"alt+left", "fix the login"},
+		{"x", "fix the xlogin"},
+		{"backspace", "fix the login"},
+		{"alt+backspace", "fix login"},
+		{"home", "fix login"},
+		{"A", "Afix login"},
+		{"ctrl+k", "A"},
+		{"b", "Ab"},
+		{"ctrl+u", ""},
+		{"left", ""},
+	} {
+		var ok bool
+		if text, back, ok = editText(text, back, key(step.key)); !ok || text != step.want {
+			t.Fatalf("after %s: %q (ok %t), want %q", step.key, text, ok, step.want)
+		}
+	}
+	if _, _, ok := editText("a", 0, tea.KeyPressMsg{Code: tea.KeyF5}); ok {
+		t.Error("a key that edits nothing was taken")
+	}
+	// Each line of a longer text has its own start.
+	if got, _, _ := editText("one\ntwo", 0, key("ctrl+u")); got != "one\n" {
+		t.Errorf("ctrl+u on the second line: %q", got)
+	}
+	if got := insertText("ac", 1, "b"); got != "abc" {
+		t.Errorf("insertText: %q", got)
+	}
+	if got := cursorText("ab", 1); got != "a\x1b[7mb\x1b[27m" {
+		t.Errorf("cursorText: %q", got)
+	}
+}
+
+// The board's filter is such a field, and what is pasted lands at its cursor.
+func TestBoardFilterEdits(t *testing.T) {
+	m := &model{inFlight: map[viewKind]bool{}}
+	for _, k := range []string{"a", "c", "left", "b"} {
+		m.boardInput(key(k))
+	}
+	if m.query != "abc" {
+		t.Errorf("query %q, want abc", m.query)
+	}
+	m.paste("X Y")
+	if m.query != "abX Yc" {
+		t.Errorf("after a paste: %q", m.query)
+	}
+}
+
+// The screen of an agent ends on what it last wrote, not on its input box.
+func TestWithoutInputBox(t *testing.T) {
+	rule := strings.Repeat("─", 40)
+	screen := []string{"⏺ Done with the fix.", "", "✻ Worked for 5m", "", rule, "❯ ", rule, "  ⏸ manual mode on"}
+	if got := withoutInputBox(screen); !slices.Equal(got, screen[:3]) {
+		t.Errorf("withoutInputBox: %q", got)
+	}
+	plain := []string{"$ make", "ok", rule, "done"}
+	if got := withoutInputBox(plain); !slices.Equal(got, plain) {
+		t.Errorf("a screen with one rule: %q", got)
+	}
+}
+
+// The board opens where it was left.
+func TestBoardViewIsRemembered(t *testing.T) {
+	m := &model{inFlight: map[viewKind]bool{}, prFilter: "all", prsLoaded: true}
+	m.boardInput(tea.KeyPressMsg{Code: tea.KeyTab})
+	m.boardInput(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
+	if b := loadState().Board; b == nil || !b.Prs || b.PrFilter != "requested" {
+		t.Errorf("saved view: %+v", b)
+	}
+}
+
+// A list filtered to one person leaves the assignee column out.
+func TestBoardHidesAssigneeWhenMine(t *testing.T) {
+	m := &model{inFlight: map[viewKind]bool{}, details: map[string][]string{}, state: loadState(),
+		issues: []Row{{Key: "FLD-1", Summary: "One", Status: "Open", Assignee: "Ana Lopes", Issue: &Issue{Mine: true}}}}
+	if board := strings.Join(m.renderBoard(100, 30), "\n"); !strings.Contains(board, "Ana Lopes") {
+		t.Errorf("everyone's board lacks the assignee:\n%s", board)
+	}
+	m.mine = true
+	if board := strings.Join(m.renderBoard(100, 30), "\n"); strings.Contains(board, "Ana Lopes") {
+		t.Errorf("my board names the assignee:\n%s", board)
+	}
+}
+
+// A working agent's row says what it reports doing.
+func TestQueueRowShowsWhatAgentDoes(t *testing.T) {
+	old := evidenceRoot
+	evidenceRoot = t.TempDir()
+	t.Cleanup(func() { evidenceRoot = old })
+	t.Setenv("REX_SESSION", "")
+	q := &queueModel{details: map[string][]string{}, width: 100, height: 30,
+		state:    State{Dispatched: map[string]string{"FLD-1": "/w/1"}, Sessions: map[string]string{"FLD-1": "s1"}},
+		sessions: []rexSession{{ID: "s1", Label: "fld-1", State: "working", Msg: "Running the tests"}}}
+	q.rebuild()
+	if rows := strings.Join(q.render(98, 29), "\n"); !strings.Contains(rows, "Running the tests") {
+		t.Errorf("rows:\n%s", rows)
+	}
+}
+
+// The list of keys scrolls, and any other key closes it.
+func TestHelpScrolls(t *testing.T) {
+	scroll := 0
+	if !helpInput(tea.KeyPressMsg{Code: tea.KeyDown}, &scroll) || scroll != 1 {
+		t.Errorf("down: scroll %d", scroll)
+	}
+	if helpInput(key("x"), &scroll) || scroll != 0 {
+		t.Errorf("another key: scroll %d", scroll)
+	}
+	if lines := renderHelp("foreman", boardHelp, 80, 12, &scroll); len(lines) != 12 || !strings.Contains(lines[1], "of") {
+		t.Errorf("a short pane: %d lines, rule %q", len(lines), lines[1])
 	}
 }

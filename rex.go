@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -31,28 +32,32 @@ local out = {}
 local list = rex.call("session.list")
 for _, s in ipairs((list or {}).sessions or {}) do
   attach(s.session_id)
-  local states, procs = {}, {}
+  local states, msgs, procs = {}, {}, {}
   local blocks = rex.call("session.list_blocks", {session_id = s.session_id})
   for _, b in ipairs((blocks or {}).blocks or {}) do
     local ok, st = pcall(rex.call, "block.method", {session_id = s.session_id, block_id = b.block_id, method = "program_status"})
     if ok and st then
-      for _, r in ipairs(st.records or {}) do table.insert(states, r.state) end
+      for _, r in ipairs(st.records or {}) do
+        table.insert(states, r.state)
+        table.insert(msgs, r.msg or "")
+      end
     end
     local okp, p = pcall(rex.call, "block.method", {session_id = s.session_id, block_id = b.block_id, method = "process"})
     if okp and p and p.child then
       table.insert(procs, {cmd = p.child.argv0 or "", dir = p.child.cwd or ""})
     end
   end
-  table.insert(out, {id = s.session_id, label = s.label, states = states, procs = procs})
+  table.insert(out, {id = s.session_id, label = s.label, states = states, msgs = msgs, procs = procs})
 end
 return out
 `
 
-// A rexSession is an open Rex session, its most urgent reported state, and the programs its
-// terminals run.
+// A rexSession is an open Rex session, its most urgent reported state, the programs its terminals
+// run, and what the program in that state says it is doing, when it says.
 type rexSession struct {
 	ID, Label, State string
 	Procs            []rexProc
+	Msg              string
 }
 
 // A rexProc is a terminal's program and the directory it runs in.
@@ -85,6 +90,7 @@ func agentSessions() ([]rexSession, error) {
 		ID     string          `json:"id"`
 		Label  string          `json:"label"`
 		States json.RawMessage `json:"states"`
+		Msgs   json.RawMessage `json:"msgs"`
 		Procs  json.RawMessage `json:"procs"`
 	}
 	if strings.TrimSpace(out) == "{}" {
@@ -95,11 +101,17 @@ func agentSessions() ([]rexSession, error) {
 	}
 	sessions := make([]rexSession, 0, len(raw))
 	for _, r := range raw {
-		var list []string
+		var list, msgs []string
 		var procs []rexProc
 		_ = json.Unmarshal(r.States, &list)
+		_ = json.Unmarshal(r.Msgs, &msgs)
 		_ = json.Unmarshal(r.Procs, &procs)
-		sessions = append(sessions, rexSession{ID: r.ID, Label: r.Label, State: mostUrgent(list), Procs: procs})
+		state := mostUrgent(list)
+		msg := ""
+		if n := slices.Index(list, state); n >= 0 && n < len(msgs) {
+			msg = msgs[n]
+		}
+		sessions = append(sessions, rexSession{ID: r.ID, Label: r.Label, State: state, Procs: procs, Msg: msg})
 	}
 	return sessions, nil
 }

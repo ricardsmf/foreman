@@ -32,9 +32,10 @@ type pickItem struct {
 }
 
 type picker struct {
-	kind  pickKind
-	row   Row
-	query string
+	kind      pickKind
+	row       Row
+	query     string
+	queryBack int // the query's cursor, in runes from its end
 	// items are what Jira returned: the ticket's transitions, or the users matching search.
 	items   []pickItem
 	search  string
@@ -164,7 +165,6 @@ func (m *model) pickerInput(msg tea.KeyPressMsg) tea.Cmd {
 	if p.busy {
 		return nil
 	}
-	text := msg.Key().Text
 	queryWas := p.query
 	switch {
 	case k == "esc":
@@ -184,10 +184,10 @@ func (m *model) pickerInput(msg tea.KeyPressMsg) tea.Cmd {
 			return nil
 		}
 		return m.applyPick(items[min(p.cursor, len(items)-1)])
-	case k == "backspace":
-		p.query = dropLast(p.query)
-	case text != "":
-		p.query += text
+	default:
+		if query, back, ok := editText(p.query, p.queryBack, msg); ok {
+			p.query, p.queryBack = query, back
+		}
 	}
 	if p.query != queryWas {
 		return m.queryChanged()
@@ -257,7 +257,7 @@ func (m *model) pickerUpdate(msg tea.Msg) (cmd tea.Cmd, handled bool) {
 		if p.busy {
 			return nil, true
 		}
-		p.query += strings.Join(strings.Fields(msg.Content), " ")
+		p.query = insertText(p.query, p.queryBack, strings.Join(strings.Fields(msg.Content), " "))
 		return m.queryChanged(), true
 	case pickLoadedMsg:
 		if msg.me != nil {
@@ -321,7 +321,7 @@ func (m *model) renderPicker(width, rows int) []string {
 	}
 	out := []string{
 		bold(fg(cMauve, what+" of "+p.row.Key)) + fg(cOverlay, " now "+now+" · "+p.row.Summary),
-		fg(cMauve, "› ") + p.query + fg(cMauve, "█"),
+		fg(cMauve, "› ") + cursorText(p.query, p.queryBack),
 	}
 	items := m.choices()
 	p.cursor = max(0, min(p.cursor, len(items)-1))
