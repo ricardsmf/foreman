@@ -74,11 +74,19 @@ var orchestratorTools = []string{
 	"Bash(foreman cleanup:*)",
 }
 
+// manualMode starts Claude Code in its manual permission mode (config value "default") and keeps
+// it there: a tool its allowlists don't name prompts. The flag alone only sets the starting mode:
+// manual mode's Bash prompt puts the cursor on "Yes, and switch to auto mode", so one enter hands
+// the session to the auto-mode classifier. disableAutoMode, passed with --settings, which outranks
+// every settings file but managed ones, takes auto out of that prompt and the shift+tab cycle.
+var manualMode = []string{"--permission-mode", "manual", "--settings", `{"disableAutoMode":"disable"}`}
+
 // orchestratorCommand runs Claude Code as the orchestrator, continuing its last conversation when
-// resume, in the manual permission mode whatever my settings say. Its MCP servers let it read
-// Jira. --allowedTools takes a list, so it goes last.
+// resume, in manualMode. Its MCP servers let it read Jira. --allowedTools takes a list, so it
+// goes last.
 func orchestratorCommand(resume bool) []string {
-	cmd := []string{which("claude"), "--permission-mode", "manual", "--mcp-config", mcpConfig}
+	cmd := append([]string{which("claude")}, manualMode...)
+	cmd = append(cmd, "--mcp-config", mcpConfig)
 	if resume {
 		cmd = append(cmd, "--continue")
 	}

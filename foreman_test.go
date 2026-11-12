@@ -1221,11 +1221,13 @@ func TestQueueListsWatchers(t *testing.T) {
 	}
 }
 
-// The watcher runs Claude Code asking before each tool call, whatever my settings default to.
+// The watcher runs Claude Code in manual mode with auto mode turned off, so no prompt can hand
+// it to the classifier, whatever my settings default to.
 func TestWatcherCommand(t *testing.T) {
 	cmd := watcherCommand(Watcher{Name: "w", Dir: "/r/watch", Prompt: "/loop 10m /fld-watch"})
-	if got := strings.Join(cmd[1:], " "); got != "--permission-mode manual /loop 10m /fld-watch" {
-		t.Errorf("command: %s", got)
+	want := []string{"--permission-mode", "manual", "--settings", `{"disableAutoMode":"disable"}`, "/loop 10m /fld-watch"}
+	if !slices.Equal(cmd[1:], want) {
+		t.Errorf("command: %q", cmd[1:])
 	}
 }
 
@@ -1882,9 +1884,10 @@ func TestOrchestratorItem(t *testing.T) {
 func TestOrchestratorCommand(t *testing.T) {
 	cmd := orchestratorCommand(true)
 	at := slices.Index(cmd, "--allowedTools")
-	mode := slices.Index(cmd, "--permission-mode")
-	if mode < 0 || cmd[mode+1] != "manual" {
-		t.Errorf("the orchestrator follows my default permission mode: %q", cmd)
+	want := append([]string{"--permission-mode", "manual", "--settings", `{"disableAutoMode":"disable"}`,
+		"--mcp-config", mcpConfig, "--continue", "--allowedTools"}, orchestratorTools...)
+	if !slices.Equal(cmd[1:], want) {
+		t.Errorf("the orchestrator can leave manual mode: %q", cmd[1:])
 	}
 	if !slices.Contains(cmd, "--continue") || at < 0 || !slices.Equal(cmd[at+1:], orchestratorTools) {
 		t.Errorf("command = %q", cmd)
