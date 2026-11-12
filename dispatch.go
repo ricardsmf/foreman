@@ -462,13 +462,14 @@ func taskPrompt(key, title, task, agent, cwd, branch string, worktree bool, skil
 		"",
 		"## Workflow",
 		"",
-		"1. **Understand.** Read the relevant code and the repo's AGENTS.md / CLAUDE.md before changing anything. If the task is ambiguous, ask me instead of guessing.",
+		"1. **Understand.** Read the relevant code and the repo's AGENTS.md / CLAUDE.md before changing anything. If the task is ambiguous, ask instead of guessing, as below.",
 		"2. **Do the task**, and only it. If it asks a question or an investigation rather than a change, answer it in the report and leave the code as it is.",
 		"3. **Verify** a change: build, and run the tests and linters that cover what you touched.",
 		"4. **Show it working.** Capture evidence that the change does what the task asks, as described below.",
 		"5. **Commit** a change on this branch. Do not push, open a PR, or post to GitHub or Jira.",
 		"6. **Report**: write the report below, then finish with the same summary in your final message.",
 	)
+	lines = append(lines, askSection()...)
 	lines = append(lines, reportSection(key, true)...)
 	return strings.Join(lines, "\n")
 }
@@ -533,13 +534,14 @@ func ticketPrompt(d Dispatch, cwd, branch, ticket, skill string) string {
 		"",
 		"## Workflow",
 		"",
-		"1. **Understand.** Read the relevant code and the repo's AGENTS.md / CLAUDE.md before changing anything. If the ticket is ambiguous, ask me instead of guessing.",
+		"1. **Understand.** Read the relevant code and the repo's AGENTS.md / CLAUDE.md before changing anything. If the ticket is ambiguous, ask instead of guessing, as below.",
 		"2. **Implement** to the ticket's acceptance criteria. Keep scope to the ticket; respect its constraints and out-of-scope notes.",
 		"3. **Verify.** Build, and run the tests and linters that cover what you touched.",
 		"4. **Show it working.** Capture evidence that the change does what the ticket asks, as described below.",
 		"5. **Commit** on this branch. Do not push, open a PR, or change the Jira ticket.",
 		"6. **Report**: write the report below, then finish with the same summary in your final message.",
 	)
+	lines = append(lines, askSection()...)
 	lines = append(lines, reportSection(issue.Key, true)...)
 	return strings.Join(lines, "\n")
 }
@@ -694,8 +696,22 @@ func agentArgs(agent string) []string {
 	if agent == "Claude (yolo)" {
 		cmd = append(cmd, "--dangerously-skip-permissions")
 	}
+	// foreman ask without a permission prompt: a prompt would park the question on me.
+	cmd = append(cmd, "--allowedTools", "Bash(foreman ask:*)")
 	// The report and evidence go outside the working directory.
 	return append(cmd, "--add-dir", evidenceRoot)
+}
+
+// askSection tells an implementing agent to put its questions through foreman ask, which waits for
+// the orchestrator's answer or mine.
+func askSection() []string {
+	return []string{
+		"",
+		"## Asking",
+		"",
+		"When you need an answer from me to go on, run `foreman ask \"<question>\"`, giving the command a 10-minute timeout. My orchestrator answers what I've already settled and hands the rest to me; the command prints the answer and you carry on.",
+		"If it reports no answer, put the question in your report and stop to ask me.",
+	}
 }
 
 // resumeCommand continues the agent's latest conversation in its working directory. A worktree is
@@ -777,6 +793,7 @@ func markDispatched(key, title, cwd, session, agent string) {
 		s.Sessions[key] = session
 		s.Agents[key] = agent
 		s.Titles[key] = title
+		delete(s.Questions, key)
 		delete(s.Dismissed, key)
 		delete(s.Hidden, key)
 	})

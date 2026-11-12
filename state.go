@@ -31,6 +31,8 @@ type State struct {
 	Hidden map[string]bool `json:"hidden,omitempty"`
 	// Orchestrator is the orchestrator's Rex session ID: it may rename the session.
 	Orchestrator string `json:"orchestrator,omitempty"`
+	// Questions holds the question each agent waits on in foreman ask, by its key.
+	Questions map[string]Question `json:"questions,omitempty"`
 	// TaskSeq holds the last task number used in each repo, by the repo's directory name.
 	TaskSeq map[string]int `json:"taskSeq,omitempty"`
 	// FormRequest asks the board to open its dispatch form on a ticket: the queue's enter on a PR
@@ -106,6 +108,9 @@ func readState() State {
 	}
 	if s.Hidden == nil {
 		s.Hidden = map[string]bool{}
+	}
+	if s.Questions == nil {
+		s.Questions = map[string]Question{}
 	}
 	if s.TaskSeq == nil {
 		s.TaskSeq = map[string]int{}

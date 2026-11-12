@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -1473,7 +1474,7 @@ func TestReplyAllowed(t *testing.T) {
 		{"working", true, true},
 		{"", true, false},
 	} {
-		if err := replyAllowed(queueItem{Key: "FLD-1", Agent: tc.agent}, tc.now); (err == nil) != tc.ok {
+		if err := replyAllowed(queueItem{Key: "FLD-1", Agent: tc.agent}, tc.now, byMe); (err == nil) != tc.ok {
 			t.Errorf("reply to %q, now %t: %v", tc.agent, tc.now, err)
 		}
 	}
@@ -1611,5 +1612,177 @@ func TestOrchestratorCommand(t *testing.T) {
 	}
 	if err := runOrchestrator([]string{"--old"}); err == nil {
 		t.Error("took an unknown option")
+	}
+}
+
+func TestAskerKey(t *testing.T) {
+	s := State{
+		Sessions:   map[string]string{"FLD-1": "session:a"},
+		Dispatched: map[string]string{"FLD-1": "/w/app-fld-1", "task:app-2": "/w/app-task-2"},
+	}
+	for _, tc := range []struct{ session, cwd, want string }{
+		{"session:a", "/elsewhere", "FLD-1"},
+		{"", "/w/app-task-2/src/lib", "task:app-2"},
+		{"session:z", "/w/app-task-2", "task:app-2"},
+	} {
+		if got, err := askerKey(s, tc.session, tc.cwd); got != tc.want || err != nil {
+			t.Errorf("askerKey(%q, %q) = %q, %v; want %q", tc.session, tc.cwd, got, err, tc.want)
+		}
+	}
+	// A sibling directory sharing the worktree's prefix isn't in it.
+	if _, err := askerKey(s, "", "/w/app-task-22"); err == nil {
+		t.Error("took /w/app-task-22 for /w/app-task-2")
+	}
+}
+
+// ask waits inside the agent's command and prints the answer; the log keeps both.
+func TestAskAnswered(t *testing.T) {
+	tempState(t)
+	dispatched(t, "FLD-1", "/w/app-fld-1")
+	notified := ""
+	notify := func(key, text string) error { notified = key + ": " + text; return nil }
+	sleep := func(time.Duration) {
+		if q := loadState().Questions["FLD-1"]; q.Escalated != "" {
+			t.Error("a question the orchestrator heard waits on me")
+		}
+		if err := answerQuestion("FLD-1", "Use the v2 endpoint", byOrchestrator); err != nil {
+			t.Error(err)
+		}
+	}
+	answer, err := ask("FLD-1", "Which endpoint?", time.Minute, time.Second, sleep, notify)
+	if err != nil || answer != "Use the v2 endpoint" || notified != "FLD-1: Which endpoint?" {
+		t.Fatalf("ask = %q, %v; notified %q", answer, err, notified)
+	}
+	if _, ok := loadState().Questions["FLD-1"]; ok {
+		t.Error("the answered question is still pending")
+	}
+	var kinds []string
+	for _, e := range readLog("FLD-1") {
+		kinds = append(kinds, e.By+" "+e.Kind)
+	}
+	if !slices.Equal(kinds, []string{"agent question", "orchestrator answer"}) {
+		t.Errorf("log = %q", kinds)
+	}
+}
+
+// With no orchestrator to hear it, the question waits on me; unanswered, ask gives up and says so.
+func TestAskWithoutOrchestrator(t *testing.T) {
+	tempState(t)
+	dispatched(t, "FLD-1", "/w/app-fld-1")
+	gone := func(string, string) error { return errors.New("it isn't running") }
+	var escalated string
+	sleep := func(time.Duration) { escalated = loadState().Questions["FLD-1"].Escalated }
+	_, err := ask("FLD-1", "Which endpoint?", 3*time.Second, time.Second, sleep, gone)
+	if err == nil || !strings.Contains(err.Error(), "stop to ask me") || !strings.Contains(escalated, "isn't running") {
+		t.Fatalf("err %v, escalated %q", err, escalated)
+	}
+	if _, ok := loadState().Questions["FLD-1"]; ok {
+		t.Error("an expired question is still pending: later replies would answer nobody")
+	}
+	if log := readLog("FLD-1"); len(log) != 2 || log[1].Kind != "expired" {
+		t.Errorf("log = %+v", log)
+	}
+}
+
+// Dispatching the agent again withdraws its question.
+func TestAskWithdrawn(t *testing.T) {
+	tempState(t)
+	dispatched(t, "FLD-1", "/w/app-fld-1")
+	sleep := func(time.Duration) { markDispatched("FLD-1", "t", "/w/app-fld-1", "s2", agentPi) }
+	if _, err := ask("FLD-1", "?", time.Minute, time.Second, sleep, func(string, string) error { return nil }); err == nil || !strings.Contains(err.Error(), "withdrawn") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+// The orchestrator answers or messages a dispatch a few times at most; I have no limit.
+func TestOrchestratorLimits(t *testing.T) {
+	tempState(t)
+	dispatched(t, "FLD-1", "/w/app-fld-1")
+	pend := func() {
+		_, _ = updateState(func(s *State) { s.Questions["FLD-1"] = Question{Text: "?", At: time.Now()} })
+	}
+	for n := 0; n < maxOrchestratorAnswers; n++ {
+		pend()
+		if err := answerQuestion("FLD-1", "yes", byOrchestrator); err != nil {
+			t.Fatalf("answer %d: %v", n+1, err)
+		}
+	}
+	pend()
+	if err := answerQuestion("FLD-1", "yes", byOrchestrator); err == nil || !strings.Contains(err.Error(), "escalate") {
+		t.Errorf("past the limit: %v", err)
+	}
+	if err := replyAllowed(queueItem{Key: "FLD-1", Agent: "done"}, false, byOrchestrator); err == nil {
+		t.Error("the orchestrator messaged past the limit")
+	}
+	if err := answerQuestion("FLD-1", "yes", byMe); err != nil {
+		t.Errorf("my answer: %v", err)
+	}
+	if err := answerQuestion("FLD-1", "again", byMe); err == nil {
+		t.Error("answered a question that was already answered")
+	}
+
+	tempState(t)
+	dispatched(t, "FLD-2", "/w/app-fld-2")
+	if err := replyAllowed(queueItem{Key: "FLD-2", Agent: "blocked"}, false, byOrchestrator); err == nil || !strings.Contains(err.Error(), "permission prompt") {
+		t.Errorf("the orchestrator typed into a blocked agent: %v", err)
+	}
+	if err := replyAllowed(queueItem{Key: "FLD-2", Agent: "blocked"}, false, byMe); err != nil {
+		t.Errorf("my reply to a blocked agent: %v", err)
+	}
+	if err := escalateQuestion("FLD-2", "use v2"); err == nil {
+		t.Error("escalated a question nobody asked")
+	}
+}
+
+// The queue lists an agent that asks the orchestrator as working, and one whose question came to me
+// with what needs me, until I mark it.
+func TestQueueShowsQuestions(t *testing.T) {
+	tempState(t)
+	dispatched(t, "FLD-1", "/w/app-fld-1")
+	at := time.Now()
+	_, _ = updateState(func(s *State) {
+		s.Sessions["FLD-1"] = "s1"
+		s.Questions["FLD-1"] = Question{Text: "Which endpoint?", At: at}
+	})
+	_ = appendLog("FLD-1", logEntry{At: at, By: byAgent, Kind: "question", Text: "Which endpoint?"})
+	sessions := []rexSession{{ID: "s1", Label: "fld-1", State: "working"}}
+	it := queueItems(loadState(), sessions, nil)[0]
+	if _, label := itemLabel(it); it.Group != working || !strings.Contains(label, "asks the orchestrator") {
+		t.Errorf("pending: group %d, label %q", it.Group, label)
+	}
+	_ = escalateQuestion("FLD-1", "use v2")
+	it = queueItems(loadState(), sessions, nil)[0]
+	if _, label := itemLabel(it); it.Group != needsYou || !strings.Contains(label, "asks you") {
+		t.Errorf("escalated: group %d, label %q", it.Group, label)
+	}
+	detail := strings.Join(itemDetail(it), "\n")
+	for _, want := range []string{"Which endpoint?", "suggests:** use v2", "**agent asks**: Which endpoint?"} {
+		if !strings.Contains(detail, want) {
+			t.Errorf("detail lacks %q:\n%s", want, detail)
+		}
+	}
+	q := &queueModel{state: loadState(), items: []queueItem{it}, details: map[string][]string{}}
+	q.input(tea.KeyPressMsg{Code: 'f', Text: "f"})
+	if q.feedback == nil || !q.feedback.answer {
+		t.Fatalf("f on a question: %+v", q.feedback)
+	}
+}
+
+func TestAgentsAsk(t *testing.T) {
+	tempState(t)
+	p := taskPrompt("task:app-1", "t", "do it", agentClaude, "/w", "b", true, "")
+	if !strings.Contains(p, "## Asking") || !strings.Contains(p, "`foreman ask") {
+		t.Errorf("the task prompt doesn't say how to ask:\n%s", p)
+	}
+	cmd := agentArgs(agentClaude)
+	at, add := slices.Index(cmd, "--allowedTools"), slices.Index(cmd, "--add-dir")
+	if at < 0 || cmd[at+1] != "Bash(foreman ask:*)" || add != at+2 {
+		t.Errorf("claude's args = %q", cmd)
+	}
+	if strings.Contains(orchestratorGuide, "§") || !strings.Contains(orchestratorGuide, "`foreman escalate KEY") {
+		t.Errorf("guide:\n%s", orchestratorGuide)
+	}
+	if !slices.Contains(orchestratorTools, "Bash(foreman answer:*)") || !slices.Contains(orchestratorTools, "Bash(foreman escalate:*)") {
+		t.Errorf("the orchestrator would ask before answering: %q", orchestratorTools)
 	}
 }

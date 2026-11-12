@@ -115,13 +115,16 @@ foreman screen [--lines N] KEY      the end of the agent's pane, 40 lines (0: al
 foreman reply [--now] KEY TEXT|-    type TEXT into the agent's pane and press enter, as the queue's f
 foreman wait [--timeout D] KEY      block until the agent stops working (default 30m), print its state
 foreman cleanup [--dry-run] [KEY…]  list finished dispatches and remove what ^x ticks, or only KEY…
+foreman ask [--timeout D] TEXT|-    from an agent: put a question to the orchestrator, print the answer
+foreman answer KEY TEXT|-           answer the question KEY waits on
+foreman escalate KEY NOTE|-         hand KEY's question to me in the queue, with a suggestion
 ```
 
 - `agents --json` gives each one's `key`, `kind` (ticket, review, task, watcher, pr), `group`,
   `state` as the agent reports it to Rex (working, blocked, error, done, idle, open) or `closed`,
   `title`, `agent`, `session`, `dir`, `report` and `reportAt`, and evidence counts.
 - `reply` refuses a closed session, and a working agent unless `--now`: pi and Claude Code each
-  handle text typed mid-turn their own way.
+  handle text typed mid-turn their own way. To an agent waiting in `foreman ask`, it is the answer.
 - `wait` gives an agent that isn't working ten seconds to start, so `reply` then `wait` waits for the
   answer rather than returning at once.
 - `cleanup` never forces: git refuses a worktree with changes, and branches stay.
@@ -138,12 +141,32 @@ waits on a permission prompt.
   the `CLAUDE.md` there, rewritten from foreman's source on each start: hand every piece of work to
   an agent, brief it fully, bring permission prompts and scope questions to me, never push or post.
 - It runs in the manual permission mode, whatever your settings say. The read-only commands
-  (`agents`, `report`, `screen`, `wait`) run without asking; `dispatch`, `reply` and `cleanup`,
+  (`agents`, `report`, `screen`, `wait`) and `answer` and `escalate` run without asking; `dispatch`, `reply` and `cleanup`,
   `--dry-run` too, ask each time through `ask` rules, so a reply can't answer another agent's
   permission prompt unseen. Manual mode alone doesn't do it: Claude Code runs `foreman dispatch`
   unasked there.
 - It has the MCP servers in `~/.config/mcp/mcp.json`, to read Jira tickets.
 - It is tracked by its session ID, recorded when it starts, so renaming its session doesn't lose it.
+
+### Questions from agents
+
+A ticket's or task's agent is told to run `foreman ask "<question>"` before it stops to ask me.
+The command waits inside the agent's turn, up to 8 minutes, and prints the answer, so nothing is
+typed into a working agent. Claude agents run it without a permission prompt.
+
+- The question is typed into the orchestrator's pane as `[foreman ask] KEY asks: …`. It answers
+  with `foreman answer KEY` what I've settled, quoting me or citing the code, report or ticket, and
+  hands the rest to me with `foreman escalate KEY "<suggestion>"`; both run without asking.
+- With no orchestrator running, the question comes straight to me.
+- A question handed to me puts the agent under **needs you** (`asks you`), with the question and the
+  orchestrator's suggestion in the detail pane; `f` answers it, as does `foreman answer` or
+  `foreman reply`. While the orchestrator has it, the agent is **working** (`asks the orchestrator`).
+- Unanswered after 8 minutes, `ask` tells the agent to put the question in its report and stop to
+  ask me; a later reply is typed into its pane as usual. Dispatching the agent again withdraws it.
+- foreman's own limits on the orchestrator: three answers or messages per dispatch, then it must
+  escalate; and it can't type into a `blocked` agent, which is how a permission prompt shows.
+- Every question, answer, escalation and orchestrator message goes to `orchestrator.jsonl` beside
+  the agent's report, shown under **Questions** in the queue's detail pane.
 
 ## Reviews
 

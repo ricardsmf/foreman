@@ -20,7 +20,11 @@ import (
 const commandsUsage = `usage: foreman agents [--json] [--prs]   every dispatched agent and watcher, by queue group
        foreman report KEY                the agent's report and its evidence files
        foreman screen [--lines N] KEY     the end of the agent's pane (0: all of it)
-       foreman reply [--now] KEY TEXT|-   type TEXT into the agent's pane and press enter (options before KEY)
+       foreman reply [--now] KEY TEXT|-   type TEXT into the agent's pane and press enter (options before KEY);
+                                          to an agent waiting in foreman ask, TEXT is the answer
+       foreman ask [--timeout D] TEXT|-   from an agent: put a question to the orchestrator and print the answer
+       foreman answer KEY TEXT|-          answer the question KEY waits on
+       foreman escalate KEY NOTE|-        hand KEY's question to me in the queue, with a suggestion
        foreman wait [--timeout D] KEY     block until the agent stops working
        foreman cleanup [--dry-run] [KEY…] remove finished worktrees, as ^x on the board
 
@@ -42,8 +46,10 @@ type agentInfo struct {
 	ReportAt    *time.Time `json:"reportAt,omitempty"`
 	Screenshots int        `json:"screenshots,omitempty"`
 	Videos      int        `json:"videos,omitempty"`
-	URL         string     `json:"url,omitempty"`    // a PR's
-	Status      string     `json:"status,omitempty"` // a PR's: approved, changes, conflict…
+	// Question is the one the agent waits on in foreman ask.
+	Question *Question `json:"question,omitempty"`
+	URL      string    `json:"url,omitempty"`    // a PR's
+	Status   string    `json:"status,omitempty"` // a PR's: approved, changes, conflict…
 }
 
 func kindName(it queueItem) string {
@@ -66,7 +72,7 @@ func agentInfoOf(it queueItem, s State) agentInfo {
 	a := agentInfo{
 		Key: it.Key, Kind: kindName(it), Group: groupNames[it.Group], State: cmp.Or(it.Agent, "closed"),
 		Title: it.Title, Session: it.Session, Dir: it.Dir, Report: it.Report,
-		Screenshots: it.Shots, Videos: it.Videos,
+		Screenshots: it.Shots, Videos: it.Videos, Question: it.Question,
 	}
 	if it.Kind == prItem {
 		a.State, a.Session, a.URL, a.Status = "", "", it.Pr.URL, it.Pr.Status
@@ -152,8 +158,13 @@ func writeAgents(out io.Writer, infos []agentInfo) error {
 	}
 	for _, a := range infos {
 		state := a.State
-		if a.Kind == "pr" {
+		switch {
+		case a.Kind == "pr":
 			state = a.Status
+		case a.Question != nil && a.Question.Escalated != "":
+			state = "asks you"
+		case a.Question != nil:
+			state = "asks the orchestrator"
 		}
 		note := ""
 		if a.Report != "" {
@@ -244,26 +255,44 @@ func runReply(argv []string, stdin io.Reader, out io.Writer) error {
 	if text = strings.TrimSpace(text); text == "" {
 		return errors.New("nothing to send")
 	}
-	_, it, err := lookup(fs.Arg(0))
+	s, it, err := lookup(fs.Arg(0))
 	if err != nil {
 		return err
 	}
-	if err := replyAllowed(it, *now); err != nil {
+	by := role()
+	// An agent waiting in foreman ask gets the reply as its answer, not as typing.
+	if _, waiting := s.Questions[it.Key]; waiting {
+		if err := answerQuestion(it.Key, text, by); err != nil {
+			return err
+		}
+		fmt.Fprintln(out, "✓ Answered "+it.Key)
+		return nil
+	}
+	if err := replyAllowed(it, *now, by); err != nil {
 		return err
 	}
 	if err := sendToAgent(it.Session, text); err != nil {
 		return fmt.Errorf("reply to %s: %w", it.Key, err)
+	}
+	if by == byOrchestrator {
+		_ = appendLog(it.Key, logEntry{By: by, Kind: "reply", Text: text})
 	}
 	fmt.Fprintln(out, "✓ Sent to "+it.Key)
 	return nil
 }
 
 // replyAllowed refuses a reply to a closed session, and to a working agent unless now: pi and
-// Claude Code each handle text typed mid-turn their own way.
-func replyAllowed(it queueItem, now bool) error {
+// Claude Code each handle text typed mid-turn their own way. The orchestrator never types into a
+// blocked agent, which is how one waiting on a permission prompt shows, and sends a dispatch at
+// most maxOrchestratorAnswers messages.
+func replyAllowed(it queueItem, now bool, by string) error {
 	switch {
 	case it.Agent == "":
 		return fmt.Errorf("%s's session is closed; enter on it in the queue resumes it", it.Key)
+	case by == byOrchestrator && it.Agent == "blocked":
+		return fmt.Errorf("%s is blocked, likely on a permission prompt, which only I answer; tell me what it asks", it.Key)
+	case by == byOrchestrator && orchestratorSent(it.Key) >= maxOrchestratorAnswers:
+		return fmt.Errorf("you've sent %s %d messages already; bring the rest to me", it.Key, maxOrchestratorAnswers)
 	case it.Agent == "working" && !now:
 		return fmt.Errorf("%s is working; foreman wait %s, then reply, or pass --now", it.Key, it.Key)
 	}

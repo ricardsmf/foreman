@@ -57,6 +57,8 @@ type queueItem struct {
 	Watcher bool
 	// Orchestrator marks the orchestrator's session.
 	Orchestrator bool
+	// Question is the one the agent waits on in foreman ask.
+	Question *Question
 	// Sig is what the item showed; marking it reviewed holds until this changes.
 	Sig string
 }
@@ -79,12 +81,13 @@ func (it queueItem) working() bool { return it.Group == working }
 // pending is whether the item waits on me: it asks something or has a report to read.
 func (it queueItem) pending() bool { return it.Group == needsYou || it.Group == toReview }
 
-// urgent is whether the item is blocked on me rather than done.
+// urgent is whether the item is blocked on me rather than done: an agent that asks, failed, or
+// waits in foreman ask on a question handed to me.
 func (it queueItem) urgent() bool {
 	if it.Kind == prItem {
 		return it.Pr.Category == "Blocked"
 	}
-	return it.Agent == "blocked" || it.Agent == "error"
+	return it.Agent == "blocked" || it.Agent == "error" || (it.Question != nil && it.Question.Escalated != "")
 }
 
 // queuedPr is whether the PR waits on me: mine and blocked, or mine and approved (the board files
@@ -140,12 +143,18 @@ func queueItems(s State, sessions []rexSession, prs []Pr) []queueItem {
 		it.Shots += len(captures)
 		// Not the state itself: closing a finished agent's session shouldn't bring its report back.
 		it.Sig = fmt.Sprintf("%t %d", it.urgent(), it.When.Unix())
+		if q, ok := s.Questions[key]; ok && q.Answer == "" {
+			it.Question = &q
+			if q.Escalated != "" {
+				it.Sig += fmt.Sprintf(" q%d", q.At.Unix())
+			}
+		}
 		reviewed := s.Dismissed[key] == it.Sig
 		switch {
-		case it.Agent == "working":
-			it.Group = working
 		case it.urgent() && !reviewed:
 			it.Group = needsYou
+		case it.Agent == "working":
+			it.Group = working
 		case it.Report != "" && !reviewed:
 			it.Group = toReview
 		case it.Agent != "":
@@ -255,6 +264,7 @@ type queueModel struct {
 // pressed the row under the cursor may be another agent's.
 type reply struct {
 	key, session, text string
+	answer             bool // the agent waits in foreman ask: the text is its answer
 }
 
 func detailKey(it queueItem) string { return it.Key + " " + it.Sig }
@@ -345,12 +355,22 @@ func itemDetail(it queueItem) []string {
 		return strings.Split(prMarkdown(*it.Pr, v), "\n")
 	}
 	var out []string
+	if q := it.Question; q != nil {
+		out = append(out, "# Waiting on an answer", "", q.Text, "")
+		if q.Escalated != "" {
+			out = append(out, "**The orchestrator suggests:** "+q.Escalated, "")
+		}
+		out = append(out, "`f` answers it.", "")
+	}
 	if it.Report != "" {
 		b, err := os.ReadFile(it.Report)
 		if err != nil {
 			out = append(out, fg(cRed, err.Error()))
 		}
 		out = append(out, strings.Split(strings.TrimRight(string(b), "\n"), "\n")...)
+	}
+	if log := logLines(readLog(it.Key)); log != nil {
+		out = append(append(out, ""), log...)
 	}
 	media, captures := evidence(evidenceDir(it.Key))
 	if len(media) > 0 {
@@ -530,7 +550,7 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 			q.say("No open agent session to reply to", cOverlay)
 			return nil
 		}
-		q.feedback = &reply{key: it.Key, session: it.Session}
+		q.feedback = &reply{key: it.Key, session: it.Session, answer: it.Question != nil}
 	case "x":
 		if !it.pending() {
 			q.say(it.Key+" has nothing waiting for you", cOverlay)
@@ -709,6 +729,12 @@ func (q *queueModel) feedbackInput(msg tea.KeyPressMsg) tea.Cmd {
 		}
 		q.say("Sending to "+r.key+"…", cSubtext)
 		return func() tea.Msg {
+			if r.answer {
+				if err := answerQuestion(r.key, text, byMe); err != nil {
+					return statusMsg{text: "Answer to " + r.key + ": " + err.Error(), color: cRed}
+				}
+				return statusMsg{text: "✓ Answered " + r.key, color: cGreen}
+			}
 			if err := sendToAgent(r.session, text); err != nil {
 				return statusMsg{text: "Reply to " + r.key + ": " + err.Error(), color: cRed}
 			}
@@ -830,6 +856,10 @@ func itemLabel(it queueItem) (string, string) {
 		}
 	}
 	switch {
+	case it.Question != nil && it.Question.Escalated != "":
+		return fg(cRed, "●"), fg(cRed, "asks you")
+	case it.Question != nil:
+		return fg(cYellow, "●"), fg(cYellow, "asks the orchestrator")
 	case it.Agent == "working":
 		return fg(cYellow, "●"), fg(cYellow, "working")
 	case it.Agent == "blocked":
@@ -926,7 +956,11 @@ func (q *queueModel) render(width, h int) []string {
 
 	var detail []string
 	if q.feedback != nil {
-		detail = append(detail, bold(fg(cMauve, "Reply to "+q.feedback.key)), "")
+		verb := "Reply to "
+		if q.feedback.answer {
+			verb = "Answer "
+		}
+		detail = append(detail, bold(fg(cMauve, verb+q.feedback.key)), "")
 		for _, l := range wrap(q.feedback.text+"█", width-2) {
 			detail = append(detail, "  "+l)
 		}

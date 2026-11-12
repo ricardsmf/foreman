@@ -651,7 +651,7 @@ const usage = `usage: foreman [PROJECT | JQL]
        foreman queue      every dispatched agent by state, and PRs that need you
        foreman dispatch   start an agent on a task, a ticket or a PR
        foreman orchestrator [--new]   Claude Code that hands work to agents (^g on the board)
-       foreman agents | report | screen | reply | wait | cleanup
+       foreman agents | report | screen | reply | wait | cleanup | ask | answer | escalate
                           read and steer the agents from scripts
        foreman --logout   forget the Atlassian sign-in`
 
@@ -692,6 +692,12 @@ func run() error {
 			return runWait(rest, os.Stdout)
 		case "cleanup":
 			return runCleanup(rest, os.Stdout)
+		case "ask":
+			return runAsk(rest, os.Stdin, os.Stdout)
+		case "answer":
+			return runAnswer(rest, os.Stdin, os.Stdout, false)
+		case "escalate":
+			return runAnswer(rest, os.Stdin, os.Stdout, true)
 		}
 	}
 	if len(argv) > 0 && argv[0] == "--logout" {
