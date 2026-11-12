@@ -15,9 +15,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const commandsUsage = `usage: foreman agents [--json] [--prs]   every dispatched agent and watcher, by queue group
@@ -31,7 +33,14 @@ const commandsUsage = `usage: foreman agents [--json] [--prs]   every dispatched
        foreman ask [--timeout D] TEXT|-   from an agent: put a question to the orchestrator and print the answer
        foreman answer KEY TEXT|-          answer the question KEY waits on
        foreman escalate KEY NOTE|-        hand KEY's question to me in the queue, with a suggestion
-       foreman wait [--timeout D] KEY     block until the agent stops working
+       foreman wait [--timeout D] KEY     block until the agent stops working or asks (default 30m); print
+                                          KEY and its state, then why it stopped, by exit code:
+                                          0 done (idle, done, closed): the report's first line
+                                          2 blocked (blocked, error): what its pane asks, and the seen
+                                            token reply --seen takes, as screen prints it
+                                          3 asked: its question in foreman ask; the first line is KEY asked
+                                          4 timeout: still working after D, on stderr
+                                          1 wait failed, as for an unknown KEY
        foreman cleanup [--dry-run] [KEY…] remove finished worktrees, as ^x on the board
 
 KEY is a dispatch's key (FLD-1700, reports-app#1185, fix:reports-app#1185, task:foreman-3) or a
@@ -241,9 +250,14 @@ func runScreen(argv []string, out io.Writer) error {
 		all = all[max(0, len(all)-*lines):]
 	}
 	fmt.Fprintln(out, strings.Join(all, "\n"))
-	token := seenToken(it.Agent, screen)
-	fmt.Fprintf(out, "\nseen %s: foreman reply --seen %s %s TEXT answers what this shows\n", token, token, it.Key)
+	fmt.Fprintln(out, "\n"+seenHint(it, screen))
 	return nil
+}
+
+// seenHint is the line under a pane that gives its seen token and how reply takes it.
+func seenHint(it queueItem, screen string) string {
+	token := seenToken(it.Agent, screen)
+	return fmt.Sprintf("seen %s: foreman reply --seen %s %s TEXT answers what this shows", token, token, it.Key)
 }
 
 // capturePane is the text of the agent's pane, its scrollback included.
@@ -261,15 +275,21 @@ func capturePane(it queueItem) (string, error) {
 // Output further up, a clock or a scrolled spinner, doesn't change the token.
 const seenLines = 12
 
+// nonBlank is the screen's non-blank lines, trailing spaces dropped.
+func nonBlank(screen string) []string {
+	var lines []string
+	for _, l := range strings.Split(screen, "\n") {
+		if l = strings.TrimRight(l, " \t\r"); l != "" {
+			lines = append(lines, l)
+		}
+	}
+	return lines
+}
+
 // seenToken stands for what an agent showed: the state it reports over OSC 7501 and a hash of its
 // pane's last seenLines non-blank lines, trailing spaces dropped, so redrawn padding doesn't count.
 func seenToken(state, screen string) string {
-	var tail []string
-	for _, l := range strings.Split(screen, "\n") {
-		if l = strings.TrimRight(l, " \t\r"); l != "" {
-			tail = append(tail, l)
-		}
-	}
+	tail := nonBlank(screen)
 	tail = tail[max(0, len(tail)-seenLines):]
 	sum := sha256.Sum256([]byte(strings.Join(tail, "\n")))
 	return cmp.Or(state, "closed") + "-" + hex.EncodeToString(sum[:4])
@@ -403,8 +423,141 @@ func runWait(argv []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "%s %s\n", it.Key, cmp.Or(it.Agent, "closed"))
+	if code := writeStopped(out, it, capturePane); code != waitDone {
+		return exitError{code: code}
+	}
 	return nil
+}
+
+// foreman wait's exit codes, one for each way it returns; 1 stays a failure to wait at all.
+const (
+	waitDone    = 0
+	waitBlocked = 2
+	waitAsked   = 3
+	waitTimeout = 4
+)
+
+// An exitError ends foreman with its code, printing its message when it has one.
+type exitError struct {
+	code int
+	msg  string
+}
+
+func (e exitError) Error() string { return e.msg }
+
+// asking is whether the agent waits in foreman ask. A question left behind by a closed session
+// doesn't count.
+func asking(it queueItem) bool { return it.Question != nil && it.Agent != "" }
+
+// writeStopped prints the agent's key and state, the line wait has always printed, then why it
+// stopped, and returns wait's exit code for that. An agent that asks shows as working to Rex, so
+// its first line says asked instead.
+func writeStopped(out io.Writer, it queueItem, capture func(queueItem) (string, error)) int {
+	switch {
+	case asking(it):
+		q := it.Question
+		fmt.Fprintf(out, "%s asked\n", it.Key)
+		fmt.Fprintln(out, "asked: "+strings.ReplaceAll(strings.TrimSpace(q.Text), "\n", "\n  "))
+		if q.Escalated != "" {
+			fmt.Fprintf(out, "it waits on me in the queue; escalated: %s\n", q.Escalated)
+		} else {
+			fmt.Fprintf(out, "foreman answer %s TEXT answers it; foreman escalate %s NOTE hands it to me\n", it.Key, it.Key)
+		}
+		return waitAsked
+	case it.Agent == "blocked" || it.Agent == "error":
+		fmt.Fprintf(out, "%s %s\n", it.Key, it.Agent)
+		screen, err := capture(it)
+		if err != nil {
+			fmt.Fprintf(out, "blocked: its pane can't be read: %s\n", firstLine(err.Error()))
+			return waitBlocked
+		}
+		if it.Agent == "error" {
+			fmt.Fprintln(out, "blocked: it failed; its pane shows")
+		} else {
+			fmt.Fprintln(out, "blocked: its pane asks")
+		}
+		for _, l := range paneAsks(screen) {
+			fmt.Fprintln(out, "  "+l)
+		}
+		fmt.Fprintln(out, seenHint(it, screen))
+		return waitBlocked
+	}
+	fmt.Fprintf(out, "%s %s\n", it.Key, cmp.Or(it.Agent, "closed"))
+	if line := reportLine(it.Report); line != "" {
+		fmt.Fprintln(out, "done: "+line)
+	} else {
+		fmt.Fprintln(out, "done: no report")
+	}
+	return waitDone
+}
+
+// reportLine is the report's first non-blank line without its heading marks: the outcome, as the
+// agent is told to start it. Empty when there is no report.
+func reportLine(path string) string {
+	if path == "" {
+		return ""
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	if lines := nonBlank(string(b)); len(lines) > 0 {
+		return strings.TrimSpace(strings.TrimLeft(lines[0], "#"))
+	}
+	return ""
+}
+
+// promptReach is how far above the seen lines paneAsks looks for the top of a taller prompt.
+const promptReach = 20
+
+// paneAsks is what a blocked agent's pane asks: the last seenLines non-blank lines, which its seen
+// token covers and which hold a permission prompt or a menu with its choices. Claude Code tops its
+// prompt with a solid rule, and dashed ones split it; when the lines hold no solid rule, the prompt
+// may be taller, its header or a long command above them, so they reach up to the solid rule.
+// Rules and box sides are dropped.
+func paneAsks(screen string) []string {
+	lines := nonBlank(screen)
+	start := max(0, len(lines)-seenLines)
+	if !slices.ContainsFunc(lines[start:], isTopRule) {
+		for n := start - 1; n >= max(0, start-promptReach); n-- {
+			if isTopRule(lines[n]) {
+				start = n
+				break
+			}
+		}
+	}
+	var out []string
+	for _, l := range lines[start:] {
+		if isRule(l) {
+			continue
+		}
+		if side, ok := strings.CutPrefix(strings.TrimLeft(l, " "), "│"); ok {
+			l = side
+		}
+		if side, ok := strings.CutSuffix(l, "│"); ok {
+			l = strings.TrimRight(side, " ")
+		}
+		if strings.TrimSpace(l) != "" {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// isRule is whether the line only draws: a horizontal rule, solid or dashed, or a box's top or bottom.
+func isRule(l string) bool {
+	return drawnOf(l, func(r rune) bool { return r >= 0x2500 && r <= 0x257f })
+}
+
+// isTopRule is whether the line is a solid rule or a box's top, which a prompt starts with.
+func isTopRule(l string) bool {
+	return drawnOf(l, func(r rune) bool { return strings.ContainsRune("─━═╭╮┌┐", r) })
+}
+
+// drawnOf is whether the line, spaces aside, is three or more runes that all pass drawn.
+func drawnOf(l string, drawn func(rune) bool) bool {
+	l = strings.TrimSpace(l)
+	return utf8.RuneCountInString(l) >= 3 && strings.IndexFunc(l, func(r rune) bool { return !drawn(r) }) < 0
 }
 
 const (
@@ -414,8 +567,9 @@ const (
 	waitSettle = 10 * time.Second
 )
 
-// waitIdle polls look until the agent stops working: it asks, fails, finishes or its session
-// closes. An agent not working at the start gets settle to begin.
+// waitIdle polls look until the agent stops working: it asks in foreman ask, is blocked, fails,
+// finishes or its session closes. An agent not working at the start gets settle to begin; one
+// that asks returns at once.
 func waitIdle(look func() (queueItem, error), timeout, settle, poll time.Duration, sleep func(time.Duration)) (queueItem, error) {
 	started := false
 	for waited := time.Duration(0); ; waited += poll {
@@ -423,13 +577,16 @@ func waitIdle(look func() (queueItem, error), timeout, settle, poll time.Duratio
 		if err != nil {
 			return it, err
 		}
-		if it.Agent == "working" {
+		switch {
+		case asking(it):
+			return it, nil
+		case it.Agent == "working":
 			started = true
-		} else if started || waited >= settle {
+		case started || waited >= settle:
 			return it, nil
 		}
 		if waited >= timeout {
-			return it, fmt.Errorf("%s is still working after %s", it.Key, timeout)
+			return it, exitError{waitTimeout, fmt.Sprintf("%s is still working after %s", it.Key, timeout)}
 		}
 		sleep(poll)
 	}

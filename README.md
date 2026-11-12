@@ -132,7 +132,7 @@ foreman report KEY                  the report and the paths of its evidence; fa
 foreman screen [--lines N] KEY      the end of the agent's pane, 40 lines (0: all), and its seen token
 foreman reply [--now] [--seen TOKEN] KEY TEXT|-
                                     type TEXT into the agent's pane and press enter, as the queue's f
-foreman wait [--timeout D] KEY      block until the agent stops working (default 30m), print its state
+foreman wait [--timeout D] KEY      block until the agent stops working or asks (default 30m), say why
 foreman cleanup [--dry-run] [KEY…]  list finished dispatches and remove what ^x ticks, or only KEY…
 foreman ask [--timeout D] TEXT|-    from an agent: put a question to the orchestrator, print the answer
 foreman answer KEY TEXT|-           answer the question KEY waits on
@@ -154,7 +154,12 @@ foreman escalate KEY NOTE|-         hand KEY's question to me in the queue, with
   agent's spinner and timer sit in those lines, so its token rarely holds for `--now`. With
   `--seen`, a reply to an agent waiting in `foreman ask` is refused too: the pane isn't what it answers.
 - `wait` gives an agent that isn't working ten seconds to start, so `reply` then `wait` waits for the
-  answer rather than returning at once.
+  answer rather than returning at once. An agent waiting in `foreman ask` returns it at once.
+- `wait` prints `KEY STATE`, then why the agent stopped, with an exit code for each: 0 done (idle,
+  done or closed), then the report's first line; 2 blocked (blocked or error), then what its pane
+  asks, the lines a seen token covers reaching up to the top of a taller prompt, and the seen token
+  as `screen` prints it; 3 asked, with the first line `KEY asked`, then its question; 4 still
+  working when the timeout ran out. 1 is a failure to wait, as for an unknown KEY.
 - `cleanup` never forces: git refuses a worktree with changes, and branches stay.
 
 ## Orchestrator

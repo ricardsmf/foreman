@@ -1487,8 +1487,122 @@ func TestWaitIdle(t *testing.T) {
 	if it, _, err := run("working", ""); err != nil || it.Agent != "" {
 		t.Errorf("a session that closes: %q, %v", it.Agent, err)
 	}
-	if _, slept, err := run("working"); err == nil || !strings.Contains(err.Error(), "still working after 1m0s") || slept != time.Minute {
+	var timedOut exitError
+	if _, slept, err := run("working"); !errors.As(err, &timedOut) || timedOut.code != waitTimeout ||
+		!strings.Contains(err.Error(), "still working after 1m0s") || slept != time.Minute {
 		t.Errorf("an agent that keeps working: after %s, %v", slept, err)
+	}
+
+	// An agent in foreman ask shows as working; wait returns on its question, settle or not.
+	q := &Question{Text: "Which repo?"}
+	n := 0
+	look := func() (queueItem, error) {
+		n++
+		it := queueItem{Key: "FLD-1", Agent: "working"}
+		if n == 3 {
+			it.Question = q
+		}
+		return it, nil
+	}
+	var slept time.Duration
+	if it, err := waitIdle(look, time.Minute, 10*time.Second, 2*time.Second, func(d time.Duration) { slept += d }); err != nil || it.Question != q || slept != 4*time.Second {
+		t.Errorf("an agent that asks: %+v after %s, %v", it, slept, err)
+	}
+}
+
+// wait says why the agent stopped, after the line it always printed, with an exit code for each.
+func TestWaitSaysWhy(t *testing.T) {
+	noPane := func(queueItem) (string, error) { t.Error("read the pane"); return "", nil }
+	stopped := func(it queueItem, capture func(queueItem) (string, error)) (string, int) {
+		var out strings.Builder
+		code := writeStopped(&out, it, capture)
+		return out.String(), code
+	}
+
+	t.Run("done", func(t *testing.T) {
+		report := filepath.Join(t.TempDir(), "report.md")
+		if err := os.WriteFile(report, []byte("\n# Wait says why the agent stopped.\n\nDetails.\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		out, code := stopped(queueItem{Key: "task:foreman-14", Agent: "done", Report: report}, noPane)
+		if code != waitDone || out != "task:foreman-14 done\ndone: Wait says why the agent stopped.\n" {
+			t.Errorf("exit %d:\n%s", code, out)
+		}
+		out, code = stopped(queueItem{Key: "FLD-1"}, noPane)
+		if code != waitDone || out != "FLD-1 closed\ndone: no report\n" {
+			t.Errorf("closed without a report, exit %d:\n%s", code, out)
+		}
+	})
+
+	t.Run("blocked", func(t *testing.T) {
+		it := queueItem{Key: "FLD-2", Agent: "blocked", Session: "s1"}
+		screen := "⏺ Reading files\n" + strings.Repeat("output\n", 20) +
+			"╭─────────────────╮\n│ Bash command    │\n│                 │\n│   rm -rf dist   │\n│ Do you want to proceed? │\n│ ❯ 1. Yes        │\n│   2. No         │\n╰─────────────────╯\n  Esc to cancel\n"
+		out, code := stopped(it, func(got queueItem) (string, error) {
+			if got.Session != "s1" {
+				t.Errorf("captured %q", got.Session)
+			}
+			return screen, nil
+		})
+		token := seenToken("blocked", screen)
+		want := "FLD-2 blocked\nblocked: its pane asks\n  output\n  output\n  output\n" +
+			"   Bash command\n     rm -rf dist\n   Do you want to proceed?\n   ❯ 1. Yes\n     2. No\n    Esc to cancel\n" +
+			"seen " + token + ": foreman reply --seen " + token + " FLD-2 TEXT answers what this shows\n"
+		if code != waitBlocked || out != want {
+			t.Errorf("exit %d:\n%s\nwant:\n%s", code, out, want)
+		}
+
+		out, code = stopped(queueItem{Key: "FLD-2", Agent: "error"}, func(queueItem) (string, error) { return "", errors.New("no block") })
+		if code != waitBlocked || out != "FLD-2 error\nblocked: its pane can't be read: no block\n" {
+			t.Errorf("unreadable pane, exit %d:\n%s", code, out)
+		}
+	})
+
+	t.Run("asked", func(t *testing.T) {
+		it := queueItem{Key: "FLD-3", Agent: "working", Question: &Question{Text: "Which repo?\nreports-app or api?"}}
+		out, code := stopped(it, noPane)
+		if code != waitAsked || out != "FLD-3 asked\nasked: Which repo?\n  reports-app or api?\n"+
+			"foreman answer FLD-3 TEXT answers it; foreman escalate FLD-3 NOTE hands it to me\n" {
+			t.Errorf("exit %d:\n%s", code, out)
+		}
+		it.Question.Escalated = "reports-app"
+		if out, _ := stopped(it, noPane); !strings.HasSuffix(out, "\nit waits on me in the queue; escalated: reports-app\n") {
+			t.Errorf("escalated:\n%s", out)
+		}
+		// A question a closed session left behind isn't one it waits on.
+		it.Agent = ""
+		if _, code := stopped(it, noPane); code != waitDone {
+			t.Errorf("closed with a question: exit %d", code)
+		}
+	})
+}
+
+// A prompt taller than the seen lines reaches up to the rule above it; a short one is the seen lines.
+func TestPaneAsks(t *testing.T) {
+	var cmd []string
+	for n := range 15 {
+		cmd = append(cmd, fmt.Sprintf("   echo %d", n))
+	}
+	tall := "earlier output\n" + strings.Repeat("─", 30) + "\n Bash command\n" + strings.Join(cmd, "\n") +
+		"\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n"
+	got := paneAsks(tall)
+	if len(got) != 19 || got[0] != " Bash command" || got[len(got)-1] != "   2. No" {
+		t.Errorf("tall prompt: %q", got)
+	}
+	// Claude Code 2.1's prompt, as captured: dashed rules split it within the seen lines, and its
+	// header sits above them, under the solid rule.
+	solid, dashed := strings.Repeat("─", 80), strings.Repeat("╌", 80)
+	claude := "  ⎿  $ touch /tmp/fw-demo/hello.txt\n\n" + solid + "\n Bash command\n Tip: auto mode handles these prompts for you\n below\n" +
+		" Create empty hello.txt file\n" + dashed + "\n touch /tmp/fw-demo/hello.txt\n" + dashed + "\n Do you want to proceed?\n" +
+		" ❯ 1. Yes\n   2. Yes, and always allow access to /tmp/fw-demo from this project\n   3. Yes, and switch to auto mode\n   4. No\n\n" +
+		" Esc to cancel · Tab to amend\n"
+	got = paneAsks(claude)
+	if len(got) != 11 || got[0] != " Bash command" || got[4] != " touch /tmp/fw-demo/hello.txt" || got[10] != " Esc to cancel · Tab to amend" {
+		t.Errorf("Claude Code's prompt: %q", got)
+	}
+	short := strings.Repeat("line\n", 30) + "Pick one\n1. a\n2. b\n"
+	if got := paneAsks(short); len(got) != seenLines || got[seenLines-1] != "2. b" {
+		t.Errorf("short prompt: %q", got)
 	}
 }
 

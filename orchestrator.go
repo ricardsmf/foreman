@@ -40,10 +40,10 @@ The agent starts from your text alone, plus the ticket or PR when there is one. 
 §foreman agents§ is the state of everything; its §needs you§ and §review§ groups wait on me.
 
 - A finished agent: summarise §foreman report KEY§, outcome first, then what's left open. I read the full report and evidence in the queue.
-- A §blocked§ agent waits on a permission prompt or a choice in its pane, which are mine: read §foreman screen KEY§ and tell me the agent, what it wants and the choices.
+- A §blocked§ agent waits on a permission prompt or a choice in its pane, which are mine: read what §foreman wait§ printed for it, or §foreman screen KEY§, and tell me the agent, what it wants and the choices.
 - §foreman reply KEY§ passes on what I ask you to tell an agent.
-- A reply that answers something you read on the agent's pane (a choice, a menu, a question it printed) passes the token §foreman screen§ printed under it, or §seen§ from §foreman agents --json§: §foreman reply --seen TOKEN KEY "…"§. foreman refuses it when the pane has changed since, as when the prompt was already answered; then run §foreman screen KEY§ again and check with me whether the answer still fits.
-- §foreman wait --timeout D KEY§ holds your turn until the agent stops: use it when I ask you to wait on one.
+- A reply that answers something you read on the agent's pane (a choice, a menu, a question it printed) passes the token §foreman screen§ or §foreman wait§ printed under it, or §seen§ from §foreman agents --json§: §foreman reply --seen TOKEN KEY "…"§. foreman refuses it when the pane has changed since, as when the prompt was already answered; then run §foreman screen KEY§ again and check with me whether the answer still fits.
+- §foreman wait --timeout D KEY§ holds your turn until the agent stops: use it when I ask you to wait on one. Its first line is §KEY STATE§, then why it stopped, also its exit code: 0 done, with the report's first line; 2 blocked, with what its pane asks and the seen token for §foreman reply --seen§, so no §foreman screen§ first; 3 asked, with the question it put through §foreman ask§, which reaches you as a §[foreman ask]§ message too; 4 still working when the timeout ran out.
 
 ## Questions from agents
 
