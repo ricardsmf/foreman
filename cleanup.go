@@ -310,14 +310,18 @@ func (m *model) renderCleanup(width, h int) []string {
 		if n == v.cursor {
 			name = bold(name)
 		}
-		out = append(out, mark+box+" "+fit(name, max(10, width/2))+"  "+fg(cSubtext, c.Key)+"  "+fg(cOverlay, strings.Join(notes, " · ")))
+		line := mark + box + " " + fit(name, max(10, width/2)) + "  " + fg(cSubtext, c.Key) + "  " + fg(cOverlay, strings.Join(notes, " · "))
+		if n == v.cursor {
+			line = selected(line, width)
+		}
+		out = append(out, line)
 	}
-	for len(out) < h-1 {
+	footer := hints("↑↓ pick · space toggle · a all/none · enter remove (branches stay; agent sessions close) · esc back", width)
+	if v.busy {
+		footer = []string{fg(cOverlay, "removing…")}
+	}
+	for len(out) < h-len(footer) {
 		out = append(out, "")
 	}
-	out = out[:max(0, h-1)]
-	if v.busy {
-		return append(out, fg(cOverlay, "removing…"))
-	}
-	return append(out, fg(cOverlay, "↑↓ pick · space toggle · a all/none · enter remove (branches stay; agent sessions close) · esc back"))
+	return append(out[:max(0, h-len(footer))], footer...)
 }

@@ -38,6 +38,10 @@ or write extra context, `alt+enter` new line, paste works, `^e` writes the conte
 
 Both views reload when the board regains focus after five minutes or more, and every five minutes.
 
+The row under the cursor has a background. The key footer wraps between keys onto as many lines as
+the pane needs, and the rule over a description, report or screen names the lines shown (`1–24 of
+88`) when there are more. The queue does the same.
+
 A search loads at most 500 tickets; past that the count reads `500+` and the status line says so.
 The PR view stops at 500 open PRs the same way.
 
@@ -263,6 +267,11 @@ An agent is found by the session ID recorded at dispatch, else by a session whos
 with its key (`fld-1704`, `review-reports-app-1185`), whose ID is then recorded. It reads the board's
 state file and the Rex sessions every few seconds, and your PRs every five minutes. Its pane title
 carries the count of items in the first two groups, `queue (3)`.
+
+It also reports that count to Rex in the Program Status Protocol (OSC 7501), so the `foreman`
+session is marked in Rex's session picker whatever session you are in: `blocked` while anything is
+under **needs you**, else `done` while anything is under **review**, else `idle`. Agents at work
+aren't reported, since their own sessions show that. Quitting the queue clears it.
 
 Keys: `↑↓` pick, `enter` go to the agent's session, resuming a closed one (a PR goes to the agent of
 the ticket its title or branch names; with no agent, to the board's dispatch form on that ticket;

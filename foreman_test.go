@@ -722,6 +722,8 @@ func TestAgentsResultDoesNotReschedule(t *testing.T) {
 	if m.state.Dispatched["FLD-9"] != "/w" || m.agents["fld-1"] != "working" {
 		t.Errorf("state = %+v, agents = %v", m.state, m.agents)
 	}
+	// Outside Rex: in it, the queue's first state is also reported to Rex.
+	t.Setenv("REX_SESSION", "")
 	q := &queueModel{details: map[string][]string{}}
 	if _, cmd := q.Update(queueStateMsg{State{}, nil, true}); cmd != nil {
 		t.Error("queueStateMsg with no items returned a command")
@@ -1036,7 +1038,7 @@ func TestFormTogglesFix(t *testing.T) {
 	m := &model{state: State{RepoByProject: map[string]string{}}, repos: []string{"/r/one"}}
 	tab, space := tea.KeyPressMsg{Code: tea.KeyTab}, tea.KeyPressMsg{Code: tea.KeySpace, Text: " "}
 	m.openForm(prRow(Pr{Key: "app#1", Checkout: "/w/app", Number: 1, Branch: "li/fld-1-x"}))
-	if form := strings.Join(m.renderForm(140, 40), "\n"); !strings.Contains(form, "/w/app-pr-1") || !strings.Contains(form, "enter review") {
+	if form := strings.Join(m.renderForm(140, 40), "\n"); !strings.Contains(form, "/w/app-pr-1") || !strings.Contains(form, fg(cSubtext, "enter")+" "+fg(cOverlay, "review")) {
 		t.Errorf("a review form:\n%s", form)
 	}
 	m.formInput(tab)
@@ -1045,7 +1047,7 @@ func TestFormTogglesFix(t *testing.T) {
 		t.Fatalf("after tab, space: fix %t", m.form.fix)
 	}
 	form := strings.Join(m.renderForm(140, 40), "\n")
-	for _, want := range []string{fg(cGreen, "[x]") + " fix it", "li/fld-1-x", "/w/app-fix-1", "enter fix"} {
+	for _, want := range []string{fg(cGreen, "[x]") + " fix it", "li/fld-1-x", "/w/app-fix-1", fg(cSubtext, "enter") + " " + fg(cOverlay, "fix")} {
 		if !strings.Contains(form, want) {
 			t.Errorf("the fix form lacks %q:\n%s", want, form)
 		}
@@ -2338,5 +2340,51 @@ func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A footer breaks between keys rather than cutting one off.
+func TestHintsWrapBetweenKeys(t *testing.T) {
+	lines := hints("↑↓ pick · enter dispatch · esc quit", 26)
+	if len(lines) != 2 || !strings.Contains(lines[1], "quit") || strings.Contains(lines[0], "quit") {
+		t.Errorf("hints: %q", lines)
+	}
+	if one := hints("↑↓ pick · enter dispatch · esc quit", 80); len(one) != 1 {
+		t.Errorf("hints on a wide screen: %q", one)
+	}
+}
+
+// A list item's wrapped lines hang under its text, and a fenced block isn't styled as markdown.
+func TestRenderMarkdownHangsAndFences(t *testing.T) {
+	got := renderMarkdown([]string{"- one two three four", "```", "a **b** c", "```"}, 12)
+	want := []string{"- one two", "  three four", fg(cOverlay, "```"), fg(cSubtext, "a **b** c"), fg(cOverlay, "```")}
+	if !slices.Equal(got, want) {
+		t.Errorf("renderMarkdown:\n%q\nwant\n%q", got, want)
+	}
+}
+
+// The divider names the lines shown only when the text is longer than its pane.
+func TestDividerShowsScrollPosition(t *testing.T) {
+	if d := divider(40, 0, 10, 8); strings.Contains(d, "of") {
+		t.Errorf("a text that fits: %q", d)
+	}
+	if d := divider(40, 5, 10, 30); !strings.Contains(d, "6–15 of 30") {
+		t.Errorf("a scrolled text: %q", d)
+	}
+}
+
+// What asks for me outranks what waits to be read, and agents at work report nothing.
+func TestRexStatus(t *testing.T) {
+	for _, c := range []struct {
+		needs, review int
+		want          string
+	}{
+		{2, 1, "\x1b]7501;state=blocked:app=foreman:msg=MiBuZWVkIHlvdQ==\x1b\\"},
+		{0, 3, "\x1b]7501;state=done:app=foreman:msg=MyB0byByZXZpZXc=\x1b\\"},
+		{0, 0, "\x1b]7501;state=idle:app=foreman\x1b\\"},
+	} {
+		if got := rexStatus(c.needs, c.review); got != c.want {
+			t.Errorf("rexStatus(%d, %d) = %q, want %q", c.needs, c.review, got, c.want)
+		}
 	}
 }

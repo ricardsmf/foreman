@@ -5,6 +5,7 @@ package main
 // conflict, and my approved PRs, ready to merge. It runs in its own Rex pane beside the board and reads the board's state file.
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -258,6 +259,7 @@ type queueModel struct {
 	details       map[string][]string // by key + sig
 	feedback      *reply              // the reply being typed to an agent
 	confirmKill   string              // the session the first K asked to close
+	reported      string              // the last status reported to Rex
 	status        string
 	statusColor   Color
 }
@@ -328,7 +330,39 @@ func (q *queueModel) rebuild() tea.Cmd {
 			q.cursor = n
 		}
 	}
-	return q.loadDetail()
+	return tea.Batch(q.loadDetail(), q.report())
+}
+
+// rexStatus is the queue's report to Rex in the Program Status Protocol (OSC 7501), which marks
+// the foreman session in the session picker whatever session is showing: blocked while something
+// asks for me, done while a report or a PR waits to be read, idle otherwise. Agents at work
+// aren't reported, since their own sessions show that.
+func rexStatus(needs, review int) string {
+	state, msg := "idle", ""
+	switch {
+	case needs > 0:
+		state, msg = "blocked", fmt.Sprintf("%d need you", needs)
+	case review > 0:
+		state, msg = "done", fmt.Sprintf("%d to review", review)
+	}
+	report := "\x1b]7501;state=" + state + ":app=foreman"
+	if msg != "" {
+		report += ":msg=" + base64.StdEncoding.EncodeToString([]byte(msg))
+	}
+	return report + "\x1b\\"
+}
+
+// report tells Rex the queue's status when it changed.
+func (q *queueModel) report() tea.Cmd {
+	if os.Getenv("REX_SESSION") == "" {
+		return nil
+	}
+	status := rexStatus(q.count(needsYou), q.count(toReview))
+	if status == q.reported {
+		return nil
+	}
+	q.reported = status
+	return tea.Raw(status)
 }
 
 func (q *queueModel) loadDetail() tea.Cmd {
@@ -387,7 +421,7 @@ func itemDetail(it queueItem) []string {
 		out = append(out, strings.Split(strings.TrimRight(string(b), "\n"), "\n")...)
 	}
 	if (it.Report == "" || it.working()) && it.Agent != "" {
-		screen, err := sh("", "rex", "capture", "-s", it.Session, "--trim")
+		screen, err := sh("", "rex", "capture", "-s", it.Session, "--trim", "--unwrap")
 		if len(out) > 0 {
 			out = append(out, "")
 		}
@@ -902,7 +936,11 @@ func itemLabel(it queueItem) (string, string) {
 
 func (q *queueModel) render(width, h int) []string {
 	dot := fg(cSurface, " · ")
-	head := bold(fg(cMauve, "queue")) + dot + fmt.Sprintf("%d need you", q.needYou())
+	need := fg(cGreen, "nothing needs you")
+	if n := q.needYou(); n > 0 {
+		need = bold(fg(cRed, fmt.Sprintf("%d need you", n)))
+	}
+	head := bold(fg(cMauve, "queue")) + dot + need
 	for _, g := range []struct {
 		g group
 		c Color
@@ -916,8 +954,13 @@ func (q *queueModel) render(width, h int) []string {
 	}
 	out := []string{head}
 
-	listRows := max(3, min(len(q.items), (h-3)*40/100))
-	detailRows := h - listRows - 3
+	keys := "↑↓ pick · enter go/resume · f reply · v evidence · d diff · x reviewed · K close/drop · o open · ^u/^d scroll · ^r reload · q quit"
+	if q.feedback != nil {
+		keys = "type the reply · enter send · esc cancel"
+	}
+	footer := hints(keys, width)
+	listRows := max(3, min(len(q.items), (h-2-len(footer))*40/100))
+	detailRows := h - listRows - 2 - len(footer)
 	q.top = scrollTo(q.top, q.cursor, listRows, len(q.items))
 
 	keyW := 8
@@ -925,6 +968,11 @@ func (q *queueModel) render(width, h int) []string {
 		keyW = max(keyW, len(it.Key))
 	}
 	keyW = min(22, keyW)
+	// Ages line up in a column of their own at the right edge.
+	ageW := 0
+	for _, it := range q.items {
+		ageW = max(ageW, len(age(it.When)))
+	}
 	for n := q.top; n < q.top+listRows; n++ {
 		if n >= len(q.items) {
 			empty := ""
@@ -962,8 +1010,8 @@ func (q *queueModel) render(width, h int) []string {
 		if len(ev) > 0 {
 			meta += "  " + fg(cBlue, strings.Join(ev, " "))
 		}
-		if a := age(it.When); a != "" {
-			meta += "  " + fg(cOverlay, a)
+		if ageW > 0 {
+			meta += "  " + fg(cOverlay, fmt.Sprintf("%*s", ageW, age(it.When)))
 		}
 		keyColor, title := cOverlay, fg(cSubtext, it.Title)
 		if it.Group == closed {
@@ -974,9 +1022,12 @@ func (q *queueModel) render(width, h int) []string {
 		}
 		left := line + mark + " " + fg(keyColor, fit(it.Key, keyW)) + "  "
 		titleW := width - ansi.StringWidth(left) - ansi.StringWidth(meta) - 2
-		out = append(out, left+fit(title, max(0, titleW))+"  "+meta)
+		row := left + fit(title, max(0, titleW)) + "  " + meta
+		if sel {
+			row = selected(row, width)
+		}
+		out = append(out, row)
 	}
-	out = append(out, fg(cSurface, strings.Repeat("─", width)))
 
 	var detail []string
 	if q.feedback != nil {
@@ -995,13 +1046,9 @@ func (q *queueModel) render(width, h int) []string {
 		}
 		detail = renderMarkdown(lines, width)
 	}
-	out = append(out, window(detail, &q.scroll, detailRows)...)
-
-	keys := "enter go/resume · f reply · v evidence · d diff · x reviewed · K close/drop · o open · ^u/^d scroll"
-	if q.feedback != nil {
-		keys = "type the reply · enter send · esc cancel"
-	}
-	return append(out, fg(cOverlay, keys))
+	shown := window(detail, &q.scroll, detailRows)
+	out = append(out, divider(width, q.scroll, detailRows, len(detail)))
+	return append(append(out, shown...), footer...)
 }
 
 func runQueue() error {
@@ -1011,5 +1058,9 @@ func runQueue() error {
 		state:       loadState(),
 	}
 	_, err := tea.NewProgram(q).Run()
+	if q.reported != "" {
+		// A done record outlives the program: without this the session would stay marked.
+		fmt.Print("\x1b]7501;state=clear\x1b\\")
+	}
 	return err
 }

@@ -359,6 +359,9 @@ func (m *model) renderPicker(width, rows int) []string {
 		if current {
 			line += fg(cSubtext, "  (now)")
 		}
+		if sel {
+			line = selected(line, width)
+		}
 		out = append(out, line)
 	}
 	switch {
