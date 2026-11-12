@@ -748,6 +748,7 @@ func run() error {
 		case len(started) > 0:
 			prog.Send(statusMsg{"Started " + strings.Join(started, ", "), cSubtext, false})
 		}
+		pollWatchers(func(text string, c Color) { prog.Send(statusMsg{text, c, false}) })
 	}()
 	_, err := prog.Run()
 	return err

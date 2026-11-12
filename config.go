@@ -60,6 +60,10 @@ func loadConfig() error {
 			if w.Name == "" || w.Dir == "" || w.Prompt == "" {
 				return fmt.Errorf("%s: a watcher needs a name, a dir and a prompt", tilde(configFile))
 			}
+			// The board types the prompt on every wake: a loop would start another schedule each time.
+			if len(w.PRs) > 0 && strings.HasPrefix(strings.TrimSpace(w.Prompt), "/loop ") {
+				return fmt.Errorf("%s: watcher %s has prs, so the board wakes it: its prompt runs once per wake and can't be a /loop", tilde(configFile), w.Name)
+			}
 			if rest, ok := strings.CutPrefix(w.Dir, "~/"); ok {
 				w.Dir = filepath.Join(home, rest)
 			}

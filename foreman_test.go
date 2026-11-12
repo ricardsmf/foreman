@@ -1127,7 +1127,7 @@ func init() { watchers = nil }
 // that waits on a permission prompt needs me, since nothing moves until I answer.
 func TestQueueListsWatchers(t *testing.T) {
 	t.Cleanup(func() { watchers = nil })
-	watchers = []Watcher{{"fld-pr-watch", "/r/watch", "/loop 10m /fld-watch"}}
+	watchers = []Watcher{{Name: "fld-pr-watch", Dir: "/r/watch", Prompt: "/loop 10m /fld-watch"}}
 	s := State{}
 	for state, want := range map[string]group{"blocked": needsYou, "working": working, "idle": idle, "done": idle} {
 		items := queueItems(s, []rexSession{{ID: "s1", Label: "fld-pr-watch", State: state}}, nil)
@@ -1146,7 +1146,7 @@ func TestQueueListsWatchers(t *testing.T) {
 
 // The watcher runs Claude Code asking before each tool call, whatever my settings default to.
 func TestWatcherCommand(t *testing.T) {
-	cmd := watcherCommand(Watcher{"w", "/r/watch", "/loop 10m /fld-watch"})
+	cmd := watcherCommand(Watcher{Name: "w", Dir: "/r/watch", Prompt: "/loop 10m /fld-watch"})
 	if got := strings.Join(cmd[1:], " "); got != "--permission-mode manual /loop 10m /fld-watch" {
 		t.Errorf("command: %s", got)
 	}
