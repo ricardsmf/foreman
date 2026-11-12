@@ -168,11 +168,14 @@ waits on a permission prompt.
   every repo, continuing its last conversation (`--new` starts a fresh one). Its instructions are
   the `CLAUDE.md` there, rewritten from foreman's source on each start: hand every piece of work to
   an agent, brief it fully, bring permission prompts and scope questions to me, never push or post.
-- It runs in the manual permission mode, whatever your settings say. The read-only commands
+- It runs in the manual permission mode with auto mode turned off (`--permission-mode manual
+  --settings '{"disableAutoMode":"disable"}'`), whatever your settings say: without
+  `disableAutoMode`, the cursor on a Bash prompt rests on "Yes, and switch to auto mode", and
+  one `enter` would hand the session to the auto-mode classifier. The read-only commands
   (`agents`, `report`, `screen`, `wait`), `answer`, `escalate`, `reply` and `cleanup` run without
   asking: `reply` refuses a `blocked` agent, so it can't answer a permission prompt, and the
   instructions keep `cleanup` to `--dry-run` unless you ask. The rest, `dispatch` among them,
-  follow manual mode, which asks unless Claude Code judges the command safe.
+  follow manual mode: they prompt, unless Claude Code counts the command as read-only.
 - It has the MCP servers in `~/.config/mcp/mcp.json`, to read Jira tickets.
 - It is tracked by its session ID, recorded when it starts, so renaming its session doesn't lose it.
 
@@ -283,8 +286,9 @@ that request my review and posts the result under my account.
   each watcher's session ID. A watcher's session is the recorded one, else one named after it, else
   one running Claude Code in its checkout: Claude renames its session when Rex's startup hook says
   so, and a watcher started twice would review every PR twice.
-- It runs `claude --permission-mode manual <prompt>`: only the commands its checkout's
-  `.claude/settings.local.json` allows run unasked. The skill's own file lists them.
+- It runs `claude --permission-mode manual --settings '{"disableAutoMode":"disable"}' <prompt>`:
+  only the commands its checkout's `.claude/settings.local.json` allows run unasked, and no prompt
+  or `shift+tab` can switch it to auto mode. The skill's own file lists the allowed commands.
 - The queue always lists it: with **needs you** when it waits on a permission prompt or failed (a
   pass stalls until you answer), else **working**, **idle** between passes, or **closed** when it
   isn't running, where `enter` starts it. `K` twice stops it.

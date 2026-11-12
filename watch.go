@@ -22,11 +22,11 @@ var watchers = []Watcher{
 	{"fld-pr-watch", filepath.Join(home, "work", "code", "reports-app-watch"), "/loop 10m /fld-watch"},
 }
 
-// watcherCommand runs Claude Code on the watcher's prompt, in the manual permission mode whatever
-// my settings default to: the session reads text other people wrote, so only what its checkout's
-// allowlist names may run unasked. It gets no --mcp-config: it needs none of those servers.
+// watcherCommand runs Claude Code on the watcher's prompt, in manualMode: the session reads text
+// other people wrote, so only what its checkout's allowlist names may run unasked, and no prompt
+// can switch it to auto mode. It gets no --mcp-config: it needs none of those servers.
 func watcherCommand(w Watcher) []string {
-	return []string{which("claude"), "--permission-mode", "manual", w.Prompt}
+	return append(append([]string{which("claude")}, manualMode...), w.Prompt)
 }
 
 // startWatcher starts the watcher in a background Rex session named after it, and returns the
