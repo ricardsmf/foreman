@@ -155,7 +155,7 @@ func mostUrgent(states []string) string {
 	return "open"
 }
 
-// A rexLayout is a window's panes as Rex's API takes them: a block, or a split of two layouts.
+// A rexLayout is a window's panes as Rex's API takes them.
 type rexLayout map[string]any
 
 // paneLayout is one terminal running cmd in cwd.
@@ -167,11 +167,6 @@ func paneLayout(label, cwd string, cmd []string) rexLayout {
 	}}
 }
 
-// sideBySide is two layouts next to each other; ratio is the left one's share.
-func sideBySide(ratio float64, left, right rexLayout) rexLayout {
-	return rexLayout{"split": map[string]any{"direction": "horizontal", "ratio": ratio, "before": left, "after": right}}
-}
-
 // rexAPI is everything foreman asks of Rex. Sessions are given by ID or label, panes by ID.
 type rexAPI interface {
 	// sessions lists the open sessions with their panes; no agent's pane is picked yet.
@@ -180,14 +175,9 @@ type rexAPI interface {
 	newSession(label, cwd, window string, cmd []string) (id, block string, err error)
 	// createSession makes a session with one window laid out as layout.
 	createSession(label, window string, layout rexLayout) (id string, err error)
-	// split puts layout beside the pane anchor, "before" or "after" it; ratio is the share of
-	// whichever comes first.
-	split(session, anchor, side string, ratio float64, layout rexLayout) error
 	kill(session string) error
 	// show brings the session up in the Rex app, as cmd+s would.
 	show(session string) error
-	// focus moves the session's focus to a pane, given by ID or label.
-	focus(session, block string) error
 	// capture is the pane's text, scrollback included; without a block, the focused pane's.
 	capture(session, block string, unwrap bool) (string, error)
 	// send types text into the pane; press presses a key there.

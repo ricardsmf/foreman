@@ -51,15 +51,8 @@ func (f *fakeRex) createSession(label, window string, layout rexLayout) (string,
 	return "session:" + label, nil
 }
 
-func (f *fakeRex) split(session, anchor, side string, ratio float64, layout rexLayout) error {
-	label := layout["block"].(map[string]any)["label"]
-	f.note("split %s %s %s %v", session, anchor, side, label)
-	return nil
-}
-
-func (f *fakeRex) kill(session string) error   { f.note("kill %s", session); return nil }
-func (f *fakeRex) show(session string) error   { f.note("show %s", session); return nil }
-func (f *fakeRex) focus(s, block string) error { f.note("focus %s %s", s, block); return nil }
+func (f *fakeRex) kill(session string) error { f.note("kill %s", session); return nil }
+func (f *fakeRex) show(session string) error { f.note("show %s", session); return nil }
 func (f *fakeRex) capture(session, block string, unwrap bool) (string, error) {
 	f.note("capture %s %s", session, block)
 	return "screen of " + block, nil
@@ -344,47 +337,28 @@ func TestReplyGoesToTheAgentsPane(t *testing.T) {
 }
 
 func TestOpenHome(t *testing.T) {
-	placed := func(id, label string) rexPane { return rexPane{ID: id, Label: label, Placed: true} }
-	for _, tc := range []struct {
-		name string
-		open []rexSession
-		id   string
-		call string // the one call it makes, "" for none
-	}{
-		{"not running", []rexSession{{ID: "s9", Label: "other"}}, "session:foreman", "create foreman board "},
-		{"running whole", []rexSession{{ID: "s1", Label: "foreman", Panes: []rexPane{placed("b", "board"), placed("q", "queue")}}}, "s1", ""},
-		{"without its queue", []rexSession{{ID: "s1", Label: "foreman", Panes: []rexPane{placed("b", "board")}}}, "s1", "split s1 b after queue"},
-		{"without its board", []rexSession{{ID: "s1", Label: "foreman", Panes: []rexPane{placed("q", "queue")}}}, "s1", "split s1 q before board"},
-		{"a detached queue doesn't count", []rexSession{{ID: "s1", Label: "foreman", Panes: []rexPane{placed("b", "board"), {ID: "q", Label: "queue"}}}}, "s1", "split s1 b after queue"},
-		{"somebody's own session", []rexSession{{ID: "s1", Label: "foreman", Panes: []rexPane{placed("x", "shell")}}}, "s1", ""},
-	} {
-		f := useFakeRex(t, tc.open...)
-		id, err := openHome("/bin/foreman")
-		if err != nil || id != tc.id {
-			t.Errorf("%s: openHome = %q, %v; want %q", tc.name, id, err, tc.id)
-		}
-		switch {
-		case tc.call == "" && len(f.calls) > 0:
-			t.Errorf("%s: calls = %v; want none", tc.name, f.calls)
-		case tc.call != "" && (len(f.calls) != 1 || !strings.HasPrefix(f.calls[0], tc.call)):
-			t.Errorf("%s: calls = %v; want %q", tc.name, f.calls, tc.call)
-		}
+	f := useFakeRex(t, rexSession{ID: "s9", Label: "other"})
+	id, err := openHome("/bin/foreman")
+	if err != nil || id != "session:foreman" || len(f.calls) != 1 {
+		t.Fatalf("not running: openHome = %q, %v, calls %v; want it created", id, err, f.calls)
 	}
-	// The new session is the board beside the queue, each running this foreman.
-	f := useFakeRex(t)
-	if _, err := openHome("/bin/foreman"); err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{`"direction":"horizontal"`, `"ratio":0.6`, `"before":{"block":{"flavor":"com.superlogical.terminal.shell","label":"board"`,
-		`"command":["/bin/foreman"]`, `"label":"queue"`, `"command":["/bin/foreman","queue"]`} {
+	// One pane running this foreman, which draws the board and the queue itself.
+	for _, want := range []string{"create foreman foreman ", `"flavor":"com.superlogical.terminal.shell"`, `"label":"foreman"`, `"command":["/bin/foreman"]`} {
 		if !strings.Contains(f.calls[0], want) {
-			t.Errorf("the layout lacks %s: %s", want, f.calls[0])
+			t.Errorf("the session lacks %s: %s", want, f.calls[0])
 		}
+	}
+	if strings.Contains(f.calls[0], "split") {
+		t.Errorf("the session has a split: %s", f.calls[0])
+	}
+	f = useFakeRex(t, rexSession{ID: "s1", Label: "foreman"})
+	if id, err := openHome("/bin/foreman"); err != nil || id != "s1" || len(f.calls) != 0 {
+		t.Errorf("running: openHome = %q, %v, calls %v; want its ID and no call", id, err, f.calls)
 	}
 }
 
 func TestOpenPrintsOrShows(t *testing.T) {
-	f := useFakeRex(t, rexSession{ID: "s1", Label: "foreman", Panes: []rexPane{{ID: "b", Label: "board", Placed: true}, {ID: "q", Label: "queue", Placed: true}}})
+	f := useFakeRex(t, rexSession{ID: "s1", Label: "foreman"})
 	var out strings.Builder
 	if err := runOpen([]string{"--print"}, &out); err != nil || out.String() != "s1\n" || len(f.calls) != 0 {
 		t.Errorf("open --print: %q, %v, calls %v; want the ID and no call", out.String(), err, f.calls)

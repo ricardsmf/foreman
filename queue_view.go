@@ -19,16 +19,21 @@ func (q *queueModel) View() tea.View {
 	if n := q.needYou(); n > 0 {
 		v.WindowTitle = fmt.Sprintf("queue (%d)", n)
 	}
+	v.SetContent(q.content())
+	return v
+}
+
+// content is the queue as text, q.height lines of q.width columns; "" before it has a size.
+func (q *queueModel) content() string {
 	if q.width == 0 {
-		return v
+		return ""
 	}
 	inner := q.width - 2
 	body := q.render(inner, q.height-1)
 	if q.help {
 		body = renderHelp("queue", queueHelp, inner, q.height-1, &q.helpScroll)
 	}
-	v.SetContent(frame(body, q.status, q.statusColor, inner))
-	return v
+	return frame(body, q.status, q.statusColor, inner)
 }
 
 func age(t time.Time) string {

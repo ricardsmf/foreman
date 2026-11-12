@@ -148,12 +148,6 @@ func (c rexCLI) createSession(label, window string, layout rexLayout) (string, e
 	return made.ID, err
 }
 
-func (c rexCLI) split(session, anchor, side string, ratio float64, layout rexLayout) error {
-	return c.call("session.new_split", map[string]any{
-		"session_id": session, "anchor_id": anchor, "direction": "horizontal", "side": side, "ratio": ratio, "layout": layout,
-	}, nil)
-}
-
 func (rexCLI) kill(session string) error {
 	_, err := sh("", "rex", "kill", session)
 	return err
@@ -227,11 +221,6 @@ end
 error("no session " .. %[1]s, 0)
 `, strconv.Quote(session))
 	_, err = sh("", "rex", "-C", client, "do", "-e", script)
-	return err
-}
-
-func (rexCLI) focus(session, block string) error {
-	_, err := sh("", "rex", "block", "focus", "-s", session, block)
 	return err
 }
 

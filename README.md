@@ -1,12 +1,14 @@
 # foreman
 
-A terminal board of Jira tickets with their assignees. Pick a ticket and start pi or Claude Code on
+A terminal board of Jira tickets with their assignees, beside a queue of the agents at work on
+them. Pick a ticket and start pi or Claude Code on
 it in its own git worktree, in a Rex session of its own. `tab` switches to open pull requests, where
 the same dispatch starts a review, or a fix on the PR's own branch, instead. After @almonk's linear-dispatch.
 
 ```
 go build -o ~/.local/bin/foreman .   # puts foreman on PATH
-foreman                     # FLD open tickets
+foreman                     # FLD open tickets, beside the queue
+foreman queue               # the same, opened on the queue alone
 foreman OO                  # another project
 foreman 'assignee = currentUser() AND statusCategory != Done'
 foreman --logout            # forget the Atlassian sign-in
@@ -14,11 +16,16 @@ foreman open                # go to the foreman Rex session, starting it when it
 foreman dispatch --repo foreman 'Add a --verbose flag'   # a task, no ticket
 ```
 
-`foreman open` goes to the `foreman` Rex session, starting it if it isn't running: the board on
-the left (a pane labelled `board`), the [queue](#queue) (`foreman queue`, labelled `queue`) on the
-right. A running session that has one of the two panes gets the other. In Rex, `cmd+alt+j` (the
-`foreman` action in `~/.config/rex/init.lua`) runs `foreman open --print`, which prints the
-session's ID instead of showing it, and selects that session in the app the key was pressed in.
+foreman is one program in one pane: the board on the left and the [queue](#queue) on the right.
+`^l` moves between them, and the side in focus gets the keys; the other is drawn faint. `^z` shows
+the side in focus alone, full width, and `^z` again both; `^l` while one is alone shows the other
+alone. A pane under 110 columns shows only the side in focus. `foreman queue` opens on the queue
+alone.
+
+`foreman open` goes to the `foreman` Rex session, starting it if it isn't running. In Rex,
+`cmd+alt+j` (the `foreman` action in `~/.config/rex/init.lua`) runs `foreman open --print`, which
+prints the session's ID instead of showing it, and selects that session in the app the key was
+pressed in.
 
 ## Jira access
 
@@ -269,7 +276,7 @@ context names.
 
 ## Queue
 
-`foreman queue` lists every dispatched agent, whatever its state, and your PRs that need you,
+The queue lists every dispatched agent, whatever its state, and your PRs that need you,
 grouped most urgent first:
 
 1. **needs you**: agents that stopped to ask something or failed (`●` red), with their report or,
@@ -299,13 +306,14 @@ conversation split beside it doesn't speak for it, and replies and key presses g
 session with no recorded pane (an older dispatch, a watcher started by hand) gets its oldest pane
 whose program reports a status.
 
-It reads the board's state file every few seconds and your PRs every five minutes. The Rex
-sessions it follows by their events: one Lua listener (`rex do --all`) prints each status a
-program reports, with the record itself, and the queue applies it to the picture of the sessions
-it keeps, with no call to Rex, so a row moves as its agent stops. A session or a pane opening, or
-a program exiting, takes a listing; so does every 15 seconds, in case an event was missed. While
-the listener isn't running the sessions are listed every few seconds. The board
-does the same. Its pane title carries the count of items in the first two groups, `queue (3)`.
+It reads the state file every few seconds, since `foreman dispatch`, `ask` and the other commands
+write it too, and takes your PRs from the board's load, every five minutes. The Rex sessions
+foreman follows by their events, for the board and the queue alike: one Lua listener
+(`rex do --all`) prints each status a program reports, with the record itself, and foreman applies
+it to the picture of the sessions it keeps, with no call to Rex, so a row moves as its agent stops.
+A session or a pane opening, or a program exiting, takes a listing; so does every 15 seconds, in
+case an event was missed. While the listener isn't running the sessions are listed every few
+seconds. The pane's title carries the count of items in the first two groups, `foreman (3)`.
 
 It also reports that count to Rex in the Program Status Protocol (OSC 7501), so the `foreman`
 session is marked in Rex's session picker whatever session you are in: `blocked` while anything is
@@ -317,13 +325,13 @@ you), cleared when it leaves them. Quitting the
 queue clears them all.
 
 Keys: `↑↓` pick, `enter` go to the agent's session, resuming a closed one (a PR goes to the agent of
-the ticket its title or branch names; with no agent, to the board's dispatch form on that ticket;
+the ticket its title or branch names; with no agent, to the board's dispatch form on that ticket, which takes the focus;
 with no ticket, the browser), `f` type a reply that is sent to the agent's pane, `y` or `n` answer the prompt an agent waits on (see [Answering a
 prompt](#answering-a-prompt)), `v` open the screenshots and videos, `d` the worktree's diff in git's
 pager, `o` the ticket or PR in the browser, `x` mark reviewed (the agent moves to idle or closed
 until it writes a new report; a PR goes until its status changes), `K` twice close the agent's Rex
 session, or on a closed one drop it from the queue (its worktree and report stay), `c` list or fold
-the closed agents, `^u`/`^d` scroll, `^r` reload, `?` every key, `q` quit (`cmd+alt+j` brings the
+the closed agents, `^u`/`^d` scroll, `^r` reload, `?` every key, `q` quit foreman, the board too (`cmd+alt+j` brings the
 pane back).
 
 ### Answering a prompt
@@ -394,11 +402,10 @@ its PRs and types its prompt into its pane, once, only when one of them changed.
   closed: the poll doesn't restart one you stopped.
 - Starting a watcher records its PRs' signatures first, so the pass its prompt runs isn't followed
   by a wake for the same PRs.
-- The poll runs in the board, so it stops when the board quits. The watcher then sits idle after its
-  last pass: nothing is reviewed until the board runs again, and nothing is lost, since the board's
-  first poll compares against the last wake, not the last poll. A watcher started from the queue
-  while the board is closed runs its one pass and waits the same way.
-- Two boards open at once wake a watcher once per change: each wake is recorded under the state
+- The poll runs in foreman, so it stops when foreman quits. The watcher then sits idle after its
+  last pass: nothing is reviewed until foreman runs again, and nothing is lost, since its first
+  poll compares against the last wake, not the last poll.
+- Two foremans open at once wake a watcher once per change: each wake is recorded under the state
   lock before the prompt is typed. A wake that fails puts the old signatures back for the next poll.
 - A watcher without `prs` gets its prompt only at start, so it must keep itself going with
   `/loop 10m …`, as watchers did before the poll. A watcher with `prs` can't have a `/loop` prompt:
@@ -445,8 +452,8 @@ watcher](#waking-a-watcher).
 
 - State (repo per project, last agent per repo, dispatched tickets, PRs and tasks with their sessions and titles, each session's agent pane, the last task number per repo, queue items
   marked reviewed, each watcher's PR signatures at its last wake) is in
-  `~/.local/state/foreman/state.json`, written atomically. The board and the queue both write it,
-  so each write holds `state.json.lock`, and the board re-reads it every few seconds. An unreadable
+  `~/.local/state/foreman/state.json`, written atomically. foreman and its commands (`dispatch`, `ask`, `answer`…) all write it,
+  so each write holds `state.json.lock`, and foreman re-reads it every few seconds. An unreadable
   file is moved to `state.json.corrupt` rather than overwritten.
 
 ## Development

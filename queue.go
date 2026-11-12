@@ -2,10 +2,9 @@ package main
 
 // foreman queue: what needs me, one item at a time. Agents that stopped to ask something or
 // finished (with their report and evidence), my PRs whose CI failed, got changes requested or
-// conflict, and my approved PRs, ready to merge. It runs in its own Rex pane beside the board and reads the board's state file.
+// conflict, and my approved PRs, ready to merge. It is drawn beside the board, by the app, and shares the state file with it.
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -248,6 +247,13 @@ type (
 		prs []Pr
 		err error
 	}
+	// queueStatusMsg is a line for the queue's status bar; the board's own is statusMsg.
+	queueStatusMsg struct {
+		text  string
+		color Color
+	}
+	// openFormMsg asks the board to open its dispatch form on a ticket.
+	openFormMsg    struct{ key string }
 	queueDetailMsg struct {
 		sig   string
 		lines []string
@@ -262,23 +268,26 @@ type queueModel struct {
 	prs           []Pr
 	prsAt         time.Time // the last load attempt, failed or not, so a failing gh isn't retried every poll
 	prsLoading    bool
-	all           []queueItem // every item
-	items         []queueItem // the rows: all, with the closed agents folded into one unless showClosed
-	showClosed    bool
-	cursor, top   int
-	scroll        int
-	details       map[string][]string // by key + sig
-	feedback      *reply              // the reply being typed to an agent
-	confirmKill   string              // the session the first K asked to close
-	seen          map[string]string   // by key + sig: the seen token of the prompt a detail shows
-	reported      string              // the last status reported to Rex
-	records       map[string]string   // the last record reported to Rex for each item that waits on me
-	statusAt      time.Time           // when the status line was set: it clears after statusTTL
-	help          bool                // the list of keys is showing
-	helpScroll    int
-	theme         theme
-	status        string
-	statusColor   Color
+	// reloadPrs, when set, has the board load the PRs, which then reach the queue too: beside the
+	// board, the queue loads none of its own.
+	reloadPrs   func() tea.Cmd
+	all         []queueItem // every item
+	items       []queueItem // the rows: all, with the closed agents folded into one unless showClosed
+	showClosed  bool
+	cursor, top int
+	scroll      int
+	details     map[string][]string // by key + sig
+	feedback    *reply              // the reply being typed to an agent
+	confirmKill string              // the session the first K asked to close
+	seen        map[string]string   // by key + sig: the seen token of the prompt a detail shows
+	reported    string              // the last status reported to Rex
+	records     map[string]string   // the last record reported to Rex for each item that waits on me
+	statusAt    time.Time           // when the status line was set: it clears after statusTTL
+	help        bool                // the list of keys is showing
+	helpScroll  int
+	theme       theme
+	status      string
+	statusColor Color
 }
 
 // A reply names its agent itself: the list is rebuilt on every poll, and by the time enter is
@@ -366,6 +375,11 @@ func foldDetail(items []queueItem) []string {
 func (q *queueModel) loadPrs() tea.Cmd {
 	if q.prsLoading {
 		return nil
+	}
+	if q.reloadPrs != nil {
+		// Asked once: the board's load answers, or its own refresh does.
+		q.prsAt = time.Now()
+		return q.reloadPrs()
 	}
 	q.prsLoading = true
 	return func() tea.Msg {
@@ -538,7 +552,7 @@ func (q *queueModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			q.seen = map[string]string{}
 		}
 		q.seen[msg.sig] = msg.seen
-	case statusMsg:
+	case queueStatusMsg:
 		q.say(msg.text, msg.color)
 	case tea.FocusMsg:
 		if time.Since(q.prsAt) >= refreshInterval {
@@ -571,7 +585,7 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 		return q.loadDetail()
 	}
 	switch msg.String() {
-	// No esc: the pane is meant to stay, and closing it takes the pane away.
+	// No esc: it is easy to press, and quitting takes the board with it.
 	case "ctrl+c", "q":
 		return tea.Quit
 	case "up", "k", "ctrl+p":
@@ -621,9 +635,9 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 		delete(q.seen, detailKey(it))
 		return tea.Sequence(func() tea.Msg {
 			if err := pressPrompt(it, seen, key); err != nil {
-				return statusMsg{text: firstLine(err.Error()), color: cRed}
+				return queueStatusMsg{text: firstLine(err.Error()), color: cRed}
 			}
-			return statusMsg{text: did + it.Key + "'s pane", color: cGreen}
+			return queueStatusMsg{text: did + it.Key + "'s pane", color: cGreen}
 		}, pollQueue)
 	case "enter", "s":
 		if it.Kind == prItem {
@@ -637,7 +651,7 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 			q.say("Starting "+it.Key+"…", cSubtext)
 			return func() tea.Msg {
 				if _, err := startWatchers(); err != nil {
-					return statusMsg{text: err.Error(), color: cRed}
+					return queueStatusMsg{text: err.Error(), color: cRed}
 				}
 				return pollQueue()
 			}
@@ -648,7 +662,7 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 		session := it.Session
 		return func() tea.Msg {
 			if err := rex.show(session); err != nil {
-				return statusMsg{text: "Switching to " + it.Key + "'s session: " + err.Error(), color: cRed}
+				return queueStatusMsg{text: "Switching to " + it.Key + "'s session: " + err.Error(), color: cRed}
 			}
 			return nil
 		}
@@ -728,9 +742,9 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 		q.say("Closing "+key+"'s session…", cSubtext)
 		kill := func() tea.Msg {
 			if err := rex.kill(session); err != nil {
-				return statusMsg{text: "Closing " + key + "'s session: " + err.Error(), color: cRed}
+				return queueStatusMsg{text: "Closing " + key + "'s session: " + err.Error(), color: cRed}
 			}
-			return statusMsg{text: "✓ Closed " + key + "'s session", color: cGreen}
+			return queueStatusMsg{text: "✓ Closed " + key + "'s session", color: cGreen}
 		}
 		// Poll right after, so the row moves to closed now rather than on the next tick.
 		return tea.Sequence(kill, pollQueue)
@@ -756,21 +770,15 @@ func (q *queueModel) prAgent(p Pr) (queueItem, bool) {
 	return queueItem{Kind: agentItem, Key: key, Title: q.state.Titles[key], Session: q.state.Sessions[key], Dir: dir}, true
 }
 
-// requestForm asks the board to open its dispatch form on the PR's ticket, and focuses the board,
-// which reads the request on focus. A PR that names no ticket opens in the browser.
+// requestForm asks the board to open its dispatch form on the PR's ticket. A PR that names no
+// ticket opens in the browser.
 func (q *queueModel) requestForm(p Pr) tea.Cmd {
 	key := jiraKey(p, nil)
 	if key == "" {
 		openURL(p.URL)
 		return nil
 	}
-	q.state, _ = updateState(func(s *State) { s.FormRequest = &FormRequest{Key: key, At: time.Now()} })
-	return func() tea.Msg {
-		if err := rex.focus(os.Getenv("REX_SESSION"), boardPane); err != nil {
-			return statusMsg{text: "Focusing the board for " + key + ": " + firstLine(err.Error()), color: cRed}
-		}
-		return statusMsg{text: "Dispatch form for " + key + " on the board", color: cSubtext}
-	}
+	return func() tea.Msg { return openFormMsg{key} }
 }
 
 // resume reopens a closed agent: a new Rex session in its worktree that continues its latest
@@ -790,14 +798,14 @@ func (q *queueModel) resume(it queueItem) tea.Cmd {
 	return func() tea.Msg {
 		id, _, err := newSession(label, dir, agent, resumeCommand(agent))
 		if err != nil {
-			return statusMsg{text: "Resuming " + key + ": " + err.Error(), color: cRed}
+			return queueStatusMsg{text: "Resuming " + key + ": " + err.Error(), color: cRed}
 		}
 		_, _ = updateState(func(s *State) {
 			s.Sessions[key] = id
 			s.Agents[key] = agent
 		})
 		if err := rex.show(id); err != nil {
-			return statusMsg{text: "Switching to " + key + "'s session: " + err.Error(), color: cRed}
+			return queueStatusMsg{text: "Switching to " + key + "'s session: " + err.Error(), color: cRed}
 		}
 		return pollQueue()
 	}
@@ -832,7 +840,7 @@ func (q *queueModel) openDiff(it queueItem) tea.Cmd {
 	}
 	return tea.ExecProcess(exec.Command("git", args...), func(err error) tea.Msg {
 		if err != nil {
-			return statusMsg{text: "git diff: " + err.Error(), color: cRed}
+			return queueStatusMsg{text: "git diff: " + err.Error(), color: cRed}
 		}
 		return nil
 	})
@@ -885,14 +893,14 @@ func (q *queueModel) feedbackInput(msg tea.KeyPressMsg) tea.Cmd {
 		return func() tea.Msg {
 			if r.answer {
 				if err := answerQuestion(r.key, text, byMe); err != nil {
-					return statusMsg{text: "Answer to " + r.key + ": " + err.Error(), color: cRed}
+					return queueStatusMsg{text: "Answer to " + r.key + ": " + err.Error(), color: cRed}
 				}
-				return statusMsg{text: "✓ Answered " + r.key, color: cGreen}
+				return queueStatusMsg{text: "✓ Answered " + r.key, color: cGreen}
 			}
 			if err := sendToAgent(r.session, r.block, text); err != nil {
-				return statusMsg{text: "Reply to " + r.key + ": " + err.Error(), color: cRed}
+				return queueStatusMsg{text: "Reply to " + r.key + ": " + err.Error(), color: cRed}
 			}
-			return statusMsg{text: "✓ Sent to " + r.key, color: cGreen}
+			return queueStatusMsg{text: "✓ Sent to " + r.key, color: cGreen}
 		}
 	default:
 		if text, back, ok := editText(q.feedback.text, q.feedback.back, msg); ok {
@@ -900,22 +908,4 @@ func (q *queueModel) feedbackInput(msg tea.KeyPressMsg) tea.Cmd {
 		}
 	}
 	return nil
-}
-
-func runQueue() error {
-	q := &queueModel{
-		details:     map[string][]string{},
-		statusColor: cOverlay,
-		state:       loadState(),
-	}
-	p := tea.NewProgram(q)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go followRex(ctx, func() { p.Send(rexEventMsg{}) })
-	_, err := p.Run()
-	if q.reported != "" {
-		// A done record outlives the program: without this the session and its items would stay marked.
-		fmt.Print("\x1b]7501;state=clear\x1b\\")
-	}
-	return err
 }

@@ -406,27 +406,15 @@ func (m *model) followRepo() {
 	}
 }
 
-// takeFormRequest opens the dispatch form the queue asked for, loading the ticket when the board's
-// search doesn't hold it, and clears the request.
-func (m *model) takeFormRequest() tea.Cmd {
-	req := m.state.FormRequest
-	if req == nil {
-		return nil
-	}
-	m.state, _ = updateState(func(s *State) {
-		if s.FormRequest != nil && s.FormRequest.Key == req.Key && s.FormRequest.At.Equal(req.At) {
-			s.FormRequest = nil
-		}
-	})
-	if time.Since(req.At) > formRequestTTL {
-		return nil
-	}
-	if n := slices.IndexFunc(m.issues, func(r Row) bool { return r.Key == req.Key }); n >= 0 {
+// requestForm opens the dispatch form on a ticket the queue asked for, loading the ticket when the
+// board's search doesn't hold it.
+func (m *model) requestForm(key string) tea.Cmd {
+	if n := slices.IndexFunc(m.issues, func(r Row) bool { return r.Key == key }); n >= 0 {
 		m.openRequested(m.issues[n])
 		return nil
 	}
-	m.say("Loading "+req.Key+"…", cSubtext)
-	jira, key := m.jira, req.Key
+	m.say("Loading "+key+"…", cSubtext)
+	jira := m.jira
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), jiraTimeout)
 		defer cancel()
@@ -655,7 +643,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.states != nil {
 			m.agents = msg.states
 		}
-		return m, m.takeFormRequest()
+		return m, nil
 	case formRowMsg:
 		if msg.err != nil {
 			m.say(msg.err.Error(), cRed)
@@ -707,9 +695,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, m.scheduleDetail()
 }
 
-const usage = `usage: foreman [PROJECT | JQL]
-       foreman queue      every dispatched agent by state, and PRs that need you
-       foreman open [--print]   go to the foreman Rex session (board and queue), starting or mending it
+const usage = `usage: foreman [PROJECT | JQL]   the board of tickets and PRs beside the queue
+       foreman queue      the same, opened on the queue alone: every dispatched agent by state,
+                          and PRs that need you
+       foreman open [--print]   go to the foreman Rex session, starting it when it isn't running
        foreman dispatch   start an agent on a task, a ticket or a PR
        foreman orchestrator [--new]   Claude Code that hands work to agents (^g on the board)
        foreman agents | report | screen | reply | wait | cleanup | ask | answer | escalate
@@ -726,10 +715,12 @@ func run() error {
 	if err := loadConfig(); err != nil {
 		return err
 	}
-	if len(argv) > 0 && argv[0] == "queue" {
-		return runQueue()
+	// foreman queue is the same program, opened on the queue alone.
+	queueOnly := len(argv) > 0 && argv[0] == "queue"
+	if queueOnly {
+		argv = argv[1:]
 	}
-	if len(argv) > 0 {
+	if len(argv) > 0 && !queueOnly {
 		rest := argv[1:]
 		help := len(rest) > 0 && (rest[0] == "--help" || rest[0] == "-h")
 		if help && argv[0] != "dispatch" && argv[0] != "queue" && argv[0] != "orchestrator" && argv[0] != "open" {
@@ -797,7 +788,8 @@ func run() error {
 			m.prFilter = b.PrFilter
 		}
 	}
-	prog = tea.NewProgram(m)
+	q := &queueModel{details: map[string][]string{}, statusColor: cOverlay, state: m.state}
+	prog = tea.NewProgram(newApp(m, q, queueOnly))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go followRex(ctx, func() { prog.Send(rexEventMsg{}) })
@@ -812,6 +804,10 @@ func run() error {
 		pollWatchers(func(text string, c Color) { prog.Send(statusMsg{text, c, false}) })
 	}()
 	_, err := prog.Run()
+	if q.reported != "" {
+		// A done record outlives the program: without this the session and its items would stay marked.
+		fmt.Print("\x1b]7501;state=clear\x1b\\")
+	}
 	return err
 }
 

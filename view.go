@@ -244,8 +244,14 @@ func (m *model) View() tea.View {
 	v := tea.NewView("")
 	v.AltScreen = true
 	v.ReportFocus = true
+	v.SetContent(m.content())
+	return v
+}
+
+// content is the board as text, m.height lines of m.width columns; "" before it has a size.
+func (m *model) content() string {
 	if m.width == 0 {
-		return v
+		return ""
 	}
 	inner := m.width - 2
 	var body []string
@@ -259,8 +265,7 @@ func (m *model) View() tea.View {
 	default:
 		body = m.renderBoard(inner, m.height-1)
 	}
-	v.SetContent(frame(body, m.status, m.statusColor, inner))
-	return v
+	return frame(body, m.status, m.statusColor, inner)
 }
 
 // A helpKey is a line of the key list: a key and what it does, or with no key, a heading.
@@ -287,6 +292,8 @@ var boardHelp = []helpKey{
 	{"^g", "the orchestrator"},
 	{"^x", "clean up the worktrees of finished work"},
 	{"?", "this list, while the filter is empty"},
+	{"^l", "the queue"},
+	{"^z", "the board alone, or beside the queue"},
 	{"", "Marks"},
 	{"◆", "dispatched: yellow working, red waiting for you or failed, green idle or done"},
 	{"◇", "dispatched, its session closed"},
@@ -298,7 +305,9 @@ var queueHelp = []helpKey{
 	{"^u  ^d  space", "scroll the report or screen"},
 	{"c", "show or fold the closed agents"},
 	{"^r", "reload"},
-	{"q", "quit (cmd+alt+j brings the pane back)"},
+	{"q", "quit foreman, the board too (cmd+alt+j brings it back)"},
+	{"^l", "the board"},
+	{"^z", "the queue alone, or beside the board"},
 	{"", "The row"},
 	{"enter", "go to the agent's session; resume a closed agent; start a stopped watcher"},
 	{"f", "type a reply into the agent's pane, or answer its question"},

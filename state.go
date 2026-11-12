@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"sync"
 	"syscall"
-	"time"
 )
 
 type State struct {
@@ -47,9 +46,6 @@ type State struct {
 	Questions map[string]Question `json:"questions,omitempty"`
 	// TaskSeq holds the last task number used in each repo, by the repo's directory name.
 	TaskSeq map[string]int `json:"taskSeq,omitempty"`
-	// FormRequest asks the board to open its dispatch form on a ticket: the queue's enter on a PR
-	// whose ticket has no agent. The board takes it when it next reads the state.
-	FormRequest *FormRequest `json:"formRequest,omitempty"`
 	// Board is the view and the filter the board was last on, which it opens on.
 	Board *BoardView `json:"board,omitempty"`
 }
@@ -59,15 +55,6 @@ type BoardView struct {
 	Mine     bool   `json:"mine,omitempty"`     // the tickets filtered to mine
 	PrFilter string `json:"prFilter,omitempty"` // "all", "requested" or "mine"
 }
-
-type FormRequest struct {
-	Key string    `json:"key"`
-	At  time.Time `json:"at"`
-}
-
-// formRequestTTL bounds how long a request waits: one made while the board wasn't running
-// shouldn't open a form when it next starts.
-const formRequestTTL = time.Minute
 
 // stateMu serialises read-modify-write cycles: the board and dispatch goroutines both update the file.
 var stateMu sync.Mutex
