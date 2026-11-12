@@ -128,8 +128,9 @@ Options go before or after KEY, except `reply`'s, which go before it.
 ```
 foreman agents [--json] [--prs]     every agent and watcher by queue group; --prs adds my PRs that need me
 foreman report KEY                  the report and the paths of its evidence; fails when there is none
-foreman screen [--lines N] KEY      the end of the agent's pane, 40 lines (0: all)
-foreman reply [--now] KEY TEXT|-    type TEXT into the agent's pane and press enter, as the queue's f
+foreman screen [--lines N] KEY      the end of the agent's pane, 40 lines (0: all), and its seen token
+foreman reply [--now] [--seen TOKEN] KEY TEXT|-
+                                    type TEXT into the agent's pane and press enter, as the queue's f
 foreman wait [--timeout D] KEY      block until the agent stops working (default 30m), print its state
 foreman cleanup [--dry-run] [KEY…]  list finished dispatches and remove what ^x ticks, or only KEY…
 foreman ask [--timeout D] TEXT|-    from an agent: put a question to the orchestrator, print the answer
@@ -139,9 +140,18 @@ foreman escalate KEY NOTE|-         hand KEY's question to me in the queue, with
 
 - `agents --json` gives each one's `key`, `kind` (ticket, review, task, watcher, pr), `group`,
   `state` as the agent reports it to Rex (working, blocked, error, done, idle, open) or `closed`,
-  `title`, `agent`, `session`, `dir`, `report` and `reportAt`, and evidence counts.
+  `title`, `agent`, `session`, `dir`, `report` and `reportAt`, evidence counts, and `seen`, the
+  seen token of an agent whose session is open.
 - `reply` refuses a closed session, and a working agent unless `--now`: pi and Claude Code each
   handle text typed mid-turn their own way. To an agent waiting in `foreman ask`, it is the answer.
+- A seen token, printed by `screen` under the pane and by `agents --json` as `seen`, stands for
+  what the pane showed: the state the agent reports to Rex and a hash of the pane's last 12
+  non-blank lines, where a permission prompt, a menu or the input box sits; output higher up, a
+  clock or an old spinner, doesn't change it. `reply --seen TOKEN` reads the pane again just
+  before typing and refuses when the token no longer matches, so an answer to a prompt that was
+  answered meanwhile isn't typed as a message; `screen` again shows what is there now. A working
+  agent's spinner and timer sit in those lines, so its token rarely holds for `--now`. With
+  `--seen`, a reply to an agent waiting in `foreman ask` is refused too: the pane isn't what it answers.
 - `wait` gives an agent that isn't working ten seconds to start, so `reply` then `wait` waits for the
   answer rather than returning at once.
 - `cleanup` never forces: git refuses a worktree with changes, and branches stay.
@@ -182,6 +192,7 @@ typed into a working agent. Claude agents run it without a permission prompt.
   ask me; a later reply is typed into its pane as usual. Dispatching the agent again withdraws it.
 - foreman's own limits on the orchestrator: three answers or messages per dispatch, then it must
   escalate; and it can't type into a `blocked` agent, which is how a permission prompt shows.
+  Its instructions have it pass `--seen` when a reply answers something it read on the pane.
 - Every question, answer, escalation and orchestrator message goes to `orchestrator.jsonl` beside
   the agent's report, shown under **Questions** in the queue's detail pane.
 
