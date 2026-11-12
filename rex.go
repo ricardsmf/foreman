@@ -99,6 +99,9 @@ func findSession(sessions []rexSession, key, recorded string) (rexSession, bool)
 		}
 	}
 	k := slug(key)
+	if isTask(key) {
+		k = keySlug(key)
+	}
 	for _, s := range sessions {
 		for _, base := range []string{k, "review-" + k} {
 			if s.Label == base || strings.HasPrefix(s.Label, base+"-") {

@@ -12,13 +12,14 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-// A cleanupCandidate is a dispatch whose ticket is done or whose PR is closed.
+// A cleanupCandidate is a dispatch whose ticket is done, whose PR is closed, or a task whose
+// agent's session is closed.
 type cleanupCandidate struct {
 	Key     string
 	Dir     string
 	Repo    string // the main checkout that owns the worktree
 	Main    bool   // dispatched without a worktree: Dir is the main checkout, which stays
-	Reason  string // "done", "merged", "closed"
+	Reason  string // "done", "merged", "closed", "session closed"
 	Dirty   bool   // uncommitted changes: git refuses to remove it
 	Agent   string // the agent's reported state, if its session is still open
 	Session string // the agent's Rex session label
@@ -54,7 +55,7 @@ func (m *model) findCleanup() tea.Cmd {
 			wg.Go(func() {
 				slots <- struct{}{}
 				defer func() { <-slots }()
-				c, ok, err := checkCleanup(ctx, jira, key, dir)
+				c, ok, err := checkCleanup(ctx, jira, key, dir, agents[state.Sessions[key]] != "")
 				if err != nil {
 					mu.Lock()
 					failed = append(failed, key+": "+firstLine(err.Error()))
@@ -104,11 +105,18 @@ func forget(s *State, keys []string) {
 	}
 }
 
-// checkCleanup is the worktree as a candidate, when its ticket is done or its PR closed. An error
-// means it couldn't tell: a failed Jira or GitHub call mustn't read as "still open".
-func checkCleanup(ctx context.Context, jira *Jira, key, dir string) (cleanupCandidate, bool, error) {
+// checkCleanup is the worktree as a candidate, when its ticket is done, its PR closed, or, for a
+// task, its agent's session closed. An error means it couldn't tell: a failed Jira or GitHub call
+// mustn't read as "still open".
+func checkCleanup(ctx context.Context, jira *Jira, key, dir string, sessionOpen bool) (cleanupCandidate, bool, error) {
 	c := cleanupCandidate{Key: key, Dir: dir}
-	if _, num, isPr := strings.Cut(key, "#"); isPr {
+	if isTask(key) {
+		// Nothing outside says a task is done; closing its session is how I say so.
+		if sessionOpen {
+			return c, false, nil
+		}
+		c.Reason = "session closed"
+	} else if _, num, isPr := strings.Cut(key, "#"); isPr {
 		// gh finds the GitHub repo from the worktree's remote.
 		state, err := sh(dir, "gh", "pr", "view", num, "--json", "state", "-q", ".state")
 		if err != nil {
@@ -171,7 +179,7 @@ func (m *model) openCleanup(msg cleanupMsg) {
 		if unchecked != "" {
 			m.say(unchecked, cRed)
 		} else {
-			m.say("No worktrees to clean up: every dispatched ticket and PR is still open", cGreen)
+			m.say("No worktrees to clean up: every dispatched ticket, PR and task is still open", cGreen)
 		}
 		return
 	}
@@ -257,7 +265,7 @@ func (m *model) cleanupInput(msg tea.KeyPressMsg) tea.Cmd {
 func (m *model) renderCleanup(width, h int) []string {
 	v := m.cleanup
 	out := []string{m.header("clean up worktrees"),
-		bold("Dispatches whose ticket is done or PR is closed"),
+		bold("Dispatches whose ticket is done, PR is closed, or task's session is closed"),
 		fg(cMauve, strings.Repeat("─", width))}
 	for n, c := range v.items {
 		mark := " "

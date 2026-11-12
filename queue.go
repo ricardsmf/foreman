@@ -509,6 +509,8 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 	case "o":
 		switch {
 		case it.Watcher:
+		case isTask(it.Key):
+			q.say("A task has no ticket or PR to open", cOverlay)
 		case it.Pr != nil:
 			openURL(it.Pr.URL)
 		case it.review():

@@ -81,7 +81,9 @@ const (
 )
 
 type form struct {
-	row   Row
+	row Row
+	// task is a dispatch with no ticket or PR: the context field holds the task itself.
+	task  bool
 	field int
 	agent int
 	// agentPicked is set once I choose the agent by hand; until then it follows the repo.
@@ -336,6 +338,16 @@ func (m *model) openForm(row Row) {
 	m.followRepo()
 }
 
+// openTaskForm opens the form for a task, on the repo of the ticket under the cursor.
+func (m *model) openTaskForm() {
+	repo := 0
+	if row, ok := m.current(); ok && row.Issue != nil {
+		repo = max(0, slices.Index(m.repos, m.state.RepoByProject[project(row.Key)]))
+	}
+	m.form = &form{task: true, worktree: true, field: fieldContext, repo: repo}
+	m.followRepo()
+}
+
 // formRepo is the main checkout the form would dispatch in: the PR's, or the picked repo.
 func (m *model) formRepo() string {
 	f := m.form
@@ -415,6 +427,11 @@ func (m *model) submit() tea.Cmd {
 	if (repo == "" && f.row.Pr == nil) || f.busy {
 		return nil
 	}
+	if f.task && strings.TrimSpace(f.context) == "" {
+		f.field = fieldContext
+		m.say("Describe the task first", cYellow)
+		return nil
+	}
 	// A second agent would work in the first one's worktree, and the board would lose track of the first.
 	if session := m.state.Sessions[f.row.Key]; session != "" && m.agents[session] != "" && !f.confirmed {
 		f.confirmed = true
@@ -424,15 +441,15 @@ func (m *model) submit() tea.Cmd {
 	}
 	f.busy = true
 	agent := agents[f.agent].Label
-	isPr, agentRepo := f.row.Pr != nil, m.formRepo()
+	isTicket, agentRepo := f.row.Issue != nil, m.formRepo()
 	m.state, _ = updateState(func(s *State) {
-		if !isPr {
+		if isTicket {
 			s.RepoByProject[project(f.row.Key)] = repo
 		}
 		s.AgentByRepo[agentRepo] = agent
 	})
 	progress := func(line string) { prog.Send(statusMsg{line, cSubtext, true}) }
-	jira, row, worktree, poteto, extra := m.jira, f.row, f.worktree, f.poteto, strings.TrimSpace(f.context)
+	jira, row, task, worktree, poteto, extra := m.jira, f.row, f.task, f.worktree, f.poteto, strings.TrimSpace(f.context)
 	ticket := ""
 	if m.detailOK[row.Key] && row.Pr == nil {
 		ticket = strings.Join(m.details[row.Key], "\n")
@@ -442,9 +459,16 @@ func (m *model) submit() tea.Cmd {
 		defer cancel()
 		var text string
 		var err error
-		if row.Pr != nil {
+		switch {
+		case task:
+			text, err = dispatchTask(TaskDispatch{Repo: repo, Agent: agent, Worktree: worktree, Poteto: poteto, Task: extra}, progress)
+			if err != nil {
+				err = fmt.Errorf("task: %w", err)
+			}
+			return dispatchedMsg{text, err}
+		case row.Pr != nil:
 			text, err = dispatchReview(ctx, jira, ReviewDispatch{*row.Pr, agent, extra}, progress)
-		} else {
+		default:
 			text, err = dispatch(ctx, jira, Dispatch{Issue: *row.Issue, Agent: agent, Worktree: worktree, Poteto: poteto, Repo: repo, Context: extra, Ticket: ticket}, progress)
 		}
 		if err != nil {
@@ -625,6 +649,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 const usage = `usage: foreman [PROJECT | JQL]
        foreman queue      every dispatched agent by state, and PRs that need you
+       foreman dispatch   start an agent on a task, a ticket or a PR (--help for its options)
        foreman --logout   forget the Atlassian sign-in`
 
 func run() error {
@@ -638,6 +663,9 @@ func run() error {
 	}
 	if len(argv) > 0 && argv[0] == "queue" {
 		return runQueue()
+	}
+	if len(argv) > 0 && argv[0] == "dispatch" {
+		return runDispatch(argv[1:])
 	}
 	if len(argv) > 0 && argv[0] == "--logout" {
 		signOut()

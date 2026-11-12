@@ -244,22 +244,33 @@ func (m *model) renderBoard(width, h int) []string {
 	out = append(out, window(renderMarkdown(detail, width), &m.detailScroll, detailRows)...)
 
 	if isPrs {
-		out = append(out, fg(cOverlay, "↑↓ pick · enter review · tab tickets · ^o requested/mine · ^a author · ^u/^d scroll · ^b browser · ^s session · ^x clean up · ^r refresh · esc quit"))
+		out = append(out, fg(cOverlay, "↑↓ pick · enter review · tab tickets · ^o requested/mine · ^a author · ^u/^d scroll · ^b browser · ^s session · ^t task · ^x clean up · ^r refresh · esc quit"))
 	} else {
-		out = append(out, fg(cOverlay, "↑↓ pick · enter dispatch · tab PRs · ^o mine · ^a assignee · ^u/^d scroll · ^b browser · ^s session · ^x clean up · ^r refresh · esc quit"))
+		out = append(out, fg(cOverlay, "↑↓ pick · enter dispatch · tab PRs · ^o mine · ^a assignee · ^u/^d scroll · ^b browser · ^s session · ^t task · ^x clean up · ^r refresh · esc quit"))
 	}
 	return out
 }
 
 func (m *model) renderForm(width, h int) []string {
 	f := m.form
-	isPr := f.row.Pr != nil
 	verb := "dispatch"
-	if isPr {
+	if f.row.Pr != nil {
 		verb = "review"
 	}
-	out := []string{m.header(verb + " " + f.row.Key)}
-	out = append(out, fg(cMauve, f.row.Key)+" "+bold(`"`+f.row.Summary+`"`), fg(cMauve, strings.Repeat("─", width)))
+	header, heading := m.header(verb+" "+f.row.Key), fg(cMauve, f.row.Key)+" "+bold(`"`+f.row.Summary+`"`)
+	if f.task {
+		header, heading = m.header("new task"), bold(fg(cMauve, "New task"))
+		if repo := m.formRepo(); repo != "" {
+			heading += fg(cOverlay, " in "+filepath.Base(repo))
+		}
+	}
+	return m.renderFormFields([]string{header, heading, fg(cMauve, strings.Repeat("─", width))}, verb, width, h)
+}
+
+// renderFormFields draws the form's fields under its heading, out.
+func (m *model) renderFormFields(out []string, verb string, width, h int) []string {
+	f := m.form
+	isPr := f.row.Pr != nil
 	label := func(n int, text string) string {
 		if f.field == n {
 			return fg(cMauve, "› "+text)
@@ -327,7 +338,11 @@ func (m *model) renderForm(width, h int) []string {
 			out = append(out, fg(cRed, "    no repo matches"))
 		}
 	}
-	out = append(out, "", label(fieldContext, bold("Extra context")+" "+fg(cOverlay, "(optional)")))
+	if f.task {
+		out = append(out, "", label(fieldContext, bold("Task")+" "+fg(cOverlay, "(its first line names it)")))
+	} else {
+		out = append(out, "", label(fieldContext, bold("Extra context")+" "+fg(cOverlay, "(optional)")))
+	}
 	if f.context != "" || f.field == fieldContext {
 		cursor := ""
 		if f.field == fieldContext {
@@ -344,6 +359,8 @@ func (m *model) renderForm(width, h int) []string {
 		for _, l := range lines {
 			out = append(out, "    "+l)
 		}
+	} else if f.task {
+		out = append(out, "    "+fg(cOverlay, "What to do: a change, a fix, a question to answer…"))
 	} else if isPr {
 		out = append(out, "    "+fg(cOverlay, "What to focus on: risky areas, things you already know, questions to answer…"))
 	} else {

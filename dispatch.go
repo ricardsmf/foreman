@@ -193,18 +193,10 @@ func prepareWorktree(repo, cwd string, issue Issue, progress func(string)) (dir,
 		return cwd, strings.TrimSpace(out), nil
 	}
 
-	progress("Fetching origin…")
-	if _, err := shFor(fetchTimeout, "", "git", "-C", repo, "fetch", "--quiet", "--prune", "origin"); err != nil {
-		// Carry on from the refs we have, but say so: the branch may start from a stale base.
-		progress("Fetch failed, using the last fetched refs: " + firstLine(err.Error()))
-	}
-	out, err := git("for-each-ref", "--sort=-committerdate", "--format=%(refname:short)", "refs/remotes/origin")
+	remotes, base, err := fetchOrigin(repo, progress)
 	if err != nil {
 		return "", "", err
 	}
-	remotes := strings.Fields(out)
-	originHead, _ := git("symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
-
 	if existing := ticketBranch(remotes, issue.Key); existing != "" {
 		branch := strings.TrimPrefix(existing, "origin/")
 		list, err := git("worktree", "list", "--porcelain")
@@ -230,17 +222,63 @@ func prepareWorktree(repo, cwd string, issue Issue, progress func(string)) (dir,
 		return cwd, branch, nil
 	}
 
-	base := baseBranch(remotes, strings.TrimSpace(originHead))
 	branch = branchPrefix + strings.ToLower(issue.Key) + "-" + slug(issue.Summary)
-	args := []string{"worktree", "add", "--no-track", "-b", branch, cwd}
+	if err := newBranchWorktree(repo, cwd, branch, base, progress); err != nil {
+		return "", "", err
+	}
+	return cwd, branch, nil
+}
+
+// fetchOrigin fetches the repo's origin and returns its branches, newest commit first, and the
+// one new work starts from.
+func fetchOrigin(repo string, progress func(string)) (remotes []string, base string, err error) {
+	progress("Fetching origin…")
+	if _, err := shFor(fetchTimeout, "", "git", "-C", repo, "fetch", "--quiet", "--prune", "origin"); err != nil {
+		// Carry on from the refs we have, but say so: the branch may start from a stale base.
+		progress("Fetch failed, using the last fetched refs: " + firstLine(err.Error()))
+	}
+	out, err := sh("", "git", "-C", repo, "for-each-ref", "--sort=-committerdate", "--format=%(refname:short)", "refs/remotes/origin")
+	if err != nil {
+		return nil, "", err
+	}
+	remotes = strings.Fields(out)
+	originHead, _ := sh("", "git", "-C", repo, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
+	return remotes, baseBranch(remotes, strings.TrimSpace(originHead)), nil
+}
+
+// newBranchWorktree creates the worktree cwd on a new branch from base, or from HEAD without one.
+func newBranchWorktree(repo, cwd, branch, base string, progress func(string)) error {
+	args := []string{"-C", repo, "worktree", "add", "--no-track", "-b", branch, cwd}
 	if base != "" {
 		args = append(args, base)
 	}
-	if _, err := git(args...); err != nil {
-		return "", "", err
+	if _, err := sh("", "git", args...); err != nil {
+		return err
 	}
 	progress(fmt.Sprintf("Created worktree %s on %s from %s", tilde(cwd), branch, cmp.Or(base, "HEAD")))
-	return cwd, branch, nil
+	return nil
+}
+
+// prepareTaskWorktree creates cwd on a new branch named after the task's title, from where new
+// work starts. A name already taken, here or on origin, gets a number: -2, -3…
+func prepareTaskWorktree(repo, cwd, title string, n int, progress func(string)) (branch string, err error) {
+	if exists(cwd) {
+		return "", fmt.Errorf("%s already exists", tilde(cwd))
+	}
+	remotes, base, err := fetchOrigin(repo, progress)
+	if err != nil {
+		return "", err
+	}
+	name := branchPrefix + cmp.Or(slug(title), fmt.Sprintf("task-%d", n))
+	branch = name
+	for i := 2; ; i++ {
+		_, local := sh("", "git", "-C", repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
+		if local != nil && !slices.Contains(remotes, "origin/"+branch) {
+			break
+		}
+		branch = fmt.Sprintf("%s-%d", name, i)
+	}
+	return branch, newBranchWorktree(repo, cwd, branch, base, progress)
 }
 
 // checkedOutAt is the worktree that has branch checked out, from `git worktree list --porcelain`.
@@ -279,15 +317,9 @@ func dispatch(ctx context.Context, jira *Jira, d Dispatch, progress func(string)
 		}
 		cwd, branch = dir, b
 	} else {
-		out, err := sh("", "git", "-C", repo, "branch", "--show-current")
-		if err != nil {
+		var err error
+		if branch, err = workBranch(repo); err != nil {
 			return "", err
-		}
-		branch = strings.TrimSpace(out)
-		// The agent is told to commit on the branch it is on; that must not be the shared one.
-		if branch == "" || slices.Contains(defaultBranches, branch) {
-			return "", fmt.Errorf("%s is on %s; check out a ticket branch there or dispatch with a worktree",
-				tilde(repo), cmp.Or(branch, "a detached HEAD"))
 		}
 	}
 
@@ -311,14 +343,161 @@ func dispatch(ctx context.Context, jira *Jira, d Dispatch, progress func(string)
 	return fmt.Sprintf("✓ %s is working on %s in session %s · %s (%s)", d.Agent, issue.Key, name, tilde(cwd), branch), nil
 }
 
+// workBranch is the branch the checkout is on, for an agent that works in it without a worktree.
+// The agent is told to commit on it, so it must not be the shared one.
+func workBranch(repo string) (string, error) {
+	out, err := sh("", "git", "-C", repo, "branch", "--show-current")
+	if err != nil {
+		return "", err
+	}
+	branch := strings.TrimSpace(out)
+	if branch == "" || slices.Contains(defaultBranches, branch) {
+		return "", fmt.Errorf("%s is on %s; check out a work branch there or dispatch with a worktree",
+			tilde(repo), cmp.Or(branch, "a detached HEAD"))
+	}
+	return branch, nil
+}
+
+// A task is work I describe myself, with no ticket or PR behind it. Its key, task:<repo>-<n>,
+// reads as neither a Jira key nor a PR's (`#`).
+const taskPrefix = "task:"
+
+func isTask(key string) bool { return strings.HasPrefix(key, taskPrefix) }
+
+type TaskDispatch struct {
+	Repo     string
+	Agent    string
+	Worktree bool
+	Poteto   bool
+	// Title names the task in its session, branch and the queue; empty takes the task's first line.
+	Title string
+	Task  string
+}
+
+// taskTitle is the task's first line, short enough for the queue.
+func taskTitle(task string) string {
+	r := []rune(strings.TrimSpace(firstLine(strings.TrimSpace(task))))
+	if len(r) > 72 {
+		return string(r[:71]) + "…"
+	}
+	return string(r)
+}
+
+// newTaskKey reserves the repo's next task number. Numbers are never reused, so a new task's
+// worktree and report can't land on an old one's.
+func newTaskKey(repo string) (key string, n int, err error) {
+	name := filepath.Base(repo)
+	_, err = updateState(func(s *State) {
+		s.TaskSeq[name]++
+		n = s.TaskSeq[name]
+	})
+	return fmt.Sprintf("%s%s-%d", taskPrefix, name, n), n, err
+}
+
+// dispatchTask starts the agent on a task in a new worktree, `<repo>-task-<n>`, or in the checkout
+// itself, in a new Rex session named after the task.
+func dispatchTask(d TaskDispatch, progress func(string)) (string, error) {
+	task := strings.TrimSpace(d.Task)
+	if task == "" {
+		return "", errors.New("describe the task first")
+	}
+	title := cmp.Or(strings.TrimSpace(d.Title), taskTitle(task))
+	skill := ""
+	if d.Poteto {
+		var err error
+		if skill, err = potetoSkill(); err != nil {
+			return "", err
+		}
+	}
+	cwd, branch := d.Repo, ""
+	if !d.Worktree {
+		var err error
+		if branch, err = workBranch(d.Repo); err != nil {
+			return "", err
+		}
+	}
+	key, n, err := newTaskKey(d.Repo)
+	if err != nil {
+		return "", err
+	}
+	if d.Worktree {
+		cwd = fmt.Sprintf("%s-task-%d", d.Repo, n)
+		if branch, err = prepareTaskWorktree(d.Repo, cwd, title, n, progress); err != nil {
+			return "", err
+		}
+	}
+	if err := resetEvidence(key); err != nil {
+		return "", err
+	}
+	prompt := taskPrompt(key, title, task, d.Agent, cwd, branch, d.Worktree, skill)
+	session, name, err := start(d.Agent, key, prompt, cwd, sessionLabel(key, title), progress)
+	if err != nil {
+		return "", err
+	}
+	markDispatched(key, title, cwd, session, d.Agent)
+	return fmt.Sprintf("✓ %s is working on %s in session %s · %s (%s)", d.Agent, key, name, tilde(cwd), branch), nil
+}
+
+// taskPrompt is what the agent on a task starts with. skill is the poteto-mode skill's path, or
+// empty to leave the skill out.
+func taskPrompt(key, title, task, agent, cwd, branch string, worktree bool, skill string) string {
+	note := ""
+	if worktree {
+		note = " (a git worktree created for this task)"
+	}
+	lines := []string{
+		fmt.Sprintf("# %s: %q", key, title),
+		"",
+		"You are working on a task I'm giving you directly; there is no Jira ticket behind it.",
+		"Working directory: " + cwd,
+		"Branch: " + branch + note,
+		"",
+		"## Task",
+		"",
+		task,
+	}
+	lines = append(lines, skillsSection(agent, cwd)...)
+	lines = append(lines, methodSection(skill, "task")...)
+	lines = append(lines,
+		"",
+		"## Workflow",
+		"",
+		"1. **Understand.** Read the relevant code and the repo's AGENTS.md / CLAUDE.md before changing anything. If the task is ambiguous, ask me instead of guessing.",
+		"2. **Do the task**, and only it. If it asks a question or an investigation rather than a change, answer it in the report and leave the code as it is.",
+		"3. **Verify** a change: build, and run the tests and linters that cover what you touched.",
+		"4. **Show it working.** Capture evidence that the change does what the task asks, as described below.",
+		"5. **Commit** a change on this branch. Do not push, open a PR, or post to GitHub or Jira.",
+		"6. **Report**: write the report below, then finish with the same summary in your final message.",
+	)
+	lines = append(lines, reportSection(key, true)...)
+	return strings.Join(lines, "\n")
+}
+
+// methodSection points the agent at the poteto-mode skill, under the workflow that follows it.
+func methodSection(skill, what string) []string {
+	if skill == "" {
+		return nil
+	}
+	return []string{
+		"",
+		"## Method",
+		"",
+		"Work in poteto-mode: read `" + skill + "` first and follow it, with the playbook that fits this " + what + ".",
+		"Where it differs from the workflow below, the workflow wins: ask me when the " + what + " is ambiguous, and end with the commit and the report in place of the Opening a PR playbook.",
+	}
+}
+
 // sessionLabel names a dispatch's Rex session: a ticket's key and the start of its summary
-// (fld-1671-my-van-always), a review's PR key (review-reports-app-1185). findSession relies on the key
-// leading it.
+// (fld-1671-my-van-always), a review's PR key (review-reports-app-1185), a task's key and the start
+// of its title (task-foreman-3-add-a-dispatch). findSession relies on the key leading it.
 func sessionLabel(key, summary string) string {
 	if strings.Contains(key, "#") {
 		return "review-" + slug(key)
 	}
 	label := strings.ToLower(key)
+	if isTask(key) {
+		label = keySlug(key)
+	}
 	if s := slug(summary); s != "" {
 		words := strings.Split(s, "-")
 		label += "-" + strings.Join(words[:min(3, len(words))], "-")
@@ -349,15 +528,7 @@ func ticketPrompt(d Dispatch, cwd, branch, ticket, skill string) string {
 		lines = append(lines, "", "## Extra context from me", "", d.Context)
 	}
 	lines = append(lines, skillsSection(d.Agent, cwd)...)
-	if skill != "" {
-		lines = append(lines,
-			"",
-			"## Method",
-			"",
-			"Work in poteto-mode: read `"+skill+"` first and follow it, with the playbook that fits this ticket.",
-			"Where it differs from the workflow below, the workflow wins: ask me when the ticket is ambiguous, and end with the commit and the report in place of the Opening a PR playbook.",
-		)
-	}
+	lines = append(lines, methodSection(skill, "ticket")...)
 	lines = append(lines,
 		"",
 		"## Workflow",
@@ -612,8 +783,12 @@ func markDispatched(key, title, cwd, session, agent string) {
 }
 
 // evidenceDir is where the agent on a ticket or PR writes its report and evidence, e.g. …/evidence/fld-1671.
-func evidenceDir(key string) string {
-	return filepath.Join(evidenceRoot, strings.Trim(nonAlnum.ReplaceAllString(strings.ToLower(key), "-"), "-"))
+func evidenceDir(key string) string { return filepath.Join(evidenceRoot, keySlug(key)) }
+
+// keySlug is the key in lower case with dashes for everything else, whole: slug keeps six words,
+// and a task in a repo with a long name has more.
+func keySlug(key string) string {
+	return strings.Trim(nonAlnum.ReplaceAllString(strings.ToLower(key), "-"), "-")
 }
 
 // resetEvidence empties the key's evidence directory, so the queue never shows a previous run's report.

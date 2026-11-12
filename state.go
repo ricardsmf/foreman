@@ -29,6 +29,8 @@ type State struct {
 	// Hidden holds the dispatched keys whose closed session I dropped from the queue. The worktree
 	// stays dispatched, for the board's cleanup; reopening the session or dispatching again shows it.
 	Hidden map[string]bool `json:"hidden,omitempty"`
+	// TaskSeq holds the last task number used in each repo, by the repo's directory name.
+	TaskSeq map[string]int `json:"taskSeq,omitempty"`
 	// FormRequest asks the board to open its dispatch form on a ticket: the queue's enter on a PR
 	// whose ticket has no agent. The board takes it when it next reads the state.
 	FormRequest *FormRequest `json:"formRequest,omitempty"`
@@ -102,6 +104,9 @@ func readState() State {
 	}
 	if s.Hidden == nil {
 		s.Hidden = map[string]bool{}
+	}
+	if s.TaskSeq == nil {
+		s.TaskSeq = map[string]int{}
 	}
 	return s
 }

@@ -10,6 +10,7 @@ foreman                     # FLD open tickets
 foreman OO                  # another project
 foreman 'assignee = currentUser() AND statusCategory != Done'
 foreman --logout            # forget the Atlassian sign-in
+foreman dispatch --repo foreman 'Add a --verbose flag'   # a task, no ticket
 ```
 
 In Rex, `cmd+alt+j` (the `foreman` action in `~/.config/rex/init.lua`) goes to the `foreman`
@@ -28,7 +29,7 @@ write takes at most 4 KB. The OAuth callback listens on `localhost:3127`.
 Board: type or paste to filter (every word must match), `↑↓` pick, `enter` dispatch, `tab`
 tickets/PRs, `^o` mine (on PRs: cycles review requested, mine, everyone), `^a` cycle assignee (on
 PRs: author), `^u`/`^d` scroll the description, `^b` open in browser, `^s` go to the agent's Rex
-session, `^x` clean up worktrees, `^r` refresh, `esc` quit.
+session, `^t` a [task](#tasks), `^x` clean up worktrees, `^r` refresh, `esc` quit.
 
 Dispatch form: `tab`/`↑↓` field, `←→` agent or repo, `space` worktree or poteto-mode on/off, type to filter repos
 or write extra context, `alt+enter` new line, paste works, `^e` writes the context in `$VISUAL` /
@@ -70,6 +71,35 @@ The PR view stops at 500 open PRs the same way.
   there. It is off each time the form opens.
 - The agent's prompt is written to `prompt.md` in its evidence directory and read by a shell in
   the new session, since Rex caps a request at 64 KB.
+
+## Tasks
+
+A task is work with no ticket or PR behind it: `^t` on the board opens the dispatch form with a
+**Task** field in place of the extra context, on the repo of the ticket under the cursor.
+
+- Its key is `task:<repo>-<n>`, numbered per repo directory name and never reused. The worktree is
+  `<repo>-task-<n>` on a new `rf/<title>` branch from `origin/develop`, else origin's default
+  branch; a name already taken locally or on origin gets `-2`, `-3`…
+- The title is the task's first line. It names the Rex session (`task-foreman-3-add-a-verbose`)
+  and the queue row.
+- The agent gets the task and the same workflow as a ticket, plus: a question or an investigation
+  is answered in the report, with the code left as it is.
+- Picking the agent remembers it for the repo; a task doesn't change the repo a Jira project
+  starts on.
+
+### `foreman dispatch`
+
+The board's dispatch from the command line, for scripts and agents. Progress goes to stderr, the
+result line to stdout.
+
+```
+foreman dispatch --repo foreman [--agent pi|claude|yolo] [--no-worktree] [--poteto] [--title T] 'what to do'
+foreman dispatch --ticket FLD-1700 [--repo reports-app] [...] ['extra context']
+foreman dispatch --pr reports-app#1185 [--agent claude] ['what to focus on']
+```
+
+`-` as the text reads it from stdin. A ticket without `--repo` goes to its project's last repo. A
+ticket or PR whose agent session is still open needs `--again`, like the board's second `enter`.
 
 ## Reviews
 
@@ -145,11 +175,13 @@ that request my review and posts the result under my account.
 
 ## Cleaning up
 
-`^x` lists the dispatches whose ticket is Done or whose PR is merged or closed. Those with
+`^x` lists the dispatches whose ticket is Done, whose PR is merged or closed, or whose task's session
+is closed. Those with
 uncommitted changes or a working agent start unticked. `enter` runs `git worktree remove` on the
 ticked ones (never `--force`, so changes stop it); branches and their commits stay, and the
 reports, evidence and the agent's Rex session go.
 
+- A task has nothing outside to say it's done: it is listed once its agent's session is closed.
 - A dispatch that ran without a worktree is listed as `checkout stays`: only its record, reports and
   session go.
 - A dispatch whose worktree was removed by hand is dropped, with its reports, as soon as `^x` runs.
@@ -174,7 +206,7 @@ reports, evidence and the agent's Rex session go.
 
 ## State
 
-- State (repo per project, last agent per repo, dispatched tickets with their sessions and titles, queue items
+- State (repo per project, last agent per repo, dispatched tickets, PRs and tasks with their sessions and titles, the last task number per repo, queue items
   marked reviewed) is in
   `~/.local/state/foreman/state.json`, written atomically. The board and the queue both write it,
   so each write holds `state.json.lock`, and the board re-reads it every few seconds. An unreadable

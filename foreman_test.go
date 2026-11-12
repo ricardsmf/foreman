@@ -1259,3 +1259,176 @@ func TestTakeFormRequest(t *testing.T) {
 		t.Error("a stale request opened the form")
 	}
 }
+
+func TestParseDispatchArgs(t *testing.T) {
+	a, err := parseDispatchArgs([]string{"--repo", "foreman", "--agent", "pi", "add", "a", "flag"}, nil)
+	if err != nil || a.repo != "foreman" || a.agent != "pi" || a.text != "add a flag" {
+		t.Errorf("task: %+v, %v", a, err)
+	}
+	a, err = parseDispatchArgs([]string{"--ticket", "FLD-1", "-"}, strings.NewReader("look at x\n"))
+	if err != nil || a.ticket != "FLD-1" || a.text != "look at x" {
+		t.Errorf("ticket with stdin: %+v, %v", a, err)
+	}
+	for _, argv := range [][]string{
+		{"do", "it"},                           // a task without a repo
+		{"--repo", "foreman"},                  // a task without text
+		{"--ticket", "FLD-1", "--pr", "app#1"}, // both
+		{"--pr", "app#1", "--repo", "foreman"}, // a review has its checkout
+		{"--ticket", "FLD-1", "--title", "t"},  // a ticket has its summary
+		{"--nope"},
+	} {
+		if _, err := parseDispatchArgs(argv, nil); err == nil {
+			t.Errorf("parseDispatchArgs(%q) took it", argv)
+		}
+	}
+}
+
+func TestResolveRepo(t *testing.T) {
+	repos := []string{"/w/code/foreman", "/w/code/app", "/p/app"}
+	for arg, want := range map[string]string{"foreman": "/w/code/foreman", "Foreman": "/w/code/foreman", "/p/app": "/p/app"} {
+		if got, err := resolveRepo(arg, repos); got != want || err != nil {
+			t.Errorf("resolveRepo(%q) = %q, %v; want %q", arg, got, err, want)
+		}
+	}
+	if _, err := resolveRepo("app", repos); err == nil || !strings.Contains(err.Error(), "give its path") {
+		t.Errorf("two repos named app: %v", err)
+	}
+	if _, err := resolveRepo("nope", repos); err == nil {
+		t.Error("found a repo that isn't there")
+	}
+}
+
+func TestGithubName(t *testing.T) {
+	if got := githubName("https://github.com/Owner/Reports-App/pull/12", "x"); got != "Reports-App" {
+		t.Errorf("githubName = %q", got)
+	}
+	if got := githubName("", "x"); got != "x" {
+		t.Errorf("githubName without a URL = %q", got)
+	}
+}
+
+// Task numbers count per repo name and aren't reused, so a new task never lands on an old one's
+// worktree or report.
+func TestNewTaskKey(t *testing.T) {
+	tempState(t)
+	for _, tc := range []struct{ repo, want string }{
+		{"/w/foreman", "task:foreman-1"},
+		{"/w/foreman", "task:foreman-2"},
+		{"/w/app", "task:app-1"},
+	} {
+		if key, _, err := newTaskKey(tc.repo); key != tc.want || err != nil {
+			t.Errorf("newTaskKey(%s) = %q, %v; want %q", tc.repo, key, err, tc.want)
+		}
+	}
+	discard([]string{"task:foreman-2"})
+	if key, n, _ := newTaskKey("/w/foreman"); key != "task:foreman-3" || n != 3 {
+		t.Errorf("after cleanup: %q, %d", key, n)
+	}
+}
+
+// A task's branch is named after its title, numbered when that name is taken here or on origin.
+func TestPrepareTaskWorktree(t *testing.T) {
+	root := t.TempDir()
+	origin, repo := filepath.Join(root, "origin"), filepath.Join(root, "repo")
+	git(t, root, "init", "-q", "-b", "develop", origin)
+	git(t, origin, "commit", "-q", "--allow-empty", "-m", "base")
+	git(t, origin, "branch", "rf/add-a-flag-2")
+	git(t, root, "clone", "-q", origin, repo)
+	git(t, repo, "branch", "rf/add-a-flag")
+
+	cwd := repo + "-task-1"
+	branch, err := prepareTaskWorktree(repo, cwd, "Add a flag", 1, func(string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if branch != "rf/add-a-flag-3" {
+		t.Errorf("branch = %q, want rf/add-a-flag-3: -1 is local, -2 on origin", branch)
+	}
+	if got, want := git(t, cwd, "rev-parse", "HEAD"), git(t, repo, "rev-parse", "origin/develop"); got != want {
+		t.Errorf("the task starts at %s, want origin/develop %s", got, want)
+	}
+	if _, err := prepareTaskWorktree(repo, cwd, "Add a flag", 1, func(string) {}); err == nil {
+		t.Error("reused an existing directory")
+	}
+}
+
+func TestTaskPrompt(t *testing.T) {
+	tempState(t)
+	p := taskPrompt("task:foreman-1", "Add a flag", "Add a flag\n\nto the CLI", agentPi, "/w/foreman-task-1", "rf/add-a-flag", true, "")
+	for _, want := range []string{
+		`# task:foreman-1: "Add a flag"`,
+		"there is no Jira ticket",
+		"## Task\n\nAdd a flag\n\nto the CLI",
+		"answer it in the report and leave the code as it is",
+		"Do not push",
+		evidenceDir("task:foreman-1") + "/report.md",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("the prompt lacks %q:\n%s", want, p)
+		}
+	}
+	if strings.Contains(p, "## Method") {
+		t.Error("names poteto-mode without being asked")
+	}
+}
+
+func TestTaskSession(t *testing.T) {
+	label := sessionLabel("task:my-long-repo-name-here-1", "Add a flag to it")
+	if label != "task-my-long-repo-name-here-1-add-a-flag" {
+		t.Errorf("sessionLabel = %q", label)
+	}
+	sessions := []rexSession{{ID: "a", Label: "task-my-long-repo-name-here-10-other"}, {ID: "b", Label: label}}
+	if s, ok := findSession(sessions, "task:my-long-repo-name-here-1", ""); !ok || s.ID != "b" {
+		t.Errorf("findSession = %+v, %t", s, ok)
+	}
+}
+
+// A task has nothing outside to say it's done: it is a cleanup candidate once its session closes.
+func TestCleanupListsClosedTasks(t *testing.T) {
+	root := t.TempDir()
+	repo, worktree := filepath.Join(root, "repo"), filepath.Join(root, "repo-task-1")
+	git(t, root, "init", "-q", "-b", "main", repo)
+	git(t, repo, "commit", "-q", "--allow-empty", "-m", "base")
+	git(t, repo, "worktree", "add", "-q", worktree)
+
+	if _, ok, err := checkCleanup(context.Background(), nil, "task:repo-1", worktree, true); ok || err != nil {
+		t.Errorf("open session: candidate %t, %v", ok, err)
+	}
+	c, ok, err := checkCleanup(context.Background(), nil, "task:repo-1", worktree, false)
+	if !ok || err != nil || c.Reason != "session closed" || c.Main || c.Dirty {
+		t.Errorf("closed session: %+v, %t, %v", c, ok, err)
+	}
+}
+
+// ^t opens a task form on the context field; it won't dispatch until the task says something.
+func TestTaskForm(t *testing.T) {
+	tempState(t)
+	m := &model{
+		state:    State{RepoByProject: map[string]string{"FLD": "/r/two"}, AgentByRepo: map[string]string{}},
+		repos:    []string{"/r/one", "/r/two"},
+		issues:   []Row{issueRow(Issue{Key: "FLD-1"})},
+		details:  map[string][]string{},
+		detailOK: map[string]bool{},
+		agents:   map[string]string{},
+	}
+	m.boardInput(tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
+	f := m.form
+	if f == nil || !f.task || f.field != fieldContext || m.formRepo() != "/r/two" {
+		t.Fatalf("form = %+v, repo %s", f, m.formRepo())
+	}
+	enter := tea.KeyPressMsg{Code: tea.KeyEnter}
+	if cmd := m.formInput(enter); cmd != nil || f.busy || !strings.Contains(m.status, "Describe the task") {
+		t.Fatalf("empty task: cmd %t, busy %t, status %q", cmd != nil, f.busy, m.status)
+	}
+	m.paste("Add a flag")
+	if form := strings.Join(m.renderForm(100, 40), "\n"); !strings.Contains(form, "New task") || !strings.Contains(form, "Add a flag") {
+		t.Errorf("form:\n%s", form)
+	}
+	if cmd := m.formInput(enter); cmd == nil || !f.busy {
+		t.Fatal("the task didn't dispatch")
+	}
+	// The agent is remembered for the repo; the project's repo stays the ticket dispatches' choice.
+	if s := loadState(); len(s.RepoByProject) != 0 || s.AgentByRepo["/r/two"] == "" {
+		t.Errorf("state = %+v", s)
+	}
+}

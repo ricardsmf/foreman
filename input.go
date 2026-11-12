@@ -85,6 +85,8 @@ func (m *model) boardInput(msg tea.KeyPressMsg) tea.Cmd {
 		}
 	case k == "ctrl+x":
 		return m.findCleanup()
+	case k == "ctrl+t":
+		m.openTaskForm()
 	case k == "enter":
 		if ok {
 			m.openForm(current)
