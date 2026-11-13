@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -52,6 +53,10 @@ func (f *fakeRex) createSession(label, window string, layout rexLayout) (string,
 }
 
 func (f *fakeRex) kill(session string) error { f.note("kill %s", session); return nil }
+func (f *fakeRex) move(session, after string) error {
+	f.note("move %s after %s", session, after)
+	return nil
+}
 func (f *fakeRex) show(session string) error { f.note("show %s", session); return nil }
 func (f *fakeRex) capture(session, block string, unwrap bool) (string, error) {
 	f.note("capture %s %s", session, block)
@@ -313,6 +318,75 @@ func TestNewSessionRecordsItsPane(t *testing.T) {
 	}
 	if !slices.Contains(f.calls, "new fld-1-x-2") {
 		t.Errorf("calls = %v", f.calls)
+	}
+}
+
+// gitCheckout makes a main checkout and a worktree of it under a temp dir, as git lays them out.
+func gitCheckout(t *testing.T, repo, worktree string) (main, wt string) {
+	t.Helper()
+	root := t.TempDir()
+	main, wt = filepath.Join(root, repo), filepath.Join(root, worktree)
+	gitdir := filepath.Join(main, ".git", "worktrees", worktree)
+	if err := os.MkdirAll(gitdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt, ".git"), []byte("gitdir: "+gitdir+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return main, wt
+}
+
+func TestRepoOf(t *testing.T) {
+	main, wt := gitCheckout(t, "reports-app", "reports-app-fr-accents")
+	for _, c := range []struct{ key, dir, want string }{
+		{"FLD-1780", wt, "reports-app"}, // a worktree named by hand
+		{"FLD-1", main, "reports-app"},  // the checkout itself
+		{"FLD-1707", "/gone/reports-app-fld-1707", "reports-app"},
+		{"reports-app#1185", "", "reports-app"},
+		{"fix:reports-app#1185", "", "reports-app"},
+		{"task:foreman-3", "", "foreman"},
+		{"orchestrator", t.TempDir(), ""}, // not a checkout
+	} {
+		if got := repoOf(c.key, c.dir); got != c.want {
+			t.Errorf("repoOf(%q, %q) = %q, want %q", c.key, c.dir, got, c.want)
+		}
+	}
+}
+
+// A new session goes after the last open one working in the same repo, so the sidebar keeps a
+// repo's sessions together.
+func TestNewSessionJoinsItsRepo(t *testing.T) {
+	_, wt1 := gitCheckout(t, "app", "app-fld-1")
+	_, wt3 := gitCheckout(t, "app", "app-fld-3")
+	f := useFakeRex(t,
+		rexSession{ID: "s1", Label: "fld-1"}, rexSession{ID: "s2", Label: "other"},
+		rexSession{ID: "s3", Label: "fld-3"}, rexSession{ID: "s4", Label: "fld-4"})
+	if _, err := updateState(func(s *State) {
+		s.Dispatched["FLD-1"], s.Sessions["FLD-1"] = wt1, "s1"
+		s.Dispatched["FLD-3"], s.Sessions["FLD-3"] = wt3, "s3"
+		s.Dispatched["FLD-4"], s.Sessions["FLD-4"] = "/gone/elsewhere-fld-4", "s4"
+		s.Dispatched["FLD-5"], s.Sessions["FLD-5"] = wt1, "s-closed"
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, wt9 := gitCheckout(t, "app", "app-fld-9")
+	id, _, err := newSession("fld-9", wt9, "claude", []string{"claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "move " + id + " after s3"; !slices.Contains(f.calls, want) {
+		t.Errorf("calls = %v; want %q", f.calls, want)
+	}
+	// Nothing open in its repo: it stays where Rex put it.
+	f.calls = nil
+	if _, _, err := newSession("x", t.TempDir(), "claude", []string{"claude"}); err != nil {
+		t.Fatal(err)
+	}
+	if slices.ContainsFunc(f.calls, func(c string) bool { return strings.HasPrefix(c, "move ") }) {
+		t.Errorf("calls = %v; want no move", f.calls)
 	}
 }
 

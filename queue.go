@@ -48,6 +48,7 @@ type queueItem struct {
 	Block   string // the agent's pane in that session, "" when it is closed
 	Waits   string // what a blocked agent says it waits for: permission, question or auth
 	Dir     string // the worktree
+	Repo    string // the repo it works in, by its main checkout's directory name; "" for none
 	Report  string // report.md's path, "" when the agent wrote none
 	When    time.Time
 	Shots   int // images and terminal captures
@@ -87,6 +88,65 @@ func prDismissKey(key string) string { return "pr:" + key }
 func (it queueItem) review() bool { return strings.Contains(it.Key, "#") && !isFix(it.Key) }
 
 func (it queueItem) working() bool { return it.Group == working }
+
+// repoOf names the repo a dispatch works in, by its main checkout's directory: from the key for a
+// PR, a fix or a task, else from the worktree's .git file. A worktree that is gone gives its name
+// less the ticket key; a directory outside git (the orchestrator's) gives "".
+func repoOf(key, dir string) string {
+	if r, ok := strings.CutPrefix(key, "task:"); ok {
+		if i := strings.LastIndex(r, "-"); i > 0 {
+			return r[:i]
+		}
+	}
+	if r, _, ok := strings.Cut(strings.TrimPrefix(key, "fix:"), "#"); ok {
+		return r
+	}
+	if dir == "" {
+		return ""
+	}
+	if main := mainCheckout(dir); main != "" {
+		return filepath.Base(main)
+	}
+	if exists(dir) {
+		return ""
+	}
+	base := filepath.Base(dir)
+	if key != "" {
+		base = strings.TrimSuffix(base, "-"+strings.ToLower(key))
+	}
+	return base
+}
+
+// mainCheckout is the checkout that owns dir: dir itself when its .git is a directory, else the one
+// its .git file points into. "" when dir isn't a checkout. It reads files rather than run git, since
+// the queue asks for every item at each poll.
+func mainCheckout(dir string) string {
+	dotGit := filepath.Join(dir, ".git")
+	st, err := os.Stat(dotGit)
+	if err != nil {
+		return ""
+	}
+	if st.IsDir() {
+		return dir
+	}
+	b, err := os.ReadFile(dotGit)
+	if err != nil {
+		return ""
+	}
+	gitdir, ok := strings.CutPrefix(strings.TrimSpace(string(b)), "gitdir: ")
+	if !ok {
+		return ""
+	}
+	if !filepath.IsAbs(gitdir) {
+		gitdir = filepath.Join(dir, gitdir)
+	}
+	// <main>/.git/worktrees/<name>
+	worktrees := filepath.Dir(gitdir)
+	if filepath.Base(worktrees) != "worktrees" {
+		return ""
+	}
+	return filepath.Dir(filepath.Dir(worktrees))
+}
 
 // pending is whether the item waits on me: it asks something or has a report to read.
 func (it queueItem) pending() bool { return it.Group == needsYou || it.Group == toReview }
@@ -128,7 +188,8 @@ func evidence(dir string) (media, captures []string) {
 }
 
 // queueItems builds the list from the state file, the open Rex sessions and my PRs: every
-// dispatched agent, whatever its state, and my PRs blocked on me. Within a group, newest report first.
+// dispatched agent, whatever its state, and my PRs blocked on me. Within a group, by repo, then
+// newest report first.
 func queueItems(s State, sessions []rexSession, prs []Pr) []queueItem {
 	var items []queueItem
 	for key, dir := range s.Dispatched {
@@ -189,8 +250,27 @@ func queueItems(s State, sessions []rexSession, prs []Pr) []queueItem {
 			items = append(items, it)
 		}
 	}
+	// Within a group, a repo's items together, the repo with the newest item first.
+	type run struct {
+		g    group
+		repo string
+	}
+	newest := map[run]time.Time{}
+	for i := range items {
+		it := &items[i]
+		it.Repo = repoOf(it.Key, it.Dir)
+		if r := (run{it.Group, it.Repo}); it.When.After(newest[r]) {
+			newest[r] = it.When
+		}
+	}
 	slices.SortFunc(items, func(a, b queueItem) int {
 		if d := int(a.Group) - int(b.Group); d != 0 {
+			return d
+		}
+		if d := newest[run{b.Group, b.Repo}].Compare(newest[run{a.Group, a.Repo}]); d != 0 {
+			return d
+		}
+		if d := strings.Compare(a.Repo, b.Repo); d != 0 {
 			return d
 		}
 		// Agents that ask before my PRs.

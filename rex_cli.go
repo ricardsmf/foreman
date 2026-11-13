@@ -153,6 +153,11 @@ func (rexCLI) kill(session string) error {
 	return err
 }
 
+func (rexCLI) move(session, after string) error {
+	_, err := sh("", "rex", "session", "move", session, "--after", after)
+	return err
+}
+
 // rexClient is a client "rex client ls --json" lists.
 type rexClient struct {
 	ID   string `json:"client_id"`

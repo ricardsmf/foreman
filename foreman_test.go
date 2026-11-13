@@ -632,6 +632,44 @@ func TestQueueItems(t *testing.T) {
 	}
 }
 
+// Within a group a repo's items sit together, the repo with the newest report first.
+func TestQueueGroupsByRepo(t *testing.T) {
+	old := evidenceRoot
+	evidenceRoot = t.TempDir()
+	t.Cleanup(func() { evidenceRoot = old })
+	at := time.Now()
+	report := func(key string, ago time.Duration) {
+		dir := evidenceDir(key)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		p := filepath.Join(dir, "report.md")
+		if err := os.WriteFile(p, []byte("# done\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, at.Add(-ago), at.Add(-ago)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report("FLD-1", 3*time.Minute)       // app, oldest
+	report("task:tool-1", 2*time.Minute) // tool
+	report("FLD-2", time.Minute)         // app, newest
+	s := State{
+		Dispatched: map[string]string{"FLD-1": "/gone/app-fld-1", "FLD-2": "/gone/app-fld-2", "task:tool-1": "/gone/tool-task-1"},
+		Sessions:   map[string]string{},
+		Titles:     map[string]string{},
+		Dismissed:  map[string]string{},
+		Hidden:     map[string]bool{},
+	}
+	var got []string
+	for _, it := range queueItems(s, nil, nil) {
+		got = append(got, it.Repo+" "+it.Key)
+	}
+	if want := []string{"app FLD-2", "app FLD-1", "tool task:tool-1"}; !slices.Equal(got, want) {
+		t.Errorf("order = %v, want %v", got, want)
+	}
+}
+
 // The list is rebuilt on every poll while I pick a row or type a reply.
 func TestQueueKeepsItsPlaceAcrossRebuilds(t *testing.T) {
 	old := evidenceRoot

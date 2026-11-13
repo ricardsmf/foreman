@@ -145,6 +145,11 @@ func (q *queueModel) render(width, h int) []string {
 		keyW = max(keyW, len(it.Key))
 	}
 	keyW = min(22, keyW)
+	repoW := 0
+	for _, it := range q.items {
+		repoW = max(repoW, len(it.Repo))
+	}
+	repoW = min(14, repoW)
 	// Ages line up in a column of their own at the right edge.
 	ageW := 0
 	for _, it := range q.items {
@@ -175,6 +180,14 @@ func (q *queueModel) render(width, h int) []string {
 			groupColor = cMauve
 		}
 		line += fg(groupColor, fit(name, 9)) + " "
+		// Likewise the repo, on the first row of its run within the group.
+		if repoW > 0 {
+			repo := ""
+			if name != "" || q.items[n-1].Repo != it.Repo {
+				repo = it.Repo
+			}
+			line += fg(cSubtext, fit(repo, repoW)) + " "
+		}
 		if it.Fold > 0 {
 			row := line + fg(cOverlay, "▸") + " " + fg(cSubtext, fmt.Sprintf("%d closed", it.Fold)) + fg(cOverlay, "  c lists them")
 			if sel {

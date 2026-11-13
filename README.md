@@ -108,6 +108,8 @@ detail pane's place. Type to filter, `↑↓` pick, `enter` set, `esc` back.
 - Each agent starts in a new background Rex session named after the ticket, such as
   `fld-1671-my-van-always`; `^s` on the row, or `cmd+s`, switches to it. The board stays where it
   is. It is tracked by its ID, so an agent renaming its session doesn't lose it.
+- The new session goes right after the last open session of an agent or watcher in the same repo,
+  so Rex's sidebar keeps a repo's sessions together. With none open, it goes where Rex puts it.
 - Dispatching to a ticket or PR whose agent session is still open takes `enter` twice: the second
   agent would work in the first one's worktree, and the board would track only the new session.
 - `◆` marks a dispatched row, coloured by what its agent reports to Rex: yellow working, red
@@ -276,7 +278,9 @@ context names.
 ## Queue
 
 The queue lists every dispatched agent, whatever its state, and your PRs that need you,
-grouped most urgent first:
+grouped most urgent first. Within a group a repo's items sit together, under its name, and the
+repo with the newest report comes first. The repo is the main checkout's directory name, so a
+worktree counts as its repo:
 
 1. **needs you**: agents that stopped to ask something or failed (`●` red), with their report or,
    without one, the end of their screen (less the input box Claude Code ends it with, so it ends on

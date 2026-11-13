@@ -176,6 +176,8 @@ type rexAPI interface {
 	// createSession makes a session with one window laid out as layout.
 	createSession(label, window string, layout rexLayout) (id string, err error)
 	kill(session string) error
+	// move puts session right after another in Rex's session order, which the sidebar shows.
+	move(session, after string) error
 	// show brings the session up in the Rex app, as cmd+s would.
 	show(session string) error
 	// capture is the pane's text, scrollback included; without a block, the focused pane's.
@@ -485,7 +487,38 @@ func newSession(label, cwd, window string, cmd []string) (id, name string, err e
 	if block != "" {
 		_, _ = updateState(func(s *State) { recordPane(s, id, block, sessions) })
 	}
+	if after := repoSibling(loadState(), repoOf("", cwd), sessions); after != "" {
+		// Only the sidebar's order: the session is there and tracked either way.
+		_ = rex.move(id, after)
+	}
 	return id, name, nil
+}
+
+// repoSibling is the last open session, in Rex's order, of an agent or watcher working in repo:
+// a new session there goes after it, so the sidebar keeps a repo's sessions together. "" for none,
+// or when repo is "".
+func repoSibling(s State, repo string, open []rexSession) string {
+	if repo == "" {
+		return ""
+	}
+	same := map[string]bool{}
+	for key, dir := range s.Dispatched {
+		if id := s.Sessions[key]; id != "" && repoOf(key, dir) == repo {
+			same[id] = true
+		}
+	}
+	for _, w := range watchers {
+		if id := s.WatcherSessions[w.Name]; id != "" && repoOf(w.Name, w.Dir) == repo {
+			same[id] = true
+		}
+	}
+	after := ""
+	for _, o := range open {
+		if same[o.ID] {
+			after = o.ID
+		}
+	}
+	return after
 }
 
 // recordPane notes block as the pane of the session's agent, and forgets the panes of sessions
