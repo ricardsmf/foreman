@@ -874,13 +874,13 @@ func agentArgs(agent string) []string {
 }
 
 // askSection tells an implementing agent to put its questions through foreman ask, which waits for
-// the orchestrator's answer or mine.
+// my answer.
 func askSection() []string {
 	return []string{
 		"",
 		"## Asking",
 		"",
-		"When you need an answer from me to go on, run `foreman ask \"<question>\"`, giving the command a 10-minute timeout. My orchestrator answers what I've already settled and hands the rest to me; the command prints the answer and you carry on.",
+		"When you need an answer from me to go on, run `foreman ask \"<question>\"`, giving the command a 10-minute timeout. The question shows in my queue; the command prints my answer and you carry on.",
 		"If it reports no answer, put the question in your report and stop to ask me.",
 	}
 }

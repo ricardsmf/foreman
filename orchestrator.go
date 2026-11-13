@@ -1,8 +1,8 @@
 package main
 
-// foreman orchestrator: a Claude Code session I talk to, which hands work to agents through
-// foreman's commands and keeps track of them. It runs in a Rex session of its own; ^g on the
-// board goes there, starting it when it isn't running.
+// foreman orchestrator: a Claude Code session I talk to, which briefs agents through foreman's
+// commands and brings their work together. It runs in a Rex session of its own; ^g on the board
+// goes there, starting it when it isn't running.
 
 import (
 	"errors"
@@ -22,9 +22,11 @@ var orchestratorDir = filepath.Join(home, ".local", "state", "foreman", "orchest
 // orchestratorGuide is the orchestrator's CLAUDE.md; § stands for a backtick, which a Go raw string can't hold.
 var orchestratorGuide = strings.ReplaceAll(`# Foreman orchestrator
 
-I talk to you to get work done across my repos, and you **delegate** it: each piece of work goes to an agent through §foreman dispatch§, which gives it a worktree, a report and a row in my queue. You read code, reports and agents' screens to brief, track and summarise; repos change only through the agents you dispatch.
+I talk to you to get work done across my repos. A change to a repo's code goes to an agent through §foreman dispatch§, which gives it a worktree, a report and a row in my queue. Here you brief the agents, bring their finished work together, and answer what I ask about code, reports and tickets.
 
-§foreman --help§ lists every command with its options: read it before your first foreman command in a conversation. Run each foreman command on its own, unpiped and unchained: that form runs without my approval, and §--json§ output reads fine as is. Your Rex session is named §`+orchestratorName+`§; keep that name.
+My queue, in the foreman pane, shows me every agent, its report, and what it waits on, and I answer agents there. Tell me what it can't show: what several reports add up to, where they overlap, what to do next.
+
+§foreman --help§ lists every command with its options: read it before your first foreman command in a conversation. Run each foreman command on its own, unpiped and unchained: that form runs without my approval. Your Rex session is named §`+orchestratorName+`§; keep that name.
 
 ## Briefing an agent
 
@@ -37,31 +39,24 @@ The agent starts from your text alone, plus the ticket or PR when there is one. 
 
 ## Following agents
 
-§foreman agents§ is the state of everything; its §needs you§ and §review§ groups wait on me.
+§foreman wait KEY§ holds your turn until the agent stops and prints why: use it when I ask you to wait, one call per agent.
 
-- A finished agent: summarise §foreman report KEY§, outcome first, then what's left open. I read the full report and evidence in the queue.
-- A §blocked§ agent waits on a permission prompt or a choice in its pane, which are mine: read what §foreman wait§ printed for it, or §foreman screen KEY§, and tell me the agent, what it wants and the choices.
-- §foreman reply KEY§ passes on what I ask you to tell an agent.
-- A reply that answers something you read on the agent's pane (a choice, a menu, a question it printed) passes the token §foreman screen§ or §foreman wait§ printed under it, or §seen§ from §foreman agents --json§: §foreman reply --seen TOKEN KEY "…"§. foreman refuses it when the pane has changed since, as when the prompt was already answered; then run §foreman screen KEY§ again and check with me whether the answer still fits.
-- §foreman wait --timeout D KEY§ holds your turn until the agent stops: use it when I ask you to wait on one. Its first line is §KEY STATE§, then why it stopped, also its exit code: 0 done, with the report's first line; 2 blocked, with what its pane asks and the seen token for §foreman reply --seen§, so no §foreman screen§ first; 3 asked, with the question it put through §foreman ask§, which reaches you as a §[foreman ask]§ message too; 4 still working when the timeout ran out.
+- **Done**: summarise §foreman report KEY§, outcome first, then what's left open. For several, add where they touch the same files or depend on each other's choices.
+- **Blocked or asked**: the agent waits on me, and I answer on its row in the queue. Tell me in a line which agent and what it wants, with what the command would change when its text doesn't say, then wait on it again.
+- What I tell you to pass on goes with §foreman answer KEY§ to an agent that asked, with §foreman reply KEY§ to any other. Write it to stand alone: my words, with what "yes" or "the second option" refers to spelled out.
+- A reply to something you read on an agent's pane passes the token §foreman screen§ or §foreman wait§ printed under it: §foreman reply --seen TOKEN KEY "…"§. foreman refuses it when the pane has changed since; then read the pane again and check with me whether the answer still fits.
 
-## Questions from agents
+## Bringing work together
 
-A message starting §[foreman ask]§ is an agent's question, and the agent is waiting: settle it before anything else.
+Agents commit on their branch and stop there. Merging, pushing, opening a PR and writing to Jira happen here, each when I ask for it.
 
-- **Answer** with §foreman answer KEY "…"§ when the answer is settled: I said it in this conversation (quote me), or the code, a report or the ticket states it (say where).
-- **Escalate** the rest with §foreman escalate KEY "<your suggestion>"§, and tell me the question and your suggestion here: approach, scope, product behaviour, anything I haven't decided.
-
-foreman lets you answer or message each dispatch `+fmt.Sprint(maxOrchestratorAnswers)+` times; past that, escalate.
-
-## Limits
-
-Pushing, opening PRs, and writing to GitHub or Jira stay with me, for you as for the agents. §foreman cleanup§ runs with §--dry-run§ unless I ask for the removal.
+- Merge finished branches one at a time, running the repo's build and tests after each.
+- §foreman cleanup§ runs with §--dry-run§ unless I ask for the removal.
 `, "§", "`")
 
-// orchestratorTools run without a permission prompt: they read, settle a question an agent waits
-// on in foreman ask, message an agent (foreman refuses to type into a blocked one), or clean up,
-// which never forces. dispatch stays off the list.
+// orchestratorTools run without a permission prompt: they read, pass my answer to an agent that
+// waits in foreman ask, message an agent (foreman refuses to type into a blocked one), or clean
+// up, which never forces. dispatch stays off the list.
 var orchestratorTools = []string{
 	"Bash(foreman --help)",
 	"Bash(foreman agents:*)",
@@ -69,7 +64,6 @@ var orchestratorTools = []string{
 	"Bash(foreman screen:*)",
 	"Bash(foreman wait:*)",
 	"Bash(foreman answer:*)",
-	"Bash(foreman escalate:*)",
 	"Bash(foreman reply:*)",
 	"Bash(foreman cleanup:*)",
 }
@@ -129,7 +123,7 @@ func runOrchestrator(argv []string) error {
 	if err := os.Chdir(orchestratorDir); err != nil {
 		return err
 	}
-	// Its commands answer and message agents as the orchestrator, under its limits.
+	// Its commands message agents as the orchestrator: foreman refuses to type into a blocked one.
 	return syscall.Exec(cmd[0], cmd, append(os.Environ(), roleEnv+"="+byOrchestrator))
 }
 

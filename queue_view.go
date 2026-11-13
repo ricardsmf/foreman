@@ -82,10 +82,8 @@ func itemLabel(it queueItem) (string, string) {
 		}
 	}
 	switch {
-	case it.Question != nil && it.Question.Escalated != "":
-		return fg(cRed, "●"), fg(cRed, "asks you")
 	case it.Question != nil:
-		return fg(cYellow, "●"), fg(cYellow, "asks the orchestrator")
+		return fg(cRed, "●"), fg(cRed, "asks you")
 	case it.Agent == "working":
 		return fg(cYellow, "●"), fg(cYellow, "working")
 	case it.Agent == "blocked" && it.Waits == "auth":

@@ -97,7 +97,7 @@ func (it queueItem) urgent() bool {
 	if it.Kind == prItem {
 		return it.Pr.Category == "Blocked"
 	}
-	return it.Agent == "blocked" || it.Agent == "error" || (it.Question != nil && it.Question.Escalated != "")
+	return it.Agent == "blocked" || it.Agent == "error" || it.Question != nil
 }
 
 // queuedPr is whether the PR waits on me: mine and blocked, or mine and approved (the board files
@@ -153,11 +153,10 @@ func queueItems(s State, sessions []rexSession, prs []Pr) []queueItem {
 		it.Shots += len(captures)
 		// Not the state itself: closing a finished agent's session shouldn't bring its report back.
 		it.Sig = fmt.Sprintf("%t %d", it.urgent(), it.When.Unix())
-		if q, ok := s.Questions[key]; ok && q.Answer == "" {
+		// A question a closed session left behind has nobody waiting on its answer.
+		if q, ok := s.Questions[key]; ok && q.Answer == "" && it.Agent != "" {
 			it.Question = &q
-			if q.Escalated != "" {
-				it.Sig += fmt.Sprintf(" q%d", q.At.Unix())
-			}
+			it.Sig += fmt.Sprintf(" q%d", q.At.Unix())
 		}
 		reviewed := s.Dismissed[key] == it.Sig
 		switch {
@@ -454,9 +453,6 @@ func itemDetail(it queueItem) []string {
 	var out []string
 	if q := it.Question; q != nil {
 		out = append(out, "# Waiting on an answer", "", q.Text, "")
-		if q.Escalated != "" {
-			out = append(out, "**The orchestrator suggests:** "+q.Escalated, "")
-		}
 		out = append(out, "`f` answers it.", "")
 	}
 	if it.Report != "" {

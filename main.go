@@ -701,7 +701,7 @@ const usage = `usage: foreman [PROJECT | JQL]   the board of tickets and PRs bes
        foreman open [--print]   go to the foreman Rex session, starting it when it isn't running
        foreman dispatch   start an agent on a task, a ticket or a PR
        foreman orchestrator [--new]   Claude Code that hands work to agents (^g on the board)
-       foreman agents | report | screen | reply | wait | cleanup | ask | answer | escalate
+       foreman agents | report | screen | reply | wait | cleanup | ask | answer
                           read and steer the agents from scripts
        foreman --logout   forget the Atlassian sign-in`
 
@@ -749,9 +749,7 @@ func run() error {
 		case "ask":
 			return runAsk(rest, os.Stdin, os.Stdout)
 		case "answer":
-			return runAnswer(rest, os.Stdin, os.Stdout, false)
-		case "escalate":
-			return runAnswer(rest, os.Stdin, os.Stdout, true)
+			return runAnswer(rest, os.Stdin, os.Stdout)
 		}
 	}
 	if len(argv) > 0 && argv[0] == "--logout" {

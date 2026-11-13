@@ -1634,12 +1634,8 @@ func TestWaitSaysWhy(t *testing.T) {
 		it := queueItem{Key: "FLD-3", Agent: "working", Question: &Question{Text: "Which repo?\nreports-app or api?"}}
 		out, code := stopped(it, noPane)
 		if code != waitAsked || out != "FLD-3 asked\nasked: Which repo?\n  reports-app or api?\n"+
-			"foreman answer FLD-3 TEXT answers it; foreman escalate FLD-3 NOTE hands it to me\n" {
+			"it waits on me in the queue; foreman answer FLD-3 TEXT passes my answer on\n" {
 			t.Errorf("exit %d:\n%s", code, out)
-		}
-		it.Question.Escalated = "reports-app"
-		if out, _ := stopped(it, noPane); !strings.HasSuffix(out, "\nit waits on me in the queue; escalated: reports-app\n") {
-			t.Errorf("escalated:\n%s", out)
 		}
 		// A question a closed session left behind isn't one it waits on.
 		it.Agent = ""
@@ -1927,19 +1923,14 @@ func TestAskerKey(t *testing.T) {
 func TestAskAnswered(t *testing.T) {
 	tempState(t)
 	dispatched(t, "FLD-1", "/w/app-fld-1")
-	notified := ""
-	notify := func(key, text string) error { notified = key + ": " + text; return nil }
 	sleep := func(time.Duration) {
-		if q := loadState().Questions["FLD-1"]; q.Escalated != "" {
-			t.Error("a question the orchestrator heard waits on me")
-		}
-		if err := answerQuestion("FLD-1", "Use the v2 endpoint", byOrchestrator); err != nil {
+		if err := answerQuestion("FLD-1", "Use the v2 endpoint", byMe); err != nil {
 			t.Error(err)
 		}
 	}
-	answer, err := ask("FLD-1", "Which endpoint?", time.Minute, time.Second, sleep, notify)
-	if err != nil || answer != "Use the v2 endpoint" || notified != "FLD-1: Which endpoint?" {
-		t.Fatalf("ask = %q, %v; notified %q", answer, err, notified)
+	answer, err := ask("FLD-1", "Which endpoint?", time.Minute, time.Second, sleep)
+	if err != nil || answer != "Use the v2 endpoint" {
+		t.Fatalf("ask = %q, %v", answer, err)
 	}
 	if _, ok := loadState().Questions["FLD-1"]; ok {
 		t.Error("the answered question is still pending")
@@ -1948,21 +1939,20 @@ func TestAskAnswered(t *testing.T) {
 	for _, e := range readLog("FLD-1") {
 		kinds = append(kinds, e.By+" "+e.Kind)
 	}
-	if !slices.Equal(kinds, []string{"agent question", "orchestrator answer"}) {
+	if !slices.Equal(kinds, []string{"agent question", "me answer"}) {
 		t.Errorf("log = %q", kinds)
 	}
 }
 
-// With no orchestrator to hear it, the question waits on me; unanswered, ask gives up and says so.
-func TestAskWithoutOrchestrator(t *testing.T) {
+// Unanswered, ask gives up and says so.
+func TestAskUnanswered(t *testing.T) {
 	tempState(t)
 	dispatched(t, "FLD-1", "/w/app-fld-1")
-	gone := func(string, string) error { return errors.New("it isn't running") }
-	var escalated string
-	sleep := func(time.Duration) { escalated = loadState().Questions["FLD-1"].Escalated }
-	_, err := ask("FLD-1", "Which endpoint?", 3*time.Second, time.Second, sleep, gone)
-	if err == nil || !strings.Contains(err.Error(), "stop to ask me") || !strings.Contains(escalated, "isn't running") {
-		t.Fatalf("err %v, escalated %q", err, escalated)
+	pending := false
+	sleep := func(time.Duration) { _, pending = loadState().Questions["FLD-1"] }
+	_, err := ask("FLD-1", "Which endpoint?", 3*time.Second, time.Second, sleep)
+	if err == nil || !strings.Contains(err.Error(), "stop to ask me") || !pending {
+		t.Fatalf("err %v, pending while it waited %t", err, pending)
 	}
 	if _, ok := loadState().Questions["FLD-1"]; ok {
 		t.Error("an expired question is still pending: later replies would answer nobody")
@@ -1977,53 +1967,31 @@ func TestAskWithdrawn(t *testing.T) {
 	tempState(t)
 	dispatched(t, "FLD-1", "/w/app-fld-1")
 	sleep := func(time.Duration) { markDispatched("FLD-1", "t", "/w/app-fld-1", "s2", agentPi, "") }
-	if _, err := ask("FLD-1", "?", time.Minute, time.Second, sleep, func(string, string) error { return nil }); err == nil || !strings.Contains(err.Error(), "withdrawn") {
+	if _, err := ask("FLD-1", "?", time.Minute, time.Second, sleep); err == nil || !strings.Contains(err.Error(), "withdrawn") {
 		t.Errorf("err = %v", err)
 	}
 }
 
-// The orchestrator answers or messages a dispatch a few times at most; I have no limit.
+// A question is answered once, and the orchestrator never types into a blocked agent.
 func TestOrchestratorLimits(t *testing.T) {
 	tempState(t)
 	dispatched(t, "FLD-1", "/w/app-fld-1")
-	pend := func() {
-		_, _ = updateState(func(s *State) { s.Questions["FLD-1"] = Question{Text: "?", At: time.Now()} })
-	}
-	for n := 0; n < maxOrchestratorAnswers; n++ {
-		pend()
-		if err := answerQuestion("FLD-1", "yes", byOrchestrator); err != nil {
-			t.Fatalf("answer %d: %v", n+1, err)
-		}
-	}
-	pend()
-	if err := answerQuestion("FLD-1", "yes", byOrchestrator); err == nil || !strings.Contains(err.Error(), "escalate") {
-		t.Errorf("past the limit: %v", err)
-	}
-	if err := replyAllowed(queueItem{Key: "FLD-1", Agent: "done"}, false, byOrchestrator); err == nil {
-		t.Error("the orchestrator messaged past the limit")
-	}
-	if err := answerQuestion("FLD-1", "yes", byMe); err != nil {
-		t.Errorf("my answer: %v", err)
+	_, _ = updateState(func(s *State) { s.Questions["FLD-1"] = Question{Text: "?", At: time.Now()} })
+	if err := answerQuestion("FLD-1", "yes", byOrchestrator); err != nil {
+		t.Errorf("passing my answer on: %v", err)
 	}
 	if err := answerQuestion("FLD-1", "again", byMe); err == nil {
 		t.Error("answered a question that was already answered")
 	}
-
-	tempState(t)
-	dispatched(t, "FLD-2", "/w/app-fld-2")
-	if err := replyAllowed(queueItem{Key: "FLD-2", Agent: "blocked"}, false, byOrchestrator); err == nil || !strings.Contains(err.Error(), "permission prompt") {
+	if err := replyAllowed(queueItem{Key: "FLD-1", Agent: "blocked"}, false, byOrchestrator); err == nil || !strings.Contains(err.Error(), "permission prompt") {
 		t.Errorf("the orchestrator typed into a blocked agent: %v", err)
 	}
-	if err := replyAllowed(queueItem{Key: "FLD-2", Agent: "blocked"}, false, byMe); err != nil {
+	if err := replyAllowed(queueItem{Key: "FLD-1", Agent: "blocked"}, false, byMe); err != nil {
 		t.Errorf("my reply to a blocked agent: %v", err)
-	}
-	if err := escalateQuestion("FLD-2", "use v2"); err == nil {
-		t.Error("escalated a question nobody asked")
 	}
 }
 
-// The queue lists an agent that asks the orchestrator as working, and one whose question came to me
-// with what needs me, until I mark it.
+// The queue lists an agent that asks with what needs me, until I mark it.
 func TestQueueShowsQuestions(t *testing.T) {
 	tempState(t)
 	dispatched(t, "FLD-1", "/w/app-fld-1")
@@ -2035,16 +2003,11 @@ func TestQueueShowsQuestions(t *testing.T) {
 	_ = appendLog("FLD-1", logEntry{At: at, By: byAgent, Kind: "question", Text: "Which endpoint?"})
 	sessions := []rexSession{{ID: "s1", Label: "fld-1", State: "working"}}
 	it := queueItems(loadState(), sessions, nil)[0]
-	if _, label := itemLabel(it); it.Group != working || !strings.Contains(label, "asks the orchestrator") {
-		t.Errorf("pending: group %d, label %q", it.Group, label)
-	}
-	_ = escalateQuestion("FLD-1", "use v2")
-	it = queueItems(loadState(), sessions, nil)[0]
 	if _, label := itemLabel(it); it.Group != needsYou || !strings.Contains(label, "asks you") {
-		t.Errorf("escalated: group %d, label %q", it.Group, label)
+		t.Errorf("asking: group %d, label %q", it.Group, label)
 	}
 	detail := strings.Join(itemDetail(it), "\n")
-	for _, want := range []string{"Which endpoint?", "suggests:** use v2", "**agent asks**: Which endpoint?"} {
+	for _, want := range []string{"Which endpoint?", "**agent asks**: Which endpoint?"} {
 		if !strings.Contains(detail, want) {
 			t.Errorf("detail lacks %q:\n%s", want, detail)
 		}
@@ -2067,11 +2030,11 @@ func TestAgentsAsk(t *testing.T) {
 	if at < 0 || cmd[at+1] != "Bash(foreman ask:*)" || add != at+2 {
 		t.Errorf("claude's args = %q", cmd)
 	}
-	if strings.Contains(orchestratorGuide, "§") || !strings.Contains(orchestratorGuide, "`foreman escalate KEY") {
+	if strings.Contains(orchestratorGuide, "§") || !strings.Contains(orchestratorGuide, "`foreman answer KEY`") {
 		t.Errorf("guide:\n%s", orchestratorGuide)
 	}
-	if !slices.Contains(orchestratorTools, "Bash(foreman answer:*)") || !slices.Contains(orchestratorTools, "Bash(foreman escalate:*)") {
-		t.Errorf("the orchestrator would ask before answering: %q", orchestratorTools)
+	if !slices.Contains(orchestratorTools, "Bash(foreman answer:*)") {
+		t.Errorf("the orchestrator would ask before passing my answer on: %q", orchestratorTools)
 	}
 }
 
@@ -2428,7 +2391,7 @@ func TestQueueFoldKeys(t *testing.T) {
 func TestItemRecords(t *testing.T) {
 	got := itemRecords([]queueItem{
 		{Key: "FLD-1", Title: "One", Group: needsYou, Agent: "blocked"},
-		{Key: "task:repo-2", Group: needsYou, Agent: "working", Question: &Question{Text: "Which\none?", Escalated: "the first"}},
+		{Key: "task:repo-2", Group: needsYou, Agent: "working", Question: &Question{Text: "Which\none?"}},
 		{Key: "repo#9", Group: toReview, Kind: prItem, Pr: &Pr{Status: "approved", Category: "Done"}},
 		{Key: "FLD-4", Group: toReview, Agent: "idle"},
 		{Key: "FLD-5", Group: working, Agent: "working"},

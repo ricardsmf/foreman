@@ -30,9 +30,8 @@ const commandsUsage = `usage: foreman agents [--json] [--prs]   every dispatched
                                           to an agent waiting in foreman ask, TEXT is the answer.
                                           --seen TOKEN: refuse unless the pane still shows what screen or
                                           agents --json printed TOKEN for; answer what you read with it
-       foreman ask [--timeout D] TEXT|-   from an agent: put a question to the orchestrator and print the answer
+       foreman ask [--timeout D] TEXT|-   from an agent: put a question to me in the queue and print the answer
        foreman answer KEY TEXT|-          answer the question KEY waits on
-       foreman escalate KEY NOTE|-        hand KEY's question to me in the queue, with a suggestion
        foreman wait [--timeout D] KEY     block until the agent stops working or asks (default 30m); print
                                           KEY and its state, then why it stopped, by exit code:
                                           0 done (idle, done, closed): the report's first line
@@ -187,10 +186,8 @@ func writeAgents(out io.Writer, infos []agentInfo) error {
 		switch {
 		case a.Kind == "pr":
 			state = a.Status
-		case a.Question != nil && a.Question.Escalated != "":
-			state = "asks you"
 		case a.Question != nil:
-			state = "asks the orchestrator"
+			state = "asks you"
 		}
 		note := ""
 		if a.Report != "" {
@@ -394,8 +391,7 @@ func runReply(argv []string, stdin io.Reader, out io.Writer) error {
 
 // replyAllowed refuses a reply to a closed session, and to a working agent unless now: pi and
 // Claude Code each handle text typed mid-turn their own way. The orchestrator never types into a
-// blocked agent, which is how one waiting on a permission prompt shows, and sends a dispatch at
-// most maxOrchestratorAnswers messages.
+// blocked agent, which is how one waiting on a permission prompt shows.
 func replyAllowed(it queueItem, now bool, by string) error {
 	switch {
 	case it.Agent == "":
@@ -404,8 +400,6 @@ func replyAllowed(it queueItem, now bool, by string) error {
 		return fmt.Errorf("%s is blocked: it %s in its pane, which only I answer; tell me what it asks", it.Key, waitsFor(it.Waits))
 	case by == byOrchestrator && it.Agent == "blocked":
 		return fmt.Errorf("%s is blocked, likely on a permission prompt, which only I answer; tell me what it asks", it.Key)
-	case by == byOrchestrator && orchestratorSent(it.Key) >= maxOrchestratorAnswers:
-		return fmt.Errorf("you've sent %s %d messages already; bring the rest to me", it.Key, maxOrchestratorAnswers)
 	case it.Agent == "working" && !now:
 		return fmt.Errorf("%s is working; foreman wait %s, then reply, or pass --now", it.Key, it.Key)
 	}
@@ -463,11 +457,7 @@ func writeStopped(out io.Writer, it queueItem, capture func(queueItem) (string, 
 		q := it.Question
 		fmt.Fprintf(out, "%s asked\n", it.Key)
 		fmt.Fprintln(out, "asked: "+strings.ReplaceAll(strings.TrimSpace(q.Text), "\n", "\n  "))
-		if q.Escalated != "" {
-			fmt.Fprintf(out, "it waits on me in the queue; escalated: %s\n", q.Escalated)
-		} else {
-			fmt.Fprintf(out, "foreman answer %s TEXT answers it; foreman escalate %s NOTE hands it to me\n", it.Key, it.Key)
-		}
+		fmt.Fprintf(out, "it waits on me in the queue; foreman answer %s TEXT passes my answer on\n", it.Key)
 		return waitAsked
 	case it.Agent == "blocked" || it.Agent == "error":
 		fmt.Fprintf(out, "%s %s\n", it.Key, it.Agent)

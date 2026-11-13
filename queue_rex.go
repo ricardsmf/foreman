@@ -69,7 +69,7 @@ func itemRecords(items []queueItem) map[string]string {
 			if it.urgent() {
 				state = "blocked"
 			}
-		case it.Question != nil && it.Question.Escalated != "":
+		case it.Question != nil:
 			state, kind, msg = "blocked", "question", "asks: "+it.Question.Text
 		case it.Agent == "blocked":
 			state, kind, msg = "blocked", cmp.Or(it.Waits, "permission"), cmp.Or(it.Doing, waitsFor(it.Waits))

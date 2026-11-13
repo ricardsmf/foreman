@@ -1,13 +1,11 @@
 package main
 
 // Questions from agents. Before an agent stops to ask me something, it runs `foreman ask`, which
-// puts the question to the orchestrator and waits for the answer inside the agent's own command:
-// nothing is typed into a pane mid-turn. The orchestrator answers what I've already settled and
-// escalates the rest, which the queue then shows as needing me.
+// puts the question in the queue, under what needs me, and waits for the answer inside the agent's
+// own command: nothing is typed into a pane mid-turn.
 
 import (
 	"bufio"
-	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,13 +18,10 @@ import (
 
 // A Question is one an agent is waiting on in `foreman ask`.
 type Question struct {
-	Text string    `json:"text"`
-	At   time.Time `json:"at"`
-	// Escalated is set when the question waits on me: the orchestrator's suggestion, or why it
-	// never reached the orchestrator.
-	Escalated string `json:"escalated,omitempty"`
-	Answer    string `json:"answer,omitempty"`
-	By        string `json:"by,omitempty"` // orchestrator or me
+	Text   string    `json:"text"`
+	At     time.Time `json:"at"`
+	Answer string    `json:"answer,omitempty"`
+	By     string    `json:"by,omitempty"` // me, or the orchestrator passing my answer on
 }
 
 const (
@@ -35,9 +30,6 @@ const (
 	byMe           = "me"
 	// roleEnv tells foreman, in the orchestrator's commands, who is answering.
 	roleEnv = "FOREMAN_ROLE"
-	// maxOrchestratorAnswers bounds how much of a dispatch the orchestrator decides for me; past
-	// it, the agent's questions come to me.
-	maxOrchestratorAnswers = 3
 	// askWait stays under the 10 minutes an agent's shell command may run.
 	askWait = 8 * time.Minute
 )
@@ -49,16 +41,16 @@ func role() string {
 	return byMe
 }
 
-// A logEntry is one line of a dispatch's conversation with the orchestrator and me, kept beside its
-// report: a new dispatch empties it, a cleanup removes it.
+// A logEntry is one line of a dispatch's questions and what the orchestrator sent it, kept beside
+// its report: a new dispatch empties it, a cleanup removes it.
 type logEntry struct {
 	At   time.Time `json:"at"`
 	By   string    `json:"by"`   // agent, orchestrator, me
-	Kind string    `json:"kind"` // question, answer, escalation, reply, expired
+	Kind string    `json:"kind"` // question, answer, reply, expired
 	Text string    `json:"text"`
 }
 
-func logFile(key string) string { return filepath.Join(evidenceDir(key), "orchestrator.jsonl") }
+func logFile(key string) string { return filepath.Join(evidenceDir(key), "questions.jsonl") }
 
 func appendLog(key string, e logEntry) error {
 	if e.At.IsZero() {
@@ -93,17 +85,6 @@ func readLog(key string) []logEntry {
 		}
 	}
 	return out
-}
-
-// orchestratorSent counts what the orchestrator answered or typed to the dispatch.
-func orchestratorSent(key string) int {
-	n := 0
-	for _, e := range readLog(key) {
-		if e.By == byOrchestrator && (e.Kind == "answer" || e.Kind == "reply") {
-			n++
-		}
-	}
-	return n
 }
 
 // askerKey is the dispatch asking: the one whose recorded session is session, else the one whose
@@ -151,7 +132,7 @@ func runAsk(argv []string, stdin io.Reader, out io.Writer) error {
 			return err
 		}
 	}
-	answer, err := ask(*key, text, *wait, time.Second, time.Sleep, notifyOrchestrator)
+	answer, err := ask(*key, text, *wait, time.Second, time.Sleep)
 	if err != nil {
 		return err
 	}
@@ -159,13 +140,10 @@ func runAsk(argv []string, stdin io.Reader, out io.Writer) error {
 	return nil
 }
 
-// ask records the question, puts it to the orchestrator, and polls until it is answered, or wait
-// runs out. Without an orchestrator to hear it, it waits on me in the queue.
-func ask(key, text string, wait, poll time.Duration, sleep func(time.Duration), notify func(key, text string) error) (string, error) {
+// ask records the question, which the queue shows as needing me, and polls until it is answered,
+// or wait runs out.
+func ask(key, text string, wait, poll time.Duration, sleep func(time.Duration)) (string, error) {
 	q := Question{Text: text, At: time.Now()}
-	if err := notify(key, text); err != nil {
-		q.Escalated = "The orchestrator didn't get it: " + firstLine(err.Error())
-	}
 	if _, err := updateState(func(s *State) { s.Questions[key] = q }); err != nil {
 		return "", err
 	}
@@ -192,30 +170,11 @@ func clearQuestion(s *State, key string, at time.Time) {
 	}
 }
 
-// notifyOrchestrator types the question into the orchestrator's pane, as one line. Claude Code
-// queues it while the orchestrator works.
-func notifyOrchestrator(key, text string) error {
-	sessions, err := agentSessions()
-	if err != nil {
-		return err
-	}
-	o, ok := findOrchestrator(sessions, loadState().Orchestrator)
-	if !ok {
-		return errors.New("it isn't running")
-	}
-	line := strings.Join(strings.Fields(text), " ")
-	return sendToAgent(o.ID, o.Block, fmt.Sprintf("[foreman ask] %s asks: %s (it waits for foreman answer %s or foreman escalate %s)", key, line, key, key))
-}
-
-// answerQuestion answers the dispatch's pending question. The orchestrator gets
-// maxOrchestratorAnswers per dispatch; past them, the question is mine.
+// answerQuestion answers the dispatch's pending question.
 func answerQuestion(key, text, by string) error {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return errors.New("nothing to answer with")
-	}
-	if by == byOrchestrator && orchestratorSent(key) >= maxOrchestratorAnswers {
-		return fmt.Errorf("you've answered %s %d times already; escalate it to me", key, maxOrchestratorAnswers)
 	}
 	found := false
 	if _, err := updateState(func(s *State) {
@@ -235,27 +194,6 @@ func answerQuestion(key, text, by string) error {
 	return appendLog(key, logEntry{By: by, Kind: "answer", Text: text})
 }
 
-// escalateQuestion hands the dispatch's pending question to me, with the orchestrator's suggestion.
-func escalateQuestion(key, note string) error {
-	note = cmp.Or(strings.TrimSpace(note), "no suggestion")
-	found := false
-	if _, err := updateState(func(s *State) {
-		q, ok := s.Questions[key]
-		if !ok || q.Answer != "" {
-			return
-		}
-		found = true
-		q.Escalated = note
-		s.Questions[key] = q
-	}); err != nil {
-		return err
-	}
-	if !found {
-		return fmt.Errorf("%s has no question waiting", key)
-	}
-	return appendLog(key, logEntry{By: role(), Kind: "escalation", Text: note})
-}
-
 // resolveKey is the dispatched key, in any case.
 func resolveKey(s State, key string) (string, error) {
 	for k := range s.Dispatched {
@@ -266,17 +204,13 @@ func resolveKey(s State, key string) (string, error) {
 	return "", fmt.Errorf("no dispatched agent %q; foreman agents lists them", key)
 }
 
-func runAnswer(argv []string, stdin io.Reader, out io.Writer, escalate bool) error {
-	name := "answer"
-	if escalate {
-		name = "escalate"
-	}
-	fs := newFlags(name)
+func runAnswer(argv []string, stdin io.Reader, out io.Writer) error {
+	fs := newFlags("answer")
 	if err := fs.Parse(argv); err != nil {
 		return usageError(err)
 	}
-	if fs.NArg() < 1 || (!escalate && fs.NArg() < 2) {
-		return usageError(fmt.Errorf("%s takes KEY and TEXT", name))
+	if fs.NArg() < 2 {
+		return usageError(errors.New("answer takes KEY and TEXT"))
 	}
 	text := strings.Join(fs.Args()[1:], " ")
 	if text == "-" {
@@ -290,13 +224,6 @@ func runAnswer(argv []string, stdin io.Reader, out io.Writer, escalate bool) err
 	if err != nil {
 		return err
 	}
-	if escalate {
-		if err := escalateQuestion(key, text); err != nil {
-			return err
-		}
-		fmt.Fprintln(out, "✓ "+key+"'s question waits on you in the queue")
-		return nil
-	}
 	if err := answerQuestion(key, text, role()); err != nil {
 		return err
 	}
@@ -309,7 +236,7 @@ func logLines(entries []logEntry) []string {
 	if len(entries) == 0 {
 		return nil
 	}
-	verbs := map[string]string{"question": "asks", "answer": "answers", "escalation": "hands it to you", "reply": "sends", "expired": "gave up"}
+	verbs := map[string]string{"question": "asks", "answer": "answers", "reply": "sends", "expired": "gave up"}
 	out := []string{"## Questions", ""}
 	for _, e := range entries {
 		line := fmt.Sprintf("- %s **%s %s**", e.At.Local().Format("15:04"), e.By, verbs[e.Kind])
