@@ -203,7 +203,7 @@ func pollWatcher(w Watcher, sessions []rexSession, recorded string) ([]string, e
 	if err != nil {
 		return nil, err
 	}
-	changed, err := wakeIfChanged(w.Name, now, func() error { return sendToAgent(s.ID, s.Block, w.Prompt) })
+	changed, err := wakeIfChanged(w.Name, now, func() error { return wakeWatcher(s, w) })
 	if err == nil && w.Marker != "" {
 		var unreviewed []string
 		if len(changed) == 0 {
@@ -212,6 +212,17 @@ func pollWatcher(w Watcher, sessions []rexSession, recorded string) ([]string, e
 		recordUnreviewed(w.Name, unreviewed)
 	}
 	return changed, err
+}
+
+// wakeWatcher starts a pass in the watcher's pane, on an empty conversation: a pass reads
+// everything it needs from GitHub, and the PRs of the passes before would be paid for again on
+// every request of this one, and leave their authors' text in front of the model.
+func wakeWatcher(s rexSession, w Watcher) error {
+	if err := sendToAgent(s.ID, s.Block, "/clear"); err != nil {
+		return err
+	}
+	time.Sleep(sendSettle)
+	return sendToAgent(s.ID, s.Block, w.Prompt)
 }
 
 // recordUnreviewed keeps, for the queue, the PRs a watcher at rest still owes a review: the poll

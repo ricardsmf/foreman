@@ -253,6 +253,21 @@ func TestWakeIfChanged(t *testing.T) {
 	}
 }
 
+// A wake clears the watcher's conversation, then types its prompt.
+func TestWakeWatcherClearsFirst(t *testing.T) {
+	f := useFakeRex(t)
+	if err := wakeWatcher(rexSession{ID: "s1", Block: "b1"}, Watcher{Name: "w", Prompt: "/fld-watch"}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"send s1 b1 /clear", "press s1 b1 enter", "send s1 b1 /fld-watch", "press s1 b1 enter"}
+	if !slices.Equal(f.calls, want) {
+		t.Errorf("calls %q", f.calls)
+	}
+	if err := wakeWatcher(rexSession{ID: "s1"}, Watcher{Name: "w", Prompt: "/fld-watch"}); err == nil {
+		t.Error("a watcher with no pane was woken")
+	}
+}
+
 // A busy watcher, or one not running, isn't typed into: pollWatcher returns before it reads GitHub.
 func TestPollWatcherLeavesABusyWatcher(t *testing.T) {
 	w := Watcher{Name: "fld-pr-watch", Dir: "/nonexistent/watch", Prompt: "/fld-watch", PRs: []string{"is:open"}}

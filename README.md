@@ -389,7 +389,9 @@ PRs that request my review and posts the result under my account.
 ### Waking a watcher
 
 A watcher with `prs` (GitHub searches) costs no model turn while nothing happens: the board polls
-its PRs and types its prompt into its pane, once, only when one of them changed.
+its PRs and types its prompt into its pane, once, only when one of them changed. It types `/clear`
+first, so each pass starts on an empty conversation: what you asked the watcher after its last
+pass is gone at the next wake, and it reads a PR's state from GitHub again when you ask.
 
 - The board polls when it starts and then every 2 minutes, with one `gh api graphql` request per
   search, scoped to the repo the checkout's `origin` points at. `fld-pr-watch`'s are the two
