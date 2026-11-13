@@ -58,6 +58,10 @@ type queueItem struct {
 	Watcher bool
 	// Polled marks a watcher the board wakes when its PRs change, rather than one that loops.
 	Polled bool
+	// Reviews marks a polled watcher the board wakes only for the PRs due a review.
+	Reviews bool
+	// Unreviewed are the PRs such a watcher was woken for and didn't review.
+	Unreviewed []string
 	// Orchestrator marks the orchestrator's session.
 	Orchestrator bool
 	// Question is the one the agent waits on in foreman ask.
@@ -235,7 +239,7 @@ func queueItems(s State, sessions []rexSession, prs []Pr) []queueItem {
 		items = append(items, it)
 	}
 	for _, w := range watchers {
-		items = append(items, watcherItem(w, sessions, s.WatcherSessions[w.Name]))
+		items = append(items, watcherItem(w, sessions, s.WatcherSessions[w.Name], s.WatcherUnreviewed[w.Name]))
 	}
 	if it, ok := orchestratorItem(sessions, s.Orchestrator); ok {
 		items = append(items, it)

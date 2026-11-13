@@ -375,10 +375,12 @@ PRs that request my review and posts the result under my account.
 - It runs `claude --permission-mode manual --settings '{"disableAutoMode":"disable"}' <prompt>`:
   only the commands its checkout's `.claude/settings.local.json` allows run unasked, and no prompt
   or `shift+tab` can switch it to auto mode. The skill's own file lists the allowed commands.
-  Starting it runs one pass.
+  Starting it runs one pass, unless it has a `marker` and no PR is due a review: then it starts
+  at its prompt and waits for the first wake.
 - The queue always lists it: with **needs you** when it waits on a permission prompt or failed (a
   pass stalls until you answer), else **working**, **idle** while it waits for a PR to change (or
-  between passes, for one that loops), or **closed** when it isn't running, where `enter` starts
+  between passes, for one that loops; in yellow, `didn't review #12` for the PRs a watcher with
+  a `marker` was woken for and left unreviewed), or **closed** when it isn't running, where `enter` starts
   it. `K` twice stops it.
 - Its checkout is a worktree nobody works in, detached at `origin/develop`. The skills run from
   it, so move it forward when they change: `git -C <dir> fetch origin develop && git -C <dir>
@@ -410,6 +412,18 @@ its PRs and types its prompt into its pane, once, only when one of them changed.
   poll compares against the last wake, not the last poll.
 - Two foremans open at once wake a watcher once per change: each wake is recorded under the state
   lock before the prompt is typed. A wake that fails puts the old signatures back for the next poll.
+- A watcher with a `marker` is woken only for the PRs due a review, by the rules `/fld-watch`
+  applies in its own pass, so no wake ends in "nothing to review". The marker is what its reviews
+  carry before the commit they reviewed: `fld-review:sha=` for `<!-- fld-review:sha=<sha> -->`.
+  A PR is due when it asks for your review and has no marked review of yours, or when its head
+  moved on from the commit in your last marked review and your latest review isn't an approval.
+  Its signature is that head and the commit reviewed before, and only due PRs have one: a
+  comment, a failing check or a conflict wakes nothing, nor does a new commit on a PR you
+  approved or reviewed by hand.
+- Such a watcher is woken once per PR and head. A PR still due when it rests again (the review
+  failed, the pass was interrupted, or more PRs were due than a pass takes) shows on its queue
+  row as `didn't review #n`, from `watcherUnreviewed` in `state.json`. The next wake, for another
+  PR, runs a pass that takes it too; so does stopping the watcher (`K` twice) and starting it.
 - A watcher without `prs` gets its prompt only at start, so it must keep itself going with
   `/loop 10m …`, as watchers did before the poll. A watcher with `prs` can't have a `/loop` prompt:
   each wake would start another schedule.
@@ -443,18 +457,19 @@ reports, evidence and the agent's Rex session go.
     "name": "fld-pr-watch",
     "dir": "~/work/code/reports-app-watch",
     "prompt": "/fld-watch",
-    "prs": ["user-review-requested:@me is:open draft:false base:develop", "reviewed-by:@me is:open draft:false base:develop"]
+    "prs": ["user-review-requested:@me is:open draft:false base:develop", "reviewed-by:@me is:open draft:false base:develop"],
+    "marker": "fld-review:sha="
   }]
 }
 ```
 
-`"watchers": []` turns them off. A watcher's `prs` is optional; see [Waking a
-watcher](#waking-a-watcher).
+`"watchers": []` turns them off. A watcher's `prs` is optional, and its `marker` needs them; see
+[Waking a watcher](#waking-a-watcher).
 
 ## State
 
 - State (repo per project, last agent per repo, dispatched tickets, PRs and tasks with their sessions and titles, each session's agent pane, the last task number per repo, queue items
-  marked reviewed, each watcher's PR signatures at its last wake) is in
+  marked reviewed, each watcher's PR signatures at its last wake and the PRs it left unreviewed) is in
   `~/.local/state/foreman/state.json`, written atomically. foreman and its commands (`dispatch`, `ask`, `answer`…) all write it,
   so each write holds `state.json.lock`, and foreman re-reads it every few seconds. An unreadable
   file is moved to `state.json.corrupt` rather than overwritten.

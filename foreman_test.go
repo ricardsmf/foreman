@@ -1266,10 +1266,14 @@ func TestQueueListsWatchers(t *testing.T) {
 // The watcher runs Claude Code in manual mode with auto mode turned off, so no prompt can hand
 // it to the classifier, whatever my settings default to.
 func TestWatcherCommand(t *testing.T) {
-	cmd := watcherCommand(Watcher{Name: "w", Dir: "/r/watch", Prompt: "/loop 10m /fld-watch"})
+	w := Watcher{Name: "w", Dir: "/r/watch", Prompt: "/loop 10m /fld-watch"}
 	want := []string{"--permission-mode", "manual", "--settings", `{"disableAutoMode":"disable"}`, "/loop 10m /fld-watch"}
-	if !slices.Equal(cmd[1:], want) {
+	if cmd := watcherCommand(w, true); !slices.Equal(cmd[1:], want) {
 		t.Errorf("command: %q", cmd[1:])
+	}
+	// Started with nothing to review, it waits at its prompt for the first wake.
+	if cmd := watcherCommand(w, false); !slices.Equal(cmd[1:], want[:4]) {
+		t.Errorf("command without a pass: %q", cmd[1:])
 	}
 }
 
@@ -2097,7 +2101,7 @@ func TestFindWatcherAfterARename(t *testing.T) {
 			t.Errorf("took %+v for the watcher", other)
 		}
 	}
-	if it := watcherItem(w, []rexSession{renamed}, ""); it.Group != idle || it.Session != "s1" {
+	if it := watcherItem(w, []rexSession{renamed}, "", nil); it.Group != idle || it.Session != "s1" {
 		t.Errorf("queue row: %+v", it)
 	}
 	o := rexSession{ID: "o1", Label: "renamed", Procs: []rexProc{{Cmd: "claude", Dir: orchestratorDir}}}

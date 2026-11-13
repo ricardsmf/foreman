@@ -64,6 +64,9 @@ func loadConfig() error {
 			if len(w.PRs) > 0 && strings.HasPrefix(strings.TrimSpace(w.Prompt), "/loop ") {
 				return fmt.Errorf("%s: watcher %s has prs, so the board wakes it: its prompt runs once per wake and can't be a /loop", tilde(configFile), w.Name)
 			}
+			if w.Marker != "" && len(w.PRs) == 0 {
+				return fmt.Errorf("%s: watcher %s has a marker and no prs: the marker says which of its prs are due a review", tilde(configFile), w.Name)
+			}
 			if rest, ok := strings.CutPrefix(w.Dir, "~/"); ok {
 				w.Dir = filepath.Join(home, rest)
 			}

@@ -77,6 +77,9 @@ func itemLabel(it queueItem) (string, string) {
 		if it.Polled {
 			what = "waits for a PR to change"
 		}
+		if it.Reviews {
+			what = "nothing to review"
+		}
 		if it.Agent == "" {
 			what = "not running, enter starts it"
 		}
@@ -96,6 +99,8 @@ func itemLabel(it queueItem) (string, string) {
 		return fg(cGreen, "✓"), fg(cGreen, what) + fg(cOverlay, " (closed)")
 	case it.Group == toReview:
 		return fg(cGreen, "✓"), fg(cGreen, what)
+	case it.Group == idle && len(it.Unreviewed) > 0:
+		return fg(cYellow, "○"), fg(cYellow, "didn't review "+prNumbers(it.Unreviewed))
 	case it.Group == idle:
 		return fg(cGreen, "○"), fg(cOverlay, what)
 	}
@@ -251,4 +256,13 @@ func (q *queueModel) render(width, h int) []string {
 	shown := window(detail, &q.scroll, detailRows)
 	out = append(out, divider(width, q.scroll, detailRows, len(detail)))
 	return append(append(out, shown...), footer...)
+}
+
+// prNumbers lists PRs given as `owner/name#n` by number alone: `#12, #15`.
+func prNumbers(keys []string) string {
+	out := make([]string, len(keys))
+	for i, k := range keys {
+		out[i] = k[strings.LastIndex(k, "#"):]
+	}
+	return strings.Join(out, ", ")
 }
