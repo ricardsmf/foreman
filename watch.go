@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -46,23 +47,68 @@ var watchers = []Watcher{{
 
 // watcherCommand runs Claude Code in manualMode: the session reads text other people wrote, so
 // only what its checkout's allowlist names may run unasked, and no prompt can switch it to auto
-// mode. It gets no --mcp-config: it needs none of those servers. With pass it starts on the
-// watcher's prompt; without, it waits at its own prompt for the poll to wake it.
-func watcherCommand(w Watcher, pass bool) []string {
+// mode. It gets no --mcp-config: it needs none of those servers. With a prompt it starts a pass;
+// without, it waits at its own prompt for the poll to wake it.
+func watcherCommand(prompt string) []string {
 	cmd := append([]string{which("claude")}, manualMode...)
-	if pass {
-		cmd = append(cmd, w.Prompt)
+	if prompt != "" {
+		cmd = append(cmd, prompt)
 	}
 	return cmd
 }
 
-// startWatcher starts the watcher in a background Rex session named after it, running a pass or
-// waiting for its first wake, and returns the session's ID.
-func startWatcher(w Watcher, pass bool) (string, error) {
+// watcherRules keep a pass's tool calls inside its checkout's allowlist. A permission rule matches
+// one plain command, so a loop, a variable or a chain of commands asks even when each part is
+// allowed. Rex's startup hook, run again by each /clear, asks the session to rename itself.
+const watcherRules = "Each Bash call is one command the skill names, with its values written out: no loop, variable, `;`, `&&`, `|`, redirect, `cd` or `echo`, since anything the allowlist doesn't match waits for me to approve it. Read, search and list files with Read, Grep and Glob. Run nothing the skill doesn't name, and leave the Rex session's name as it is."
+
+// passPrompt starts a pass: the watcher's prompt, then watcherRules, then for a watcher with a
+// marker the PRs due, by `owner/name#n` with their dueSignature, which the pass then needn't
+// look up with commands of its own.
+func passPrompt(w Watcher, due map[string]string) string {
+	prompt := w.Prompt + " " + watcherRules
+	if w.Marker == "" || len(due) == 0 {
+		return prompt
+	}
+	type pr struct {
+		n                int
+		head, since, how string
+	}
+	var prs []pr
+	for key, sig := range due {
+		var p pr
+		_, num, _ := strings.Cut(key, "#")
+		p.n, _ = strconv.Atoi(num)
+		for f := range strings.FieldsSeq(sig) {
+			k, v, _ := strings.Cut(f, "=")
+			switch k {
+			case "head":
+				p.head = v
+			case "since":
+				p.since = v
+			}
+		}
+		p.how = "whole PR"
+		if p.since != "none" {
+			p.how = "new commits since " + p.since
+		}
+		prs = append(prs, p)
+	}
+	slices.SortFunc(prs, func(a, b pr) int { return a.n - b.n })
+	var list []string
+	for _, p := range prs {
+		list = append(list, fmt.Sprintf("#%d at %s (%s)", p.n, p.head, p.how))
+	}
+	return prompt + " The board already found the PRs due a review, so skip step 1's commands and take these: " + strings.Join(list, ", ") + "."
+}
+
+// startWatcher starts the watcher in a background Rex session named after it, running a pass on
+// prompt or, with none, waiting for its first wake, and returns the session's ID.
+func startWatcher(w Watcher, prompt string) (string, error) {
 	if !exists(w.Dir) {
 		return "", fmt.Errorf("%s: its checkout %s doesn't exist", w.Name, tilde(w.Dir))
 	}
-	id, _, err := newSession(w.Name, w.Dir, agentClaude, watcherCommand(w, pass))
+	id, _, err := newSession(w.Name, w.Dir, agentClaude, watcherCommand(prompt))
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", w.Name, err)
 	}
@@ -111,7 +157,11 @@ func startWatchers() (started []string, err error) {
 			baseline, e = prSignatures(w)
 			pass = w.Marker == "" || e != nil || len(baseline) > 0
 		}
-		id, e := startWatcher(w, pass)
+		prompt := ""
+		if pass {
+			prompt = passPrompt(w, baseline)
+		}
+		id, e := startWatcher(w, prompt)
 		if e != nil {
 			failed = append(failed, e.Error())
 			continue
@@ -203,7 +253,7 @@ func pollWatcher(w Watcher, sessions []rexSession, recorded string) ([]string, e
 	if err != nil {
 		return nil, err
 	}
-	changed, err := wakeIfChanged(w.Name, now, func() error { return wakeWatcher(s, w) })
+	changed, err := wakeIfChanged(w.Name, now, func() error { return wakeWatcher(s, passPrompt(w, now)) })
 	if err == nil && w.Marker != "" {
 		var unreviewed []string
 		if len(changed) == 0 {
@@ -217,12 +267,12 @@ func pollWatcher(w Watcher, sessions []rexSession, recorded string) ([]string, e
 // wakeWatcher starts a pass in the watcher's pane, on an empty conversation: a pass reads
 // everything it needs from GitHub, and the PRs of the passes before would be paid for again on
 // every request of this one, and leave their authors' text in front of the model.
-func wakeWatcher(s rexSession, w Watcher) error {
+func wakeWatcher(s rexSession, prompt string) error {
 	if err := sendToAgent(s.ID, s.Block, "/clear"); err != nil {
 		return err
 	}
 	time.Sleep(sendSettle)
-	return sendToAgent(s.ID, s.Block, w.Prompt)
+	return sendToAgent(s.ID, s.Block, prompt)
 }
 
 // recordUnreviewed keeps, for the queue, the PRs a watcher at rest still owes a review: the poll

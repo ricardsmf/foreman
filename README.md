@@ -377,6 +377,12 @@ PRs that request my review and posts the result under my account.
   or `shift+tab` can switch it to auto mode. The skill's own file lists the allowed commands.
   Starting it runs one pass, unless it has a `marker` and no PR is due a review: then it starts
   at its prompt and waits for the first wake.
+- Every pass's prompt is the watcher's `prompt` followed by rules that keep its tool calls inside
+  that allowlist: one plain command per Bash call (a loop, a variable or `;` asks even when each
+  part is allowed), files read with Read, Grep and Glob, nothing the skill doesn't name, and the
+  Rex session left under its name (Rex's startup hook, run again by each `/clear`, asks for a
+  rename). A watcher with a `marker` also gets the PRs due, each with its head and the commit
+  reviewed before, so the pass skips the commands that would find them.
 - The queue always lists it: with **needs you** when it waits on a permission prompt or failed (a
   pass stalls until you answer), else **working**, **idle** while it waits for a PR to change (or
   between passes, for one that loops; in yellow, `didn't review #12` for the PRs a watcher with

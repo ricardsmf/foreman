@@ -1266,13 +1266,12 @@ func TestQueueListsWatchers(t *testing.T) {
 // The watcher runs Claude Code in manual mode with auto mode turned off, so no prompt can hand
 // it to the classifier, whatever my settings default to.
 func TestWatcherCommand(t *testing.T) {
-	w := Watcher{Name: "w", Dir: "/r/watch", Prompt: "/loop 10m /fld-watch"}
 	want := []string{"--permission-mode", "manual", "--settings", `{"disableAutoMode":"disable"}`, "/loop 10m /fld-watch"}
-	if cmd := watcherCommand(w, true); !slices.Equal(cmd[1:], want) {
+	if cmd := watcherCommand("/loop 10m /fld-watch"); !slices.Equal(cmd[1:], want) {
 		t.Errorf("command: %q", cmd[1:])
 	}
 	// Started with nothing to review, it waits at its prompt for the first wake.
-	if cmd := watcherCommand(w, false); !slices.Equal(cmd[1:], want[:4]) {
+	if cmd := watcherCommand(""); !slices.Equal(cmd[1:], want[:4]) {
 		t.Errorf("command without a pass: %q", cmd[1:])
 	}
 }

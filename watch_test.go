@@ -256,15 +256,34 @@ func TestWakeIfChanged(t *testing.T) {
 // A wake clears the watcher's conversation, then types its prompt.
 func TestWakeWatcherClearsFirst(t *testing.T) {
 	f := useFakeRex(t)
-	if err := wakeWatcher(rexSession{ID: "s1", Block: "b1"}, Watcher{Name: "w", Prompt: "/fld-watch"}); err != nil {
+	if err := wakeWatcher(rexSession{ID: "s1", Block: "b1"}, "/fld-watch"); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{"send s1 b1 /clear", "press s1 b1 enter", "send s1 b1 /fld-watch", "press s1 b1 enter"}
 	if !slices.Equal(f.calls, want) {
 		t.Errorf("calls %q", f.calls)
 	}
-	if err := wakeWatcher(rexSession{ID: "s1"}, Watcher{Name: "w", Prompt: "/fld-watch"}); err == nil {
+	if err := wakeWatcher(rexSession{ID: "s1"}, "/fld-watch"); err == nil {
 		t.Error("a watcher with no pane was woken")
+	}
+}
+
+// A pass's prompt carries the rules for staying inside the allowlist, and a marked watcher's the
+// PRs due, in number order, so the pass needn't look them up with commands of its own.
+func TestPassPrompt(t *testing.T) {
+	w := Watcher{Name: "w", Prompt: "Run a pass."}
+	if got := passPrompt(w, map[string]string{"org/app#12": "head=abc failing= merge=ok comment=none"}); got != "Run a pass. "+watcherRules {
+		t.Errorf("unmarked: %q", got)
+	}
+	w.Marker = "m="
+	if got := passPrompt(w, nil); got != "Run a pass. "+watcherRules {
+		t.Errorf("none due: %q", got)
+	}
+	got := passPrompt(w, map[string]string{"org/app#120": "head=ccc since=none", "org/app#15": "head=bbb since=aaa"})
+	want := "Run a pass. " + watcherRules + " The board already found the PRs due a review, so skip step 1's commands and take these: " +
+		"#15 at bbb (new commits since aaa), #120 at ccc (whole PR)."
+	if got != want {
+		t.Errorf("due:\n got %q\nwant %q", got, want)
 	}
 }
 
