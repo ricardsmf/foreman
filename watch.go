@@ -38,8 +38,8 @@ type Watcher struct {
 	At string `json:"at,omitempty"`
 }
 
-// Mine, like the other defaults; "watchers" in the config file replaces the list. The searches are
-// the two fld-watch's own pass runs, my PRs and the PRs that request my review, and it takes three
+// Mine, like the other defaults; "watchers" in the config file replaces the list. fld-pr-watch's
+// searches are the two fld-watch's own pass runs, my PRs and the PRs that request my review, and it takes three
 // PRs a pass. --once: without it the skill starts a ten-minute loop of its own. The board only
 // says when to look: which PRs are due, and what for, is the skill's to work out, by rules that
 // change with it. A new head is a review due, and a thread resolved may finish one.
@@ -55,6 +55,14 @@ var watchers = []Watcher{{
 	Batch: 3,
 	// A review that failed is only taken again by a later pass: one each morning, at least.
 	At: "mon-fri 9:00",
+}, {
+	// My end-of-day update, each weekday. Its directory allows what gathers the day (gh, the Jira
+	// search, the Slack search) and not the Slack send, so the pass ends on that prompt, with
+	// the message in it, for me to send or not.
+	Name:   "eod",
+	Dir:    filepath.Join(home, ".config", "foreman", "eod"),
+	Prompt: "/eod",
+	At:     "mon-fri 17:30",
 }}
 
 // watcherCommand runs Claude Code in manualMode: the session reads text other people wrote, so
