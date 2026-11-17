@@ -699,6 +699,7 @@ const usage = `usage: foreman [PROJECT | JQL]   the board of tickets and PRs bes
        foreman queue      the same, opened on the queue alone: every dispatched agent by state,
                           and PRs that need you
        foreman open [--print]   go to the foreman Rex session, starting it when it isn't running
+       foreman watch      start the watchers and wake them without the board, for launchd
        foreman dispatch   start an agent on a task, a ticket or a PR
        foreman orchestrator [--new]   Claude Code that hands work to agents (^g on the board)
        foreman agents | report | screen | reply | wait | cleanup | ask | answer
@@ -723,7 +724,7 @@ func run() error {
 	if len(argv) > 0 && !queueOnly {
 		rest := argv[1:]
 		help := len(rest) > 0 && (rest[0] == "--help" || rest[0] == "-h")
-		if help && argv[0] != "dispatch" && argv[0] != "queue" && argv[0] != "orchestrator" && argv[0] != "open" {
+		if help && argv[0] != "dispatch" && argv[0] != "queue" && argv[0] != "orchestrator" && argv[0] != "open" && argv[0] != "watch" {
 			fmt.Println(commandsUsage)
 			return nil
 		}
@@ -734,6 +735,12 @@ func run() error {
 			return runOrchestrator(rest)
 		case "open":
 			return runOpen(rest, os.Stdout)
+		case "watch":
+			if help {
+				fmt.Println(usage)
+				return nil
+			}
+			return runWatch(os.Stdout)
 		case "agents":
 			return runAgents(rest, os.Stdout)
 		case "report":

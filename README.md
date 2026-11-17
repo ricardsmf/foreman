@@ -13,6 +13,7 @@ foreman OO                  # another project
 foreman 'assignee = currentUser() AND statusCategory != Done'
 foreman --logout            # forget the Atlassian sign-in
 foreman open                # go to the foreman Rex session, starting it when it isn't running
+foreman watch               # start the watchers and wake them without the board, for launchd
 foreman dispatch --repo foreman 'Add a --verbose flag'   # a task, no ticket
 ```
 
@@ -420,9 +421,10 @@ pass is gone at the next wake, and it reads a PR's state from GitHub again when 
   closed: the poll doesn't restart one you stopped.
 - Starting a watcher records its PRs' signatures first, so the pass its prompt runs isn't followed
   by a wake for the same PRs.
-- The poll runs in foreman, so it stops when foreman quits. The watcher then sits idle after its
-  last pass: nothing is reviewed until foreman runs again, and nothing is lost, since its first
-  poll compares against the last wake, not the last poll.
+- The poll runs in foreman, so it stops when foreman quits, unless [`foreman
+  watch`](#without-the-board) runs. The watcher then sits idle after its last pass: nothing is
+  reviewed until foreman runs again, and nothing is lost, since its first poll compares against
+  the last wake, not the last poll.
 - Two foremans open at once wake a watcher once per change: each wake is recorded under the state
   lock before the prompt is typed. A wake that fails puts the old signatures back for the next poll.
 - `on` picks which of those wake it: `commit`, `checks`, `conflict`, `comment`, and `threads`, a
@@ -474,6 +476,25 @@ A watcher with `at` runs its prompt at a time of day: `"17:45"` every day, or da
   skill with `disable-model-invocation`.
 - `at` and `prs` don't go together: the board wakes a watcher by the clock or for its PRs. It gets
   no MCP servers from `~/.config/mcp/mcp.json`; one it needs goes in a `.mcp.json` in its `dir`.
+
+### Without the board
+
+`foreman watch` is the watchers' side of the board alone: it starts each watcher that has no open
+session, then polls and wakes them as the board does, PRs and schedules alike, until it is
+stopped. Run by launchd from login, it keeps reviews and scheduled passes going while the board
+is closed.
+
+- It waits for Rex, looking every 15 seconds, and prints each start, wake and failure with its
+  time: what the board's status bar would show.
+- It can run beside the board. Both poll, and each wake is recorded under the state lock before
+  the prompt is typed, so a watcher is woken once.
+- It starts the watchers once, when it starts. One you stop (`K` twice) stays stopped until the
+  board or `foreman watch` next starts.
+- It exits with status 0 when the config leaves it no watcher to wake, so launchd's
+  `KeepAlive.SuccessfulExit = false` restarts it after a crash and not after that.
+- A watcher still stops at a permission prompt for anything outside its allowlist, and waits
+  there under **needs you** until you answer: nothing it wasn't allowed runs because nobody
+  was watching.
 
 ## Cleaning up
 

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,6 +21,7 @@ type fakeRex struct {
 	lists  int
 	calls  []string
 	cmds   map[string][]string // the command each new session was started with, by label
+	down   int                 // how many more listings fail, as while Rex isn't running
 	stream chan rexEvent
 }
 
@@ -33,6 +35,10 @@ func (f *fakeRex) sessions() ([]rexSession, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.lists++
+	if f.down > 0 {
+		f.down--
+		return nil, errors.New("rex: no server")
+	}
 	return slices.Clone(f.open), nil
 }
 

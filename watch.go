@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
 	"path/filepath"
 	"regexp"
@@ -259,6 +260,40 @@ func pollWatchers(note func(text string, c Color)) {
 		}
 		time.Sleep(watchPoll)
 	}
+}
+
+// rexWait is how often runWatch looks for Rex while it isn't answering.
+var rexWait = 15 * time.Second
+
+// runWatch is the board's watcher loop without the board: `foreman watch`, which launchd keeps
+// running, starts the watchers and wakes them, so a review or a scheduled pass doesn't wait for me
+// to open foreman. At login Rex may not be up yet, so it waits for Rex first. It prints what the
+// board's status bar would show, and returns when no watcher is left for it to wake.
+func runWatch(out io.Writer) error {
+	note := func(text string, _ Color) {
+		fmt.Fprintln(out, time.Now().Format("2006-01-02 15:04:05"), text)
+	}
+	said := ""
+	for {
+		_, err := agentSessions()
+		if err == nil {
+			break
+		}
+		if e := firstLine(err.Error()); e != said {
+			note("Waiting for Rex: "+e, cRed)
+			said = e
+		}
+		time.Sleep(rexWait)
+	}
+	started, err := startWatchers()
+	if err != nil {
+		note(err.Error(), cRed)
+	}
+	if len(started) > 0 {
+		note("Started "+strings.Join(started, ", "), cSubtext)
+	}
+	pollWatchers(note)
+	return nil
 }
 
 // pollOne polls a watcher by its schedule or its PRs, and returns the status line of a wake.
