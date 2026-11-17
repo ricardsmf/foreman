@@ -60,9 +60,17 @@ func loadConfig() error {
 			if w.Name == "" || w.Dir == "" || w.Prompt == "" {
 				return fmt.Errorf("%s: a watcher needs a name, a dir and a prompt", tilde(configFile))
 			}
+			if w.At != "" {
+				if _, err := parseAt(w.At); err != nil {
+					return fmt.Errorf("%s: watcher %s: at %w", tilde(configFile), w.Name, err)
+				}
+				if len(w.PRs) > 0 {
+					return fmt.Errorf("%s: watcher %s has at and prs: the board wakes a watcher by the clock or for its PRs, so make them two watchers", tilde(configFile), w.Name)
+				}
+			}
 			// The board types the prompt on every wake: a loop would start another schedule each time.
-			if len(w.PRs) > 0 && strings.HasPrefix(strings.TrimSpace(w.Prompt), "/loop ") {
-				return fmt.Errorf("%s: watcher %s has prs, so the board wakes it: its prompt runs once per wake and can't be a /loop", tilde(configFile), w.Name)
+			if (len(w.PRs) > 0 || w.At != "") && strings.HasPrefix(strings.TrimSpace(w.Prompt), "/loop ") {
+				return fmt.Errorf("%s: the board wakes watcher %s (it has prs or at), so its prompt runs once per wake and can't be a /loop", tilde(configFile), w.Name)
 			}
 			if w.Marker != "" && len(w.PRs) == 0 {
 				return fmt.Errorf("%s: watcher %s has a marker and no prs: the marker says which of its prs are due a review", tilde(configFile), w.Name)

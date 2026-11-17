@@ -19,6 +19,7 @@ type fakeRex struct {
 	open   []rexSession
 	lists  int
 	calls  []string
+	cmds   map[string][]string // the command each new session was started with, by label
 	stream chan rexEvent
 }
 
@@ -43,6 +44,12 @@ func (f *fakeRex) listed() int {
 
 func (f *fakeRex) newSession(label, cwd, window string, cmd []string) (string, string, error) {
 	f.note("new %s", label)
+	f.mu.Lock()
+	if f.cmds == nil {
+		f.cmds = map[string][]string{}
+	}
+	f.cmds[label] = cmd
+	f.mu.Unlock()
 	return "session:" + label, "block:" + label, nil
 }
 

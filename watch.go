@@ -30,6 +30,9 @@ type Watcher struct {
 	// reviewed: "fld-review:sha=" for `<!-- fld-review:sha=<sha> -->`. With it the board knows which
 	// PRs are due a review, wakes the watcher only for those, and starts it idle when none is.
 	Marker string `json:"marker,omitempty"`
+	// At is when the board starts a pass by the clock instead: "17:45" every day, or "mon-fri
+	// 17:45". The board types Prompt then, so such a watcher has no PRs and doesn't loop.
+	At string `json:"at,omitempty"`
 }
 
 // Mine, like the other defaults; "watchers" in the config file replaces the list. The searches are
@@ -150,8 +153,9 @@ func startWatchers() (started []string, err error) {
 		// The pass its prompt starts covers the PRs as they are now, so the poll wakes it only for
 		// what changes after. Read before the start: a change in between wakes it once more, not never.
 		// A watcher with a marker and no PR due starts without a pass: there is nothing to review.
+		// A scheduled watcher starts without one too: its pass belongs to its time.
 		var baseline map[string]string
-		pass := true
+		pass := w.At == ""
 		if len(w.PRs) > 0 {
 			var e error
 			baseline, e = prSignatures(w)
@@ -187,7 +191,7 @@ func startWatchers() (started []string, err error) {
 // watcherItem is the watcher's line in the queue: with the agents that need me when it waits on a
 // permission prompt or failed, else by whether it works, waits for its next pass or isn't running.
 func watcherItem(w Watcher, sessions []rexSession, recorded string, unreviewed []string) queueItem {
-	it := queueItem{Kind: agentItem, Watcher: true, Polled: len(w.PRs) > 0, Reviews: w.Marker != "", Unreviewed: unreviewed,
+	it := queueItem{Kind: agentItem, Watcher: true, Polled: len(w.PRs) > 0, Reviews: w.Marker != "", At: w.At, Unreviewed: unreviewed,
 		Key: w.Name, Title: w.Prompt, Dir: w.Dir, Group: closed}
 	if rs, ok := findWatcher(sessions, w, recorded); ok {
 		it.on(rs)
@@ -208,10 +212,12 @@ func watcherItem(w Watcher, sessions []rexSession, recorded string, unreviewed [
 // GraphQL requests each time, instead of a model turn every ten minutes.
 const watchPoll = 2 * time.Minute
 
-// pollWatchers runs for the board's life: it polls each watcher with PR searches now and every
-// watchPoll, and wakes the ones whose PRs changed. note shows a line on the board's status bar.
+// pollWatchers runs for the board's life: it polls each watcher with PR searches or a schedule now
+// and every watchPoll, and wakes the ones whose PRs changed or whose time has come. note shows a
+// line on the board's status bar.
 func pollWatchers(note func(text string, c Color)) {
-	if !slices.ContainsFunc(watchers, func(w Watcher) bool { return len(w.PRs) > 0 }) {
+	woken := func(w Watcher) bool { return len(w.PRs) > 0 || w.At != "" }
+	if !slices.ContainsFunc(watchers, woken) {
 		return
 	}
 	// The same failure every two minutes would bury whatever else the status bar says.
@@ -220,17 +226,15 @@ func pollWatchers(note func(text string, c Color)) {
 		sessions, err := agentSessions()
 		recorded := loadState().WatcherSessions
 		for _, w := range watchers {
-			if len(w.PRs) == 0 || err != nil {
+			if !woken(w) || err != nil {
 				continue
 			}
-			changed, e := pollWatcher(w, sessions, recorded[w.Name])
+			woke, e := pollOne(w, sessions, recorded[w.Name])
 			switch {
 			case e != nil && e.Error() != lastErr[w.Name]:
 				note(w.Name+": "+firstLine(e.Error()), cRed)
-			case len(changed) > 0 && w.Marker != "":
-				note(fmt.Sprintf("Woke %s to review %s", w.Name, strings.Join(changed, ", ")), cSubtext)
-			case len(changed) > 0:
-				note(fmt.Sprintf("Woke %s: %s changed", w.Name, strings.Join(changed, ", ")), cSubtext)
+			case woke != "":
+				note(woke, cSubtext)
 			}
 			lastErr[w.Name] = ""
 			if e != nil {
@@ -239,6 +243,40 @@ func pollWatchers(note func(text string, c Color)) {
 		}
 		time.Sleep(watchPoll)
 	}
+}
+
+// pollOne polls a watcher by its schedule or its PRs, and returns the status line of a wake.
+func pollOne(w Watcher, sessions []rexSession, recorded string) (string, error) {
+	if w.At != "" {
+		at, err := pollSchedule(w, sessions, recorded, time.Now())
+		if err != nil || at.IsZero() {
+			return "", err
+		}
+		return fmt.Sprintf("Woke %s for %s", w.Name, at.Format("15:04")), nil
+	}
+	changed, err := pollWatcher(w, sessions, recorded)
+	switch {
+	case err != nil || len(changed) == 0:
+		return "", err
+	case w.Marker != "":
+		return fmt.Sprintf("Woke %s to review %s", w.Name, strings.Join(changed, ", ")), nil
+	}
+	return fmt.Sprintf("Woke %s: %s changed", w.Name, strings.Join(changed, ", ")), nil
+}
+
+// pollSchedule starts the watcher's pass when its time has come, and returns that time. A watcher
+// that isn't running or is busy is left for the next poll, as pollWatcher leaves it: the time is
+// only recorded on a wake, so the pass starts once the watcher rests, if that is the same day.
+func pollSchedule(w Watcher, sessions []rexSession, recorded string, now time.Time) (time.Time, error) {
+	s, ok := findWatcher(sessions, w, recorded)
+	if !ok || !wakeable(s.State) {
+		return time.Time{}, nil
+	}
+	sc, err := parseAt(w.At)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return wakeIfDue(w.Name, sc, now, func() error { return wakeWatcher(s, passPrompt(w, nil)) })
 }
 
 // pollWatcher wakes the watcher when one of its PRs changed since its last wake, and returns those

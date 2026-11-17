@@ -60,6 +60,8 @@ type queueItem struct {
 	Polled bool
 	// Reviews marks a polled watcher the board wakes only for the PRs due a review.
 	Reviews bool
+	// At is the schedule of a watcher the board wakes by the clock.
+	At string
 	// Unreviewed are the PRs such a watcher was woken for and didn't review.
 	Unreviewed []string
 	// Orchestrator marks the orchestrator's session.

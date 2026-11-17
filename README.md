@@ -389,7 +389,7 @@ PRs that request my review and posts the result under my account.
   reviewed before, so the pass skips the commands that would find them.
 - The queue always lists it: with **needs you** when it waits on a permission prompt or failed (a
   pass stalls until you answer), else **working**, **idle** while it waits for a PR to change (or
-  between passes, for one that loops; in yellow, `didn't review #12` for the PRs a watcher with
+  for its time, `waits for mon-fri 17:45`; or between passes, for one that loops; in yellow, `didn't review #12` for the PRs a watcher with
   a `marker` was woken for and left unreviewed), or **closed** when it isn't running, where `enter` starts
   it. `K` twice stops it.
 - Its checkout is a worktree nobody works in, detached at `origin/develop`. The skills run from
@@ -436,9 +436,30 @@ pass is gone at the next wake, and it reads a PR's state from GitHub again when 
   failed, the pass was interrupted, or more PRs were due than a pass takes) shows on its queue
   row as `didn't review #n`, from `watcherUnreviewed` in `state.json`. The next wake, for another
   PR, runs a pass that takes it too; so does stopping the watcher (`K` twice) and starting it.
-- A watcher without `prs` gets its prompt only at start, so it must keep itself going with
-  `/loop 10m …`, as watchers did before the poll. A watcher with `prs` can't have a `/loop` prompt:
-  each wake would start another schedule.
+- A watcher with neither `prs` nor `at` gets its prompt only at start, so it must keep itself
+  going with `/loop 10m …`, as watchers did before the poll. One the board wakes can't have a
+  `/loop` prompt: each wake would start another schedule.
+
+### Waking a watcher by the clock
+
+A watcher with `at` runs its prompt at a time of day: `"17:45"` every day, or days and a time,
+`"mon-fri 17:45"`, `"mon,wed 9:00"`, `"fri-mon 8:00"`. The time is the machine's local time.
+
+- The same poll does it, so a pass starts within two minutes of its time, on an empty
+  conversation (`/clear` first), and costs no model turn in between. The watcher starts at its
+  prompt when the board starts, without a pass.
+- The latest time dealt with is in `state.json` under `watcherRan`, recorded before the prompt is
+  typed: two foremans wake it once, and a wake that fails puts the old time back for the next poll.
+- A watcher that is working, waits on a prompt or isn't running is left for the next poll, and
+  gets its pass once it rests.
+- A time that passed while foreman wasn't running, or while the watcher was busy, still runs the
+  same day. On a later day it is skipped: a pass about a day reports on the wrong one a day late.
+- A watcher new to the config starts from its next time, not the one before.
+- Unlike `/loop` or a scheduled job inside the session, the schedule doesn't end with the
+  conversation or expire after a week, and it types the prompt as you would, so it can name a
+  skill with `disable-model-invocation`.
+- `at` and `prs` don't go together: the board wakes a watcher by the clock or for its PRs. It gets
+  no MCP servers from `~/.config/mcp/mcp.json`; one it needs goes in a `.mcp.json` in its `dir`.
 
 ## Cleaning up
 
@@ -471,17 +492,23 @@ reports, evidence and the agent's Rex session go.
     "prompt": "/fld-watch",
     "prs": ["user-review-requested:@me is:open draft:false base:develop", "reviewed-by:@me is:open draft:false base:develop"],
     "marker": "fld-review:sha="
+  }, {
+    "name": "eod",
+    "dir": "~/work/eod",
+    "prompt": "/eod",
+    "at": "mon-fri 17:45"
   }]
 }
 ```
 
 `"watchers": []` turns them off. A watcher's `prs` is optional, and its `marker` needs them; see
-[Waking a watcher](#waking-a-watcher).
+[Waking a watcher](#waking-a-watcher). `at` is optional too, and excludes `prs`; see [Waking a
+watcher by the clock](#waking-a-watcher-by-the-clock).
 
 ## State
 
 - State (repo per project, last agent per repo, dispatched tickets, PRs and tasks with their sessions and titles, each session's agent pane, the last task number per repo, queue items
-  marked reviewed, each watcher's PR signatures at its last wake and the PRs it left unreviewed) is in
+  marked reviewed, each watcher's PR signatures at its last wake and the PRs it left unreviewed, each scheduled watcher's last time) is in
   `~/.local/state/foreman/state.json`, written atomically. foreman and its commands (`dispatch`, `ask`, `answer`…) all write it,
   so each write holds `state.json.lock`, and foreman re-reads it every few seconds. An unreadable
   file is moved to `state.json.corrupt` rather than overwritten.

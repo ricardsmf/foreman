@@ -42,6 +42,9 @@ type State struct {
 	WatcherPrs map[string]map[string]string `json:"watcherPrs,omitempty"`
 	// WatcherUnreviewed maps a watcher with a marker to the PRs it was woken for and didn't review.
 	WatcherUnreviewed map[string][]string `json:"watcherUnreviewed,omitempty"`
+	// WatcherRan maps a scheduled watcher's name to the latest of its times the board has dealt
+	// with, as RFC 3339: the board wakes it again only when a later one has passed.
+	WatcherRan map[string]string `json:"watcherRan,omitempty"`
 	// Orchestrator is the orchestrator's Rex session ID: it may rename the session.
 	Orchestrator string `json:"orchestrator,omitempty"`
 	// Questions holds the question each agent waits on in foreman ask, by its key.
@@ -132,6 +135,9 @@ func readState() State {
 	}
 	if s.WatcherUnreviewed == nil {
 		s.WatcherUnreviewed = map[string][]string{}
+	}
+	if s.WatcherRan == nil {
+		s.WatcherRan = map[string]string{}
 	}
 	if s.Questions == nil {
 		s.Questions = map[string]Question{}

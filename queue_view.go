@@ -80,6 +80,9 @@ func itemLabel(it queueItem) (string, string) {
 		if it.Reviews {
 			what = "nothing to review"
 		}
+		if it.At != "" {
+			what = "waits for " + it.At
+		}
 		if it.Agent == "" {
 			what = "not running, enter starts it"
 		}
