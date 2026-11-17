@@ -40,6 +40,9 @@ type State struct {
 	// WatcherPrs maps each polled watcher's name to its PRs' signatures at its last wake, by
 	// `owner/name#n`: the board wakes it again only when one differs.
 	WatcherPrs map[string]map[string]string `json:"watcherPrs,omitempty"`
+	// WatcherStopped holds the watchers I stopped from the queue: nothing starts one again until I
+	// start it there, or run it by hand in its checkout.
+	WatcherStopped map[string]bool `json:"watcherStopped,omitempty"`
 	// WatcherRan maps a scheduled watcher's name to the latest of its times the board has dealt
 	// with, as RFC 3339: the board wakes it again only when a later one has passed.
 	WatcherRan map[string]string `json:"watcherRan,omitempty"`
@@ -64,11 +67,14 @@ var stateMu sync.Mutex
 
 // lockState does the same across processes: the board and the queue each rewrite the file, and
 // without the lock one's write drops what the other wrote since its read.
-func lockState() (unlock func(), err error) {
-	if err := os.MkdirAll(filepath.Dir(stateFile), 0o755); err != nil {
+func lockState() (unlock func(), err error) { return lockFile(stateFile + ".lock") }
+
+// lockFile holds an exclusive lock on file, across processes and within this one, until unlock.
+func lockFile(file string) (unlock func(), err error) {
+	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
 		return func() {}, err
 	}
-	f, err := os.OpenFile(stateFile+".lock", os.O_CREATE|os.O_RDWR, 0o644)
+	f, err := os.OpenFile(file, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		return func() {}, err
 	}
@@ -130,6 +136,9 @@ func readState() State {
 	}
 	if s.WatcherPrs == nil {
 		s.WatcherPrs = map[string]map[string]string{}
+	}
+	if s.WatcherStopped == nil {
+		s.WatcherStopped = map[string]bool{}
 	}
 	if s.WatcherRan == nil {
 		s.WatcherRan = map[string]string{}

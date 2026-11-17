@@ -79,6 +79,9 @@ func itemLabel(it queueItem) (string, string) {
 		}
 		if it.At != "" {
 			what = "waits for " + it.At
+			if it.Polled {
+				what = "waits for a PR to change, or " + it.At
+			}
 		}
 		if it.Agent == "" {
 			what = "not running, enter starts it"

@@ -731,8 +731,9 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 		}
 		if it.Agent == "" && it.Watcher {
 			q.say("Starting "+it.Key+"…", cSubtext)
+			name := it.Key
 			return func() tea.Msg {
-				if _, err := startWatchers(); err != nil {
+				if err := restartWatcher(name); err != nil {
 					return queueStatusMsg{text: err.Error(), color: cRed}
 				}
 				return pollQueue()
@@ -820,10 +821,10 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 			return nil
 		}
 		q.confirmKill = ""
-		session, key := it.Session, it.Key
+		session, key, watcher := it.Session, it.Key, it.Watcher
 		q.say("Closing "+key+"'s session…", cSubtext)
 		kill := func() tea.Msg {
-			if err := rex.kill(session); err != nil {
+			if err := closeSession(session, key, watcher); err != nil {
 				return queueStatusMsg{text: "Closing " + key + "'s session: " + err.Error(), color: cRed}
 			}
 			return queueStatusMsg{text: "✓ Closed " + key + "'s session", color: cGreen}

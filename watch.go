@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"encoding/json"
 	"fmt"
-	"io"
 	"maps"
 	"path/filepath"
 	"slices"
@@ -33,8 +32,9 @@ type Watcher struct {
 	// Batch is how many PRs a pass takes at most. A wake then counts only that
 	// many changed PRs as seen, lowest number first, and the rest wake it again once it rests.
 	Batch int `json:"batch,omitempty"`
-	// At is when the board starts a pass by the clock instead: "17:45" every day, or "mon-fri
-	// 17:45". The board types Prompt then, so such a watcher has no PRs and doesn't loop.
+	// At is when the board starts a pass by the clock: "17:45" every day, or "mon-fri 17:45". The
+	// board types Prompt then, so such a watcher doesn't loop. With PRs too, it is a sweep: a pass
+	// that takes whatever the passes its PRs woke left undone, such as a review that failed.
 	At string `json:"at,omitempty"`
 }
 
@@ -53,6 +53,8 @@ var watchers = []Watcher{{
 	},
 	On:    []string{"commit", "threads"},
 	Batch: 3,
+	// A review that failed is only taken again by a later pass: one each morning, at least.
+	At: "mon-fri 9:00",
 }}
 
 // watcherCommand runs Claude Code in manualMode: the session reads text other people wrote, so
@@ -110,10 +112,17 @@ func findWatcher(sessions []rexSession, w Watcher, recorded string) (rexSession,
 	return rexSession{}, false
 }
 
-// startWatchers starts each watcher that has no open session, and returns what it did, one line
-// each. A session I started by hand under the watcher's name, or in its checkout, counts as it.
-// Every watcher's session is recorded by ID.
+// startWatchers starts each watcher that has no open session and that I didn't stop, and returns
+// the ones it started. A session I started by hand under the watcher's name, or in its checkout,
+// counts as it, stopped or not. Every watcher's session is recorded by ID. One foreman at a time:
+// the board and foreman watch would each find a watcher gone and start it, and two sessions
+// would review every PR twice.
 func startWatchers() (started []string, err error) {
+	unlock, err := lockFile(stateFile + ".watchers.lock")
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	sessions, err := agentSessions()
 	if err != nil {
 		return nil, err
@@ -128,12 +137,15 @@ func startWatchers() (started []string, err error) {
 			ids[w.Name] = s.ID
 			continue
 		}
+		if state.WatcherStopped[w.Name] {
+			continue
+		}
 		// The pass its prompt starts covers the PRs as they are now, so the poll wakes it only for
 		// what changes after. Read before the start: a change in between wakes it once more, not never.
-		// A scheduled watcher starts without one too: its pass belongs to its time. With a batch the
-		// pass takes only some of what changed, so the rest stays unseen and wakes it again.
+		// A watcher with only a schedule starts without a pass: its pass belongs to its time. With a
+		// batch the pass takes only some of what changed, so the rest stays unseen and wakes it again.
 		var baseline map[string]string
-		pass := w.At == ""
+		pass := w.At == "" || len(w.PRs) > 0
 		if len(w.PRs) > 0 {
 			var e error
 			baseline, e = prSignatures(w)
@@ -159,6 +171,9 @@ func startWatchers() (started []string, err error) {
 	if _, e := updateState(func(s *State) {
 		maps.Copy(s.WatcherSessions, ids)
 		maps.Copy(s.WatcherPrs, baselines)
+		for name := range ids {
+			delete(s.WatcherStopped, name)
+		}
 	}); e != nil {
 		failed = append(failed, "recording their sessions: "+e.Error())
 	}
@@ -166,6 +181,27 @@ func startWatchers() (started []string, err error) {
 		err = fmt.Errorf("watcher %s", strings.Join(failed, "; "))
 	}
 	return started, err
+}
+
+// closeSession closes an agent's Rex session. A watcher is marked stopped first: foreman watch
+// starts a watcher whose session is gone, and this one is gone because I said so.
+func closeSession(session, key string, watcher bool) error {
+	if watcher {
+		if _, err := updateState(func(s *State) { s.WatcherStopped[key] = true }); err != nil {
+			return err
+		}
+	}
+	return rex.kill(session)
+}
+
+// restartWatcher starts a watcher from the queue, taking back the stop that keeps startWatchers
+// off it.
+func restartWatcher(name string) error {
+	if _, err := updateState(func(s *State) { delete(s.WatcherStopped, name) }); err != nil {
+		return err
+	}
+	_, err := startWatchers()
+	return err
 }
 
 // watcherItem is the watcher's line in the queue: with the agents that need me when it waits on a
@@ -196,77 +232,56 @@ const watchPoll = 2 * time.Minute
 // and every watchPoll, and wakes the ones whose PRs changed or whose time has come. note shows a
 // line on the board's status bar.
 func pollWatchers(note func(text string, c Color)) {
-	woken := func(w Watcher) bool { return len(w.PRs) > 0 || w.At != "" }
-	if !slices.ContainsFunc(watchers, woken) {
+	if !slices.ContainsFunc(watchers, Watcher.woken) {
 		return
 	}
-	// The same failure every two minutes would bury whatever else the status bar says.
 	lastErr := map[string]string{}
 	for {
-		sessions, err := agentSessions()
-		recorded := loadState().WatcherSessions
-		for _, w := range watchers {
-			if !woken(w) || err != nil {
-				continue
-			}
-			woke, e := pollOne(w, sessions, recorded[w.Name])
-			switch {
-			case e != nil && e.Error() != lastErr[w.Name]:
-				note(w.Name+": "+firstLine(e.Error()), cRed)
-			case woke != "":
-				note(woke, cSubtext)
-			}
-			lastErr[w.Name] = ""
-			if e != nil {
-				lastErr[w.Name] = e.Error()
-			}
+		if sessions, err := agentSessions(); err == nil {
+			wakeWatchers(sessions, loadState().WatcherSessions, note, lastErr)
 		}
 		time.Sleep(watchPoll)
 	}
 }
 
-// rexWait is how often runWatch looks for Rex while it isn't answering.
-var rexWait = 15 * time.Second
+// woken is whether the board wakes the watcher, rather than leaving it to loop.
+func (w Watcher) woken() bool { return len(w.PRs) > 0 || w.At != "" }
 
-// runWatch is the board's watcher loop without the board: `foreman watch`, which launchd keeps
-// running, starts the watchers and wakes them, so a review or a scheduled pass doesn't wait for me
-// to open foreman. At login Rex may not be up yet, so it waits for Rex first. It prints what the
-// board's status bar would show, and returns when no watcher is left for it to wake.
-func runWatch(out io.Writer) error {
-	note := func(text string, _ Color) {
-		fmt.Fprintln(out, time.Now().Format("2006-01-02 15:04:05"), text)
-	}
-	said := ""
-	for {
-		_, err := agentSessions()
-		if err == nil {
-			break
+// wakeWatchers polls each watcher the board wakes, once, and notes the wakes and the failures.
+// lastErr holds each watcher's last failure: the same one every two minutes would bury whatever
+// else the status bar says.
+func wakeWatchers(sessions []rexSession, recorded map[string]string, note func(text string, c Color), lastErr map[string]string) {
+	for _, w := range watchers {
+		if !w.woken() {
+			continue
 		}
-		if e := firstLine(err.Error()); e != said {
-			note("Waiting for Rex: "+e, cRed)
-			said = e
+		woke, e := pollOne(w, sessions, recorded[w.Name])
+		switch {
+		case e != nil && e.Error() != lastErr[w.Name]:
+			note(w.Name+": "+firstLine(e.Error()), cRed)
+		case woke != "":
+			note(woke, cSubtext)
 		}
-		time.Sleep(rexWait)
+		lastErr[w.Name] = ""
+		if e != nil {
+			lastErr[w.Name] = e.Error()
+		}
 	}
-	started, err := startWatchers()
-	if err != nil {
-		note(err.Error(), cRed)
-	}
-	if len(started) > 0 {
-		note("Started "+strings.Join(started, ", "), cSubtext)
-	}
-	pollWatchers(note)
-	return nil
 }
 
-// pollOne polls a watcher by its schedule or its PRs, and returns the status line of a wake.
+// pollOne polls a watcher by its schedule, then by its PRs, and returns the status line of a wake.
 func pollOne(w Watcher, sessions []rexSession, recorded string) (string, error) {
 	if w.At != "" {
 		at, err := pollSchedule(w, sessions, recorded, time.Now())
-		if err != nil || at.IsZero() {
+		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("Woke %s for %s", w.Name, at.Format("15:04")), nil
+		if !at.IsZero() {
+			return fmt.Sprintf("Woke %s for %s", w.Name, at.Format("15:04")), nil
+		}
+	}
+	if len(w.PRs) == 0 {
+		return "", nil
 	}
 	changed, err := pollWatcher(w, sessions, recorded)
 	if err != nil || len(changed) == 0 {

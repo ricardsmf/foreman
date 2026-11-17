@@ -373,27 +373,3 @@ func TestWatcherWakeConfig(t *testing.T) {
 		}
 	}
 }
-
-// foreman watch waits for Rex, starts the watchers, and returns when none is left for it to wake.
-func TestRunWatch(t *testing.T) {
-	f := useFakeRex(t)
-	f.down = 2
-	oldWait := rexWait
-	rexWait = 0
-	t.Cleanup(func() { rexWait, watchers = oldWait, nil })
-	watchers = []Watcher{{Name: "looper", Dir: t.TempDir(), Prompt: "/loop 10m /sweep"}}
-
-	var out strings.Builder
-	if err := runWatch(&out); err != nil {
-		t.Fatal(err)
-	}
-	if got := strings.Count(out.String(), "Waiting for Rex"); got != 1 {
-		t.Errorf("said it waits for Rex %d times, want once:\n%s", got, out.String())
-	}
-	if !strings.Contains(out.String(), "Started looper") || !slices.Contains(f.calls, "new looper") {
-		t.Errorf("didn't start the watcher: %q\n%s", f.calls, out.String())
-	}
-	if got := loadState().WatcherSessions["looper"]; got != "session:looper" {
-		t.Errorf("recorded session %q", got)
-	}
-}

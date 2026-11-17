@@ -179,16 +179,15 @@ func TestScheduledWatcherConfig(t *testing.T) {
 	if err := write(`{"watchers": [{"name": "eod", "dir": "/x", "prompt": "/eod", "at": "mon-fri 17:45"}]}`); err != nil || watchers[0].At != "mon-fri 17:45" {
 		t.Errorf("a scheduled watcher: %v, %+v", err, watchers)
 	}
-	for what, c := range map[string][2]string{
-		"a time that isn't one": {`"at": "teatime"`, "teatime"},
-		"at with prs":           {`"at": "17:45", "prs": ["is:open"]`, "two watchers"},
-	} {
-		err := write(`{"watchers": [{"name": "eod", "dir": "/x", "prompt": "/eod", ` + c[0] + `}]}`)
-		if err == nil || !strings.Contains(err.Error(), c[1]) {
-			t.Errorf("%s: %v", what, err)
-		}
+	err := write(`{"watchers": [{"name": "eod", "dir": "/x", "prompt": "/eod", "at": "teatime"}]}`)
+	if err == nil || !strings.Contains(err.Error(), "teatime") {
+		t.Errorf("a time that isn't one: %v", err)
 	}
-	err := write(`{"watchers": [{"name": "eod", "dir": "/x", "prompt": "/loop 1d /eod", "at": "17:45"}]}`)
+	// With prs too, the time is a sweep beside the wakes its PRs cause.
+	if err := write(`{"watchers": [{"name": "w", "dir": "/x", "prompt": "/sweep", "at": "9:00", "prs": ["is:open"]}]}`); err != nil {
+		t.Errorf("at with prs: %v", err)
+	}
+	err = write(`{"watchers": [{"name": "eod", "dir": "/x", "prompt": "/loop 1d /eod", "at": "17:45"}]}`)
 	if err == nil || !strings.Contains(err.Error(), "/loop") {
 		t.Errorf("a scheduled watcher on a loop: %v", err)
 	}
@@ -201,5 +200,27 @@ func TestScheduledWatcherLabel(t *testing.T) {
 	items := queueItems(State{}, []rexSession{{ID: "s1", Label: "eod", State: "idle"}}, nil)
 	if _, label := itemLabel(items[0]); !strings.Contains(label, "waits for mon-fri 17:45") {
 		t.Errorf("label %q", label)
+	}
+	watchers[0].PRs = []string{"is:open"}
+	items = queueItems(State{}, []rexSession{{ID: "s1", Label: "eod", State: "idle"}}, nil)
+	if _, label := itemLabel(items[0]); !strings.Contains(label, "waits for a PR to change, or mon-fri 17:45") {
+		t.Errorf("with prs: label %q", label)
+	}
+}
+
+// A watcher with a schedule and PRs is polled for both: its time comes first, and a pass it
+// starts is the whole poll.
+func TestPollOneSchedulesBeforePRs(t *testing.T) {
+	f := useFakeRex(t)
+	w := Watcher{Name: "w", Dir: "/nonexistent/watch", Prompt: "/sweep", At: time.Now().Add(-time.Minute).Format("15:04"), PRs: []string{"is:open"}}
+	if _, err := updateState(func(s *State) { s.WatcherRan["w"] = time.Now().Add(-24 * time.Hour).Format(time.RFC3339) }); err != nil {
+		t.Fatal(err)
+	}
+	woke, err := pollOne(w, []rexSession{{ID: "s1", Label: "w", State: "idle", Block: "b1"}}, "s1")
+	if err != nil || !strings.HasPrefix(woke, "Woke w for ") {
+		t.Fatalf("woke %q: %v", woke, err)
+	}
+	if len(f.calls) != 4 {
+		t.Errorf("calls %q", f.calls)
 	}
 }

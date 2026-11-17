@@ -374,7 +374,8 @@ to do. Mine is `fld-pr-watch`: `/fld-watch --once` in `~/work/code/reports-app-w
 reviews my open PRs, posting what blocks them, and drafts a pending review on the PRs that request
 mine.
 
-- The board starts each watcher that has no open Rex session, in the background, and records
+- The board starts each watcher that has no open Rex session and that you didn't stop, in the
+  background, and records
   each watcher's session ID. A watcher's session is the recorded one, else one named after it, else
   one running Claude Code in its checkout: Claude renames its session when Rex's startup hook says
   so, and a watcher started twice would review every PR twice.
@@ -390,7 +391,9 @@ mine.
 - The queue always lists it: with **needs you** when it waits on a permission prompt or failed (a
   pass stalls until you answer), else **working**, **idle** while it waits for a PR to change (or
   for its time, `waits for mon-fri 17:45`; or between passes, for one that loops), or **closed**
-  when it isn't running, where `enter` starts it. `K` twice stops it.
+  when it isn't running, where `enter` starts it. `K` twice stops it, and it stays stopped, for
+  the board and for `foreman watch`, until `enter` starts it or you run Claude Code in its
+  checkout yourself (`watcherStopped` in `state.json`).
 - Its checkout is a worktree nobody works in, detached at `origin/develop`. The skills run from
   it, so move it forward when they change: `git -C <dir> fetch origin develop && git -C <dir>
   checkout --detach origin/develop`.
@@ -414,8 +417,9 @@ pass is gone at the next wake, and it reads a PR's state from GitHub again when 
   which PRs woke it.
 - A watcher that is working or waits on a permission prompt isn't typed into: the next poll tries
   again, and still sees the change, since signatures are only recorded on a wake. Nor is one whose
-  program reports no state (still starting, or no longer Claude Code). A closed watcher stays
-  closed: the poll doesn't restart one you stopped.
+  program reports no state (still starting, or no longer Claude Code). The board's poll leaves a
+  closed watcher closed; [`foreman watch`](#without-the-board) starts it again, unless you
+  stopped it.
 - Starting a watcher records its PRs' signatures first, so the pass its prompt runs isn't followed
   by a wake for the same PRs.
 - The poll runs in foreman, so it stops when foreman quits, unless [`foreman
@@ -435,7 +439,8 @@ pass is gone at the next wake, and it reads a PR's state from GitHub again when 
 - The board tells the watcher nothing about the PRs: which are due, for what, and what else
   to do about them (`/fld-watch` also labels a PR whose threads are all resolved) is the skill's
   to work out, by its own rules. The board holds none of them, so they can change with the skill.
-  A PR whose review failed is taken again by the next pass, whichever PR wakes it.
+  A PR whose review failed is taken again by the next pass, whichever PR wakes it, and by its
+  morning sweep (`at`) at the latest.
 - A watcher with neither `prs` nor `at` gets its prompt only at start, so it must keep itself
   going with `/loop 10m …`, as watchers did before the poll. One the board wakes can't have a
   `/loop` prompt: each wake would start another schedule.
@@ -446,8 +451,8 @@ A watcher with `at` runs its prompt at a time of day: `"17:45"` every day, or da
 `"mon-fri 17:45"`, `"mon,wed 9:00"`, `"fri-mon 8:00"`. The time is the machine's local time.
 
 - The same poll does it, so a pass starts within two minutes of its time, on an empty
-  conversation (`/clear` first), and costs no model turn in between. The watcher starts at its
-  prompt when the board starts, without a pass.
+  conversation (`/clear` first), and costs no model turn in between. A watcher with only `at`
+  starts at its prompt, without a pass.
 - The latest time dealt with is in `state.json` under `watcherRan`, recorded before the prompt is
   typed: two foremans wake it once, and a wake that fails puts the old time back for the next poll.
 - A watcher that is working, waits on a prompt or isn't running is left for the next poll, and
@@ -458,27 +463,34 @@ A watcher with `at` runs its prompt at a time of day: `"17:45"` every day, or da
 - Unlike `/loop` or a scheduled job inside the session, the schedule doesn't end with the
   conversation or expire after a week, and it types the prompt as you would, so it can name a
   skill with `disable-model-invocation`.
-- `at` and `prs` don't go together: the board wakes a watcher by the clock or for its PRs. It gets
-  no MCP servers from `~/.config/mcp/mcp.json`; one it needs goes in a `.mcp.json` in its `dir`.
+- With `prs` too, `at` is a sweep beside the wakes its PRs cause: a full pass that takes what
+  those left undone, such as a review that failed. `fld-pr-watch` has one each weekday morning.
+- A watcher gets no MCP servers from `~/.config/mcp/mcp.json`; one it needs goes in a
+  `.mcp.json` in its `dir`.
 
 ### Without the board
 
-`foreman watch` is the watchers' side of the board alone: it starts each watcher that has no open
-session, then polls and wakes them as the board does, PRs and schedules alike, until it is
-stopped. Run by launchd from login, it keeps reviews and scheduled passes going while the board
-is closed.
+`foreman watch` looks after the watchers with no board open: it polls and wakes them as the board
+does, PRs and schedules alike, until it is stopped. Run by launchd from login, it keeps reviews
+and scheduled passes going while the board is closed, and tells you what you would otherwise
+have to open the queue to see.
 
-- It waits for Rex, looking every 15 seconds, and prints each start, wake and failure with its
-  time: what the board's status bar would show.
+- Every poll it starts each watcher whose session is gone (Rex restarted, Claude Code exited),
+  unless you stopped it. The board only starts them when it opens.
+- A watcher that stops at a permission prompt or a question, or fails, raises a macOS
+  notification, once per thing it waits on: its pass stalls until you answer, and with the board
+  closed only Rex's session list would show it. Nothing it wasn't allowed runs meanwhile.
+- A watcher whose checkout is behind its repo in `.claude` raises one too, once per upstream
+  commit: `fld-pr-watch runs old skills: 3 commits on origin/develop changed .claude`. It looks
+  once an hour, fetching the branch first. It only says so: a skill that moved on may change the
+  searches the board should poll, so moving the checkout forward stays yours to do.
+- It waits for Rex, looking every 15 seconds, and prints each start, wake, notification and
+  failure with its time: what the board's status bar would show.
 - It can run beside the board. Both poll, and each wake is recorded under the state lock before
-  the prompt is typed, so a watcher is woken once.
-- It starts the watchers once, when it starts. One you stop (`K` twice) stays stopped until the
-  board or `foreman watch` next starts.
-- It exits with status 0 when the config leaves it no watcher to wake, so launchd's
-  `KeepAlive.SuccessfulExit = false` restarts it after a crash and not after that.
-- A watcher still stops at a permission prompt for anything outside its allowlist, and waits
-  there under **needs you** until you answer: nothing it wasn't allowed runs because nobody
-  was watching.
+  the prompt is typed, so a watcher is woken once; starting the watchers takes a lock of its
+  own, so one is never started twice.
+- It runs until it is stopped, and exits with status 0 only when the config names no watcher, so
+  launchd's `KeepAlive.SuccessfulExit = false` restarts it after a crash and not after that.
 
 ## Cleaning up
 
@@ -511,7 +523,8 @@ reports, evidence and the agent's Rex session go.
     "prompt": "/fld-watch --once",
     "prs": ["author:@me is:open draft:false -label:agent-review-done -base:main", "user-review-requested:@me is:open draft:false -base:main"],
     "on": ["commit", "threads"],
-    "batch": 3
+    "batch": 3,
+    "at": "mon-fri 9:00"
   }, {
     "name": "eod",
     "dir": "~/work/eod",
@@ -522,13 +535,13 @@ reports, evidence and the agent's Rex session go.
 ```
 
 `"watchers": []` turns them off. A watcher's `prs` is optional, and `on` and `batch` need them;
-see [Waking a watcher](#waking-a-watcher). `at` is optional too, and excludes `prs`; see [Waking a
-watcher by the clock](#waking-a-watcher-by-the-clock).
+see [Waking a watcher](#waking-a-watcher). `at` is optional too, with `prs` or without; see
+[Waking a watcher by the clock](#waking-a-watcher-by-the-clock).
 
 ## State
 
 - State (repo per project, last agent per repo, dispatched tickets, PRs and tasks with their sessions and titles, each session's agent pane, the last task number per repo, queue items
-  marked reviewed, each watcher's PR signatures at its last wake, each scheduled watcher's last time) is in
+  marked reviewed, each watcher's PR signatures at its last wake, each scheduled watcher's last time, the watchers you stopped) is in
   `~/.local/state/foreman/state.json`, written atomically. foreman and its commands (`dispatch`, `ask`, `answer`…) all write it,
   so each write holds `state.json.lock`, and foreman re-reads it every few seconds. An unreadable
   file is moved to `state.json.corrupt` rather than overwritten.
@@ -536,6 +549,10 @@ watcher by the clock](#waking-a-watcher-by-the-clock).
 ## Development
 
 `go test ./...` covers the pure logic and the worktree branch choice against throwaway git repos.
+
+A running `foreman watch` keeps the code it started with: after `go build -o ~/.local/bin/foreman .`
+restart it with `launchctl kickstart -k gui/$(id -u)/org.nixos.foreman-watch`. It reads the config
+once too, so the same goes for a change to `config.json`.
 
 Every call to Rex goes through `rexAPI` (`rex.go`); `rexCLI` (`rex_cli.go`) is the only code that
 runs `rex`, and the tests put a fake in its place.
