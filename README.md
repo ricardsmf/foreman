@@ -372,11 +372,7 @@ attach or link them. A new dispatch empties the directory, and cleaning up a wor
 A watcher is a Claude Code session that runs one of a repo's skills when there is something for it
 to do. Mine is `fld-pr-watch`: `/fld-watch --once` in `~/work/code/reports-app-watch`, which
 reviews my open PRs, posting what blocks them, and drafts a pending review on the PRs that request
-mine. The other is `eod`: `/eod` in `~/.config/foreman/eod` each weekday at 17:30, which writes my
-end-of-day update. That directory is all it needs: a `.mcp.json` naming the Atlassian server, and
-a `.claude/settings.local.json` that enables it and allows `gh search prs`, `gh pr view`, the
-Jira search and the Slack search and thread read. The Slack send isn't allowed, so the pass
-stops on that prompt, with the message in it, for me to send or not.
+mine.
 
 - The board starts each watcher that has no open Rex session and that you didn't stop, in the
   background, and records
@@ -529,11 +525,6 @@ reports, evidence and the agent's Rex session go.
     "on": ["commit", "threads"],
     "batch": 3,
     "at": "mon-fri 9:00"
-  }, {
-    "name": "eod",
-    "dir": "~/work/eod",
-    "prompt": "/eod",
-    "at": "mon-fri 17:45"
   }]
 }
 ```
