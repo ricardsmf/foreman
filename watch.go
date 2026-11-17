@@ -63,13 +63,17 @@ var watchers = []Watcher{{
 // watcherCommand runs Claude Code in manualMode: the session reads text other people wrote, so
 // only what its checkout's allowlist names may run unasked, and no prompt can switch it to auto
 // mode. It gets no --mcp-config: it needs none of those servers. With a prompt it starts a pass;
-// without, it waits at its own prompt for the poll to wake it.
+// without, it waits at its own prompt for the poll to wake it. On macOS Claude Code leaves Glob and
+// Grep out unless --allowedTools names them, and watcherRules sends the pass to them instead of
+// find, whose -exec and -delete the allowlist can't fence. The rules stop at the checkout: a bare
+// `Grep` would search any file on disk unasked, where Read asks. --allowedTools takes a list, so
+// it goes last, after the prompt.
 func watcherCommand(prompt string) []string {
 	cmd := append([]string{which("claude")}, manualMode...)
 	if prompt != "" {
 		cmd = append(cmd, prompt)
 	}
-	return cmd
+	return append(cmd, "--allowedTools", "Glob(./**)", "Grep(./**)")
 }
 
 // watcherRules keep a pass's tool calls inside its checkout's allowlist. A permission rule matches

@@ -1288,14 +1288,18 @@ func TestQueueListsWatchers(t *testing.T) {
 }
 
 // The watcher runs Claude Code in manual mode with auto mode turned off, so no prompt can hand
-// it to the classifier, whatever my settings default to.
+// it to the classifier, whatever my settings default to. Glob and Grep are named so the pass can
+// search without find, inside its checkout only; the list goes after the prompt, which it would
+// otherwise swallow.
 func TestWatcherCommand(t *testing.T) {
-	want := []string{"--permission-mode", "manual", "--settings", `{"disableAutoMode":"disable"}`, "/loop 10m /fld-watch"}
+	mode := []string{"--permission-mode", "manual", "--settings", `{"disableAutoMode":"disable"}`}
+	tools := []string{"--allowedTools", "Glob(./**)", "Grep(./**)"}
+	want := slices.Concat(mode, []string{"/loop 10m /fld-watch"}, tools)
 	if cmd := watcherCommand("/loop 10m /fld-watch"); !slices.Equal(cmd[1:], want) {
 		t.Errorf("command: %q", cmd[1:])
 	}
 	// Started with nothing to review, it waits at its prompt for the first wake.
-	if cmd := watcherCommand(""); !slices.Equal(cmd[1:], want[:4]) {
+	if cmd := watcherCommand(""); !slices.Equal(cmd[1:], slices.Concat(mode, tools)) {
 		t.Errorf("command without a pass: %q", cmd[1:])
 	}
 }
