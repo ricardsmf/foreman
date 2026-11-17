@@ -28,7 +28,7 @@ optional extra context. "-" reads TEXT from stdin. Options go before TEXT.
   --pr REPO#N     review a pull request, e.g. reports-app#1185
   --fix           with --pr: fix the PR on its own branch (its review comments, or TEXT) instead
                   of reviewing it, in the worktree that has the branch, else <repo>-fix-<n>
-  --agent NAME    pi, claude or yolo (default: the repo's last, else Claude where it ships skills)
+  --agent NAME    pi, claude, auto or yolo (default: the repo's last, else Claude where it ships skills)
   --no-worktree   work in the checkout itself, which must be on a work branch
   --poteto        follow pstack's poteto-mode skill
   --title TITLE   the task's title (default: TEXT's first line), or a fix's (default: the PR's)
@@ -115,17 +115,19 @@ func mapTilde(paths []string) []string {
 	return out
 }
 
-// resolveAgent takes pi, claude or yolo, or an agent's label.
+// resolveAgent takes pi, claude, auto or yolo, or an agent's label.
 func resolveAgent(name string) (string, error) {
 	switch strings.ToLower(name) {
 	case "pi":
 		return agentPi, nil
 	case "claude":
 		return agentClaude, nil
+	case "auto", "claude (auto)":
+		return agentAuto, nil
 	case "yolo", "claude (yolo)":
 		return "Claude (yolo)", nil
 	}
-	return "", fmt.Errorf("no agent %q: pi, claude or yolo", name)
+	return "", fmt.Errorf("no agent %q: pi, claude, auto or yolo", name)
 }
 
 // findPr reads the PR named by repo#n from GitHub, with the checkout the review starts from.

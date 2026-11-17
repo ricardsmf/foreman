@@ -96,6 +96,10 @@ detail pane's place. Type to filter, `↑↓` pick, `enter` set, `esc` back.
 - The agent starts on the one last dispatched in that repo. A repo never dispatched in starts on
   Claude when it ships Claude Code skills (`.claude/skills/*/SKILL.md`), which pi doesn't load, and
   on pi otherwise. It follows the repo as you move through the list, until you pick one yourself.
+- Claude runs one of three ways: with its default permission prompts, in auto mode (`Claude
+  (auto)`, `--permission-mode auto`: a classifier reviews what it runs and blocks what looks
+  dangerous, by the `autoMode` rules in `~/.claude/settings.json`), or with every check skipped
+  (`Claude (yolo)`). Auto mode is the one for an agent left alone that needs no prompts.
 - Claude's prompt names the repo's skills it can invoke (those without
   `disable-model-invocation`) and tells it to use them for the steps they cover, minus any part
   that pushes or posts. A review gets the same.
@@ -144,7 +148,7 @@ The board's dispatch from the command line, for scripts and agents. Progress goe
 result line to stdout.
 
 ```
-foreman dispatch --repo foreman [--agent pi|claude|yolo] [--no-worktree] [--poteto] [--title T] 'what to do'
+foreman dispatch --repo foreman [--agent pi|claude|auto|yolo] [--no-worktree] [--poteto] [--title T] 'what to do'
 foreman dispatch --ticket FLD-1700 [--repo reports-app] [...] ['extra context']
 foreman dispatch --pr reports-app#1185 [--agent claude] ['what to focus on']
 foreman dispatch --pr reports-app#1185 --fix [--agent claude] [--title T] ['what to fix']

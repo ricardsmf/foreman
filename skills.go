@@ -14,6 +14,8 @@ import (
 const (
 	agentPi     = "pi"
 	agentClaude = "Claude"
+	// agentAuto is Claude in auto mode: a classifier reviews what it runs, where yolo checks nothing.
+	agentAuto = "Claude (auto)"
 )
 
 var manualSkill = regexp.MustCompile(`(?m)^disable-model-invocation:\s*true\s*$`)

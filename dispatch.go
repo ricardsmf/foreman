@@ -34,6 +34,7 @@ type Agent struct{ Label, Note string }
 var agents = []Agent{
 	{agentPi, "pi, default tools"},
 	{agentClaude, "claude, default permission prompts"},
+	{agentAuto, "claude --permission-mode auto"},
 	{"Claude (yolo)", "claude --dangerously-skip-permissions"},
 }
 
@@ -864,7 +865,10 @@ func agentArgs(agent string) []string {
 		return []string{which("pi")}
 	}
 	cmd := []string{which("claude"), "--mcp-config", mcpConfig}
-	if agent == "Claude (yolo)" {
+	switch agent {
+	case agentAuto:
+		cmd = append(cmd, "--permission-mode", "auto")
+	case "Claude (yolo)":
 		cmd = append(cmd, "--dangerously-skip-permissions")
 	}
 	// foreman ask without a permission prompt: a prompt would park the question on me.

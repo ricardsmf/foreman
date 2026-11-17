@@ -54,7 +54,7 @@ type agentInfo struct {
 	// closed when its session is.
 	State   string `json:"state"`
 	Title   string `json:"title"`
-	Agent   string `json:"agent,omitempty"` // pi, Claude, Claude (yolo)
+	Agent   string `json:"agent,omitempty"` // pi, Claude, Claude (auto), Claude (yolo)
 	Session string `json:"session,omitempty"`
 	// Pane is the agent's pane in its session.
 	Pane string `json:"pane,omitempty"`

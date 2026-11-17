@@ -991,10 +991,34 @@ func TestAgentCommandPassesThePrompt(t *testing.T) {
 
 // Claude's --add-dir and --mcp-config take lists: the prompt after them would be read as one more.
 func TestAgentCommandEndsClaudeOptions(t *testing.T) {
-	for _, agent := range []string{agentClaude, "Claude (yolo)"} {
+	for _, agent := range []string{agentClaude, agentAuto, "Claude (yolo)"} {
 		cmd := agentCommand(agent, "prompt.md")
 		if cmd[len(cmd)-1] != "--" {
 			t.Errorf("%s: %q should end with --", agent, cmd)
+		}
+	}
+}
+
+// Auto mode has a classifier review what the agent runs; only yolo skips every check.
+func TestAgentArgsPermissionMode(t *testing.T) {
+	mode := func(agent string) string {
+		cmd := agentArgs(agent)
+		if n := slices.Index(cmd, "--permission-mode"); n >= 0 {
+			return cmd[n+1]
+		}
+		if slices.Contains(cmd, "--dangerously-skip-permissions") {
+			return "skip"
+		}
+		return ""
+	}
+	for agent, want := range map[string]string{agentClaude: "", agentAuto: "auto", "Claude (yolo)": "skip"} {
+		if got := mode(agent); got != want {
+			t.Errorf("%s: permission mode %q, want %q", agent, got, want)
+		}
+	}
+	for name, want := range map[string]string{"auto": agentAuto, "Claude (auto)": agentAuto, "yolo": "Claude (yolo)", "claude": agentClaude} {
+		if got, err := resolveAgent(name); got != want || err != nil {
+			t.Errorf("resolveAgent(%q) = %q, %v", name, got, err)
 		}
 	}
 }
@@ -1315,7 +1339,7 @@ func TestSessionLabel(t *testing.T) {
 
 // --add-dir takes a list, so --continue must come before it.
 func TestResumeCommandContinuesBeforeAddDir(t *testing.T) {
-	for _, agent := range []string{agentPi, agentClaude, "Claude (yolo)"} {
+	for _, agent := range []string{agentPi, agentClaude, agentAuto, "Claude (yolo)"} {
 		cmd := resumeCommand(agent)
 		if cmd[1] != "--continue" {
 			t.Errorf("%s: %q should continue right after the binary", agent, cmd)
