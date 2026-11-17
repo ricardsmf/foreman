@@ -381,19 +381,16 @@ mine.
 - It runs `claude --permission-mode manual --settings '{"disableAutoMode":"disable"}' <prompt>`:
   only the commands its checkout's `.claude/settings.local.json` allows run unasked, and no prompt
   or `shift+tab` can switch it to auto mode. The skill's own file lists the allowed commands.
-  Starting it runs one pass, unless it has a `marker` and no PR is due a review: then it starts
-  at its prompt and waits for the first wake.
+  Starting it runs one pass.
 - Every pass's prompt is the watcher's `prompt` followed by rules that keep its tool calls inside
   that allowlist: one plain command per Bash call (a loop, a variable or `;` asks even when each
   part is allowed), files read with Read, Grep and Glob, nothing the skill doesn't name, and the
   Rex session left under its name (Rex's startup hook, run again by each `/clear`, asks for a
-  rename). A watcher with a `marker` also gets the PRs due, each with its head and the commit
-  reviewed before, so the pass skips the commands that would find them.
+  rename).
 - The queue always lists it: with **needs you** when it waits on a permission prompt or failed (a
   pass stalls until you answer), else **working**, **idle** while it waits for a PR to change (or
-  for its time, `waits for mon-fri 17:45`; or between passes, for one that loops; in yellow, `didn't review #12` for the PRs a watcher with
-  a `marker` was woken for and left unreviewed), or **closed** when it isn't running, where `enter` starts
-  it. `K` twice stops it.
+  for its time, `waits for mon-fri 17:45`; or between passes, for one that loops), or **closed**
+  when it isn't running, where `enter` starts it. `K` twice stops it.
 - Its checkout is a worktree nobody works in, detached at `origin/develop`. The skills run from
   it, so move it forward when they change: `git -C <dir> fetch origin develop && git -C <dir>
   checkout --detach origin/develop`.
@@ -435,23 +432,10 @@ pass is gone at the next wake, and it reads a PR's state from GitHub again when 
   that many changed PRs as seen, lowest number first. The rest still differ at the next poll and
   wake it again once it rests, so every changed PR gets a pass; the pass a start runs counts the
   same way.
-- The board tells such a watcher nothing about the PRs: which are due, for what, and what else
+- The board tells the watcher nothing about the PRs: which are due, for what, and what else
   to do about them (`/fld-watch` also labels a PR whose threads are all resolved) is the skill's
   to work out, by its own rules. The board holds none of them, so they can change with the skill.
   A PR whose review failed is taken again by the next pass, whichever PR wakes it.
-- A watcher with a `marker` instead has the board work out which PRs are due a review, by the
-  rules `/fld-watch` had while it posted every review outright, so no wake ends in "nothing to
-  review". Those aren't its rules any more (it drafts pending reviews, and reviews my own PRs). The marker is what its reviews
-  carry before the commit they reviewed: `fld-review:sha=` for `<!-- fld-review:sha=<sha> -->`.
-  A PR is due when it asks for your review and has no marked review of yours, or when its head
-  moved on from the commit in your last marked review and your latest review isn't an approval.
-  Its signature is that head and the commit reviewed before, and only due PRs have one: a
-  comment, a failing check or a conflict wakes nothing, nor does a new commit on a PR you
-  approved or reviewed by hand.
-- Such a watcher is woken once per PR and head. A PR still due when it rests again (the review
-  failed, the pass was interrupted, or more PRs were due than a pass takes) shows on its queue
-  row as `didn't review #n`, from `watcherUnreviewed` in `state.json`. The next wake, for another
-  PR, runs a pass that takes it too; so does stopping the watcher (`K` twice) and starting it.
 - A watcher with neither `prs` nor `at` gets its prompt only at start, so it must keep itself
   going with `/loop 10m …`, as watchers did before the poll. One the board wakes can't have a
   `/loop` prompt: each wake would start another schedule.
@@ -537,14 +521,14 @@ reports, evidence and the agent's Rex session go.
 }
 ```
 
-`"watchers": []` turns them off. A watcher's `prs` is optional; `on` and `batch` need them, and so
-does a `marker`, which excludes those two; see [Waking a watcher](#waking-a-watcher). `at` is optional too, and excludes `prs`; see [Waking a
+`"watchers": []` turns them off. A watcher's `prs` is optional, and `on` and `batch` need them;
+see [Waking a watcher](#waking-a-watcher). `at` is optional too, and excludes `prs`; see [Waking a
 watcher by the clock](#waking-a-watcher-by-the-clock).
 
 ## State
 
 - State (repo per project, last agent per repo, dispatched tickets, PRs and tasks with their sessions and titles, each session's agent pane, the last task number per repo, queue items
-  marked reviewed, each watcher's PR signatures at its last wake and the PRs it left unreviewed, each scheduled watcher's last time) is in
+  marked reviewed, each watcher's PR signatures at its last wake, each scheduled watcher's last time) is in
   `~/.local/state/foreman/state.json`, written atomically. foreman and its commands (`dispatch`, `ask`, `answer`…) all write it,
   so each write holds `state.json.lock`, and foreman re-reads it every few seconds. An unreadable
   file is moved to `state.json.corrupt` rather than overwritten.

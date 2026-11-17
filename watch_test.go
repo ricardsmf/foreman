@@ -104,89 +104,6 @@ func TestPrSignature(t *testing.T) {
 	}
 }
 
-// A marked watcher owes a review to a PR that asks for mine and has none of its reviews, and to
-// one whose head moved on from the commit it last reviewed, unless I approved since.
-func TestDueSignature(t *testing.T) {
-	const a, b = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	marked := markedSha("fld-review:sha=")
-	bot := func(sha string) myReview {
-		return myReview{State: "COMMENTED", Body: "**[bot]** summary\n\n<!-- fld-review:sha=" + sha + " -->"}
-	}
-	pr := func(asked bool, mine ...myReview) watchedPr {
-		p := watchedPr{HeadRefOid: b}
-		p.Mine.Nodes = mine
-		// A team's request has no login.
-		p.ReviewRequests.Nodes = []reviewRequest{{}}
-		if asked {
-			var r reviewRequest
-			r.RequestedReviewer.Login = "Me"
-			p.ReviewRequests.Nodes = append(p.ReviewRequests.Nodes, r)
-		}
-		return p
-	}
-	for _, c := range []struct {
-		what string
-		p    watchedPr
-		want string
-	}{
-		{"asked, never reviewed", pr(true), "head=" + b + " since=none"},
-		{"asked, reviewed by hand only", pr(true, myReview{State: "COMMENTED", Body: "looks odd"}), "head=" + b + " since=none"},
-		{"not asked, never reviewed", pr(false), ""},
-		{"not asked, reviewed by hand", pr(false, myReview{State: "CHANGES_REQUESTED", Body: "no"}), ""},
-		{"reviewed at the head", pr(true, bot(a), bot(b)), ""},
-		{"new commits since its review", pr(false, bot(a)), "head=" + b + " since=" + a},
-		{"new commits, and I approved since", pr(false, bot(a), myReview{State: "APPROVED"}), ""},
-		{"new commits, approved and then commented", pr(false, bot(a), myReview{State: "APPROVED"}, myReview{State: "COMMENTED", Body: "one more"}), "head=" + b + " since=" + a},
-		{"a draft review of mine is no approval yet", pr(false, bot(a), myReview{State: "PENDING"}), "head=" + b + " since=" + a},
-		{"a quoted marker before its own", pr(false, myReview{State: "COMMENTED", Body: "quotes <!-- fld-review:sha=" + b + " --> then <!-- fld-review:sha=" + a + " -->"}), "head=" + b + " since=" + a},
-		{"a short sha is no marker", pr(false, myReview{State: "COMMENTED", Body: "<!-- fld-review:sha=abc123 -->"}), ""},
-	} {
-		sig, due := dueSignature(c.p, "me", marked)
-		if !due {
-			sig = ""
-		}
-		if sig != c.want {
-			t.Errorf("%s: %q, want %q", c.what, sig, c.want)
-		}
-	}
-	// Another watcher's marker isn't this one's.
-	if _, due := dueSignature(pr(false, bot(a)), "me", markedSha("other:sha=")); due {
-		t.Error("took another marker's review for its own")
-	}
-}
-
-// The PRs a resting watcher didn't review are kept for the queue, and a wake clears them.
-func TestRecordUnreviewed(t *testing.T) {
-	old := stateFile
-	stateFile = filepath.Join(t.TempDir(), "state.json")
-	t.Cleanup(func() { stateFile = old })
-
-	recordUnreviewed("w", []string{"org/app#12", "org/app#15"})
-	if got := loadState().WatcherUnreviewed["w"]; !slices.Equal(got, []string{"org/app#12", "org/app#15"}) {
-		t.Fatalf("recorded %v", got)
-	}
-	t.Cleanup(func() { watchers = nil })
-	watchers = []Watcher{{Name: "w", Dir: "/r/watch", Prompt: "/fld-watch", PRs: []string{"is:open"}, Marker: "m="}}
-	label := func(state string) string {
-		items := queueItems(loadState(), []rexSession{{ID: "s1", Label: "w", State: state}}, nil)
-		_, l := itemLabel(items[0])
-		return l
-	}
-	if l := label("idle"); !strings.Contains(l, "didn't review #12, #15") {
-		t.Errorf("at rest: %q", l)
-	}
-	if l := label("working"); !strings.Contains(l, "working") {
-		t.Errorf("working: %q", l)
-	}
-	recordUnreviewed("w", nil)
-	if got, ok := loadState().WatcherUnreviewed["w"]; ok {
-		t.Errorf("after a wake: %v", got)
-	}
-	if l := label("idle"); !strings.Contains(l, "nothing to review") {
-		t.Errorf("nothing due: %q", l)
-	}
-}
-
 func TestChangedPrs(t *testing.T) {
 	last := map[string]string{"a#1": "s1", "a#2": "s2", "a#3": "s3"}
 	for _, c := range []struct {
@@ -269,22 +186,11 @@ func TestWakeWatcherClearsFirst(t *testing.T) {
 	}
 }
 
-// A pass's prompt carries the rules for staying inside the allowlist, and a marked watcher's the
-// PRs due, in number order, so the pass needn't look them up with commands of its own.
+// A pass's prompt carries the rules for staying inside the allowlist, and names no PR.
 func TestPassPrompt(t *testing.T) {
-	w := Watcher{Name: "w", Prompt: "Run a pass."}
-	if got := passPrompt(w, map[string]string{"org/app#12": "head=abc failing= merge=ok comment=none"}); got != "Run a pass. "+watcherRules {
-		t.Errorf("unmarked: %q", got)
-	}
-	w.Marker = "m="
-	if got := passPrompt(w, nil); got != "Run a pass. "+watcherRules {
-		t.Errorf("none due: %q", got)
-	}
-	got := passPrompt(w, map[string]string{"org/app#120": "head=ccc since=none", "org/app#15": "head=bbb since=aaa"})
-	want := "Run a pass. " + watcherRules + " The board already found the PRs due a review, so skip step 1's commands and take these: " +
-		"#15 at bbb (new commits since aaa), #120 at ccc (whole PR)."
-	if got != want {
-		t.Errorf("due:\n got %q\nwant %q", got, want)
+	w := Watcher{Name: "w", Prompt: "Run a pass.", PRs: []string{"is:open"}}
+	if got := passPrompt(w); got != "Run a pass. "+watcherRules {
+		t.Errorf("prompt %q", got)
 	}
 }
 
@@ -330,12 +236,10 @@ func TestPolledWatcherConfig(t *testing.T) {
 	if err := write(`{"watchers": [{"name": "w", "dir": "/x", "prompt": "/loop 10m /fld-watch"}]}`); err != nil {
 		t.Errorf("a watcher without prs keeps its loop: %v", err)
 	}
-	err = write(`{"watchers": [{"name": "w", "dir": "/x", "prompt": "/fld-watch", "marker": "fld-review:sha="}]}`)
+	// The marker went with the rules it stood for: a config that still names one is told so.
+	err = write(`{"watchers": [{"name": "w", "dir": "/x", "prompt": "/fld-watch", "prs": ["is:open"], "marker": "fld-review:sha="}]}`)
 	if err == nil || !strings.Contains(err.Error(), "marker") {
-		t.Errorf("a marker without prs: %v", err)
-	}
-	if err := write(`{"watchers": [{"name": "w", "dir": "/x", "prompt": "/fld-watch", "prs": ["is:open"], "marker": "fld-review:sha="}]}`); err != nil || watchers[0].Marker != "fld-review:sha=" {
-		t.Errorf("a marked watcher: %v, %+v", err, watchers)
+		t.Errorf("a marker: %v", err)
 	}
 }
 
@@ -462,7 +366,6 @@ func TestWatcherWakeConfig(t *testing.T) {
 	for what, c := range map[string][2]string{
 		"an unknown part":      {`"prs": ["is:open"], "on": ["pushes"]`, "pushes"},
 		"on without prs":       {`"on": ["commit"]`, "prs"},
-		"batch with a marker":  {`"prs": ["is:open"], "marker": "m=", "batch": 3`, "marker"},
 		"a batch below nought": {`"prs": ["is:open"], "batch": -1`, "batch"},
 	} {
 		if err := write(c[0]); err == nil || !strings.Contains(err.Error(), c[1]) {

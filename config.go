@@ -73,11 +73,8 @@ func loadConfig() error {
 			if (len(w.PRs) > 0 || w.At != "") && strings.HasPrefix(strings.TrimSpace(w.Prompt), "/loop ") {
 				return fmt.Errorf("%s: the board wakes watcher %s (it has prs or at), so its prompt runs once per wake and can't be a /loop", tilde(configFile), w.Name)
 			}
-			if w.Marker != "" && len(w.PRs) == 0 {
-				return fmt.Errorf("%s: watcher %s has a marker and no prs: the marker says which of its prs are due a review", tilde(configFile), w.Name)
-			}
-			if (len(w.On) > 0 || w.Batch != 0) && (len(w.PRs) == 0 || w.Marker != "") {
-				return fmt.Errorf("%s: watcher %s: on and batch are for a watcher with prs and no marker: a marked one is woken for the PRs due a review", tilde(configFile), w.Name)
+			if (len(w.On) > 0 || w.Batch != 0) && len(w.PRs) == 0 {
+				return fmt.Errorf("%s: watcher %s: on and batch say how its prs wake it, and it has none", tilde(configFile), w.Name)
 			}
 			for _, part := range w.On {
 				if !slices.Contains(wakeParts, part) {

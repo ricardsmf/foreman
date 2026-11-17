@@ -7,7 +7,6 @@ import (
 	"io"
 	"maps"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -27,15 +26,11 @@ type Watcher struct {
 	// them the board polls those PRs and types Prompt into the watcher when one changed; without,
 	// the watcher only gets Prompt at start, so it must keep itself going (`/loop 10m …`).
 	PRs []string `json:"prs,omitempty"`
-	// Marker is what the watcher's own reviews carry in their body, before the commit they
-	// reviewed: "fld-review:sha=" for `<!-- fld-review:sha=<sha> -->`. With it the board knows which
-	// PRs are due a review, wakes the watcher only for those, and starts it idle when none is.
-	Marker string `json:"marker,omitempty"`
-	// On names what about a PR wakes an unmarked watcher: "commit" (its head moved), "checks" (a
+	// On names what about a PR wakes the watcher: "commit" (its head moved), "checks" (a
 	// check newly failing), "conflict", "comment" (a comment or review by someone else) and
 	// "threads" (a review thread opened or resolved). Without it: commit, checks, conflict, comment.
 	On []string `json:"on,omitempty"`
-	// Batch is how many PRs a pass of an unmarked watcher takes at most. A wake then counts only that
+	// Batch is how many PRs a pass takes at most. A wake then counts only that
 	// many changed PRs as seen, lowest number first, and the rest wake it again once it rests.
 	Batch int `json:"batch,omitempty"`
 	// At is when the board starts a pass by the clock instead: "17:45" every day, or "mon-fri
@@ -81,44 +76,10 @@ func watcherCommand(prompt string) []string {
 // allowed. Rex's startup hook, run again by each /clear, asks the session to rename itself.
 const watcherRules = "Each Bash call is one command the skill names, with its values written out: no loop, variable, `;`, `&&`, `|`, redirect, `cd` or `echo`, since anything the allowlist doesn't match waits for me to approve it. Read, search and list files with Read, Grep and Glob. Run nothing the skill doesn't name, and leave the Rex session's name as it is."
 
-// passPrompt starts a pass: the watcher's prompt, then watcherRules, then for a watcher with a
-// marker the PRs due, by `owner/name#n` with their dueSignature, which the pass then needn't
-// look up with commands of its own.
-func passPrompt(w Watcher, due map[string]string) string {
-	prompt := w.Prompt + " " + watcherRules
-	if w.Marker == "" || len(due) == 0 {
-		return prompt
-	}
-	type pr struct {
-		n                int
-		head, since, how string
-	}
-	var prs []pr
-	for key, sig := range due {
-		var p pr
-		_, num, _ := strings.Cut(key, "#")
-		p.n, _ = strconv.Atoi(num)
-		for f := range strings.FieldsSeq(sig) {
-			k, v, _ := strings.Cut(f, "=")
-			switch k {
-			case "head":
-				p.head = v
-			case "since":
-				p.since = v
-			}
-		}
-		p.how = "whole PR"
-		if p.since != "none" {
-			p.how = "new commits since " + p.since
-		}
-		prs = append(prs, p)
-	}
-	slices.SortFunc(prs, func(a, b pr) int { return a.n - b.n })
-	var list []string
-	for _, p := range prs {
-		list = append(list, fmt.Sprintf("#%d at %s (%s)", p.n, p.head, p.how))
-	}
-	return prompt + " The board already found the PRs due a review, so skip step 1's commands and take these: " + strings.Join(list, ", ") + "."
+// passPrompt starts a pass: the watcher's prompt, then watcherRules. It names no PR: the pass
+// finds and judges them by its skill's rules, which the board doesn't hold.
+func passPrompt(w Watcher) string {
+	return w.Prompt + " " + watcherRules
 }
 
 // startWatcher starts the watcher in a background Rex session named after it, running a pass on
@@ -169,7 +130,6 @@ func startWatchers() (started []string, err error) {
 		}
 		// The pass its prompt starts covers the PRs as they are now, so the poll wakes it only for
 		// what changes after. Read before the start: a change in between wakes it once more, not never.
-		// A watcher with a marker and no PR due starts without a pass: there is nothing to review.
 		// A scheduled watcher starts without one too: its pass belongs to its time. With a batch the
 		// pass takes only some of what changed, so the rest stays unseen and wakes it again.
 		var baseline map[string]string
@@ -177,14 +137,13 @@ func startWatchers() (started []string, err error) {
 		if len(w.PRs) > 0 {
 			var e error
 			baseline, e = prSignatures(w)
-			pass = w.Marker == "" || e != nil || len(baseline) > 0
 			if e == nil {
 				baseline, _ = seenAfter(state.WatcherPrs[w.Name], baseline, w.Batch)
 			}
 		}
 		prompt := ""
 		if pass {
-			prompt = passPrompt(w, baseline)
+			prompt = passPrompt(w)
 		}
 		id, e := startWatcher(w, prompt)
 		if e != nil {
@@ -211,8 +170,8 @@ func startWatchers() (started []string, err error) {
 
 // watcherItem is the watcher's line in the queue: with the agents that need me when it waits on a
 // permission prompt or failed, else by whether it works, waits for its next pass or isn't running.
-func watcherItem(w Watcher, sessions []rexSession, recorded string, unreviewed []string) queueItem {
-	it := queueItem{Kind: agentItem, Watcher: true, Polled: len(w.PRs) > 0, Reviews: w.Marker != "", At: w.At, Unreviewed: unreviewed,
+func watcherItem(w Watcher, sessions []rexSession, recorded string) queueItem {
+	it := queueItem{Kind: agentItem, Watcher: true, Polled: len(w.PRs) > 0, At: w.At,
 		Key: w.Name, Title: w.Prompt, Dir: w.Dir, Group: closed}
 	if rs, ok := findWatcher(sessions, w, recorded); ok {
 		it.on(rs)
@@ -310,11 +269,8 @@ func pollOne(w Watcher, sessions []rexSession, recorded string) (string, error) 
 		return fmt.Sprintf("Woke %s for %s", w.Name, at.Format("15:04")), nil
 	}
 	changed, err := pollWatcher(w, sessions, recorded)
-	switch {
-	case err != nil || len(changed) == 0:
+	if err != nil || len(changed) == 0 {
 		return "", err
-	case w.Marker != "":
-		return fmt.Sprintf("Woke %s to review %s", w.Name, strings.Join(changed, ", ")), nil
 	}
 	return fmt.Sprintf("Woke %s: %s changed", w.Name, strings.Join(changed, ", ")), nil
 }
@@ -331,7 +287,7 @@ func pollSchedule(w Watcher, sessions []rexSession, recorded string, now time.Ti
 	if err != nil {
 		return time.Time{}, err
 	}
-	return wakeIfDue(w.Name, sc, now, func() error { return wakeWatcher(s, passPrompt(w, nil)) })
+	return wakeIfDue(w.Name, sc, now, func() error { return wakeWatcher(s, passPrompt(w)) })
 }
 
 // pollWatcher wakes the watcher when one of its PRs changed since its last wake, and returns those
@@ -346,15 +302,7 @@ func pollWatcher(w Watcher, sessions []rexSession, recorded string) ([]string, e
 	if err != nil {
 		return nil, err
 	}
-	changed, err := wakeIfChanged(w.Name, now, w.Batch, func() error { return wakeWatcher(s, passPrompt(w, now)) })
-	if err == nil && w.Marker != "" {
-		var unreviewed []string
-		if len(changed) == 0 {
-			unreviewed = slices.Sorted(maps.Keys(now))
-		}
-		recordUnreviewed(w.Name, unreviewed)
-	}
-	return changed, err
+	return wakeIfChanged(w.Name, now, w.Batch, func() error { return wakeWatcher(s, passPrompt(w)) })
 }
 
 // wakeWatcher starts a pass in the watcher's pane, on an empty conversation: a pass reads
@@ -366,22 +314,6 @@ func wakeWatcher(s rexSession, prompt string) error {
 	}
 	time.Sleep(sendSettle)
 	return sendToAgent(s.ID, s.Block, prompt)
-}
-
-// recordUnreviewed keeps, for the queue, the PRs a watcher at rest still owes a review: the poll
-// woke it for each at this commit before, so it won't again, and something stopped the review (it
-// failed, the pass was interrupted, or the pass took fewer PRs than were due). A wake clears them.
-func recordUnreviewed(name string, prs []string) {
-	if slices.Equal(loadState().WatcherUnreviewed[name], prs) {
-		return
-	}
-	_, _ = updateState(func(s *State) {
-		if len(prs) == 0 {
-			delete(s.WatcherUnreviewed, name)
-		} else {
-			s.WatcherUnreviewed[name] = prs
-		}
-	})
 }
 
 // wakeable is whether the watcher sits at its prompt, so typing into it starts a pass. Working or
@@ -463,9 +395,8 @@ func seenAfter(old, now map[string]string, batch int) (map[string]string, []stri
 }
 
 // One page of a search, with what a PR's signature is made of. Reviews carry the inline comments
-// and their replies, so with the conversation's comments they hold every comment on the PR. My own
-// reviews, oldest first, and who is asked to review say whether a marked watcher owes it one.
-const watchQuery = `query($q: String!, $me: String!) {
+// and their replies, so with the conversation's comments they hold every comment on the PR.
+const watchQuery = `query($q: String!) {
   search(query: $q, type: ISSUE, first: 50) {
     nodes { ... on PullRequest {
       number headRefOid mergeable repository { nameWithOwner }
@@ -474,9 +405,7 @@ const watchQuery = `query($q: String!, $me: String!) {
       } } } } } }
       comments(last: 20) { nodes { id author { login } createdAt } }
       reviews(last: 20) { nodes { id author { login } submittedAt } }
-      reviewRequests(first: 50) { nodes { requestedReviewer { ... on User { login } } } }
       reviewThreads(first: 100) { nodes { isResolved } }
-      mine: reviews(last: 50, author: $me) { nodes { state body } }
     } }
   }
 }`
@@ -505,29 +434,11 @@ type watchedPr struct {
 	Reviews struct {
 		Nodes []prComment `json:"nodes"`
 	} `json:"reviews"`
-	ReviewRequests struct {
-		Nodes []reviewRequest `json:"nodes"`
-	} `json:"reviewRequests"`
 	ReviewThreads struct {
 		Nodes []struct {
 			IsResolved bool `json:"isResolved"`
 		} `json:"nodes"`
 	} `json:"reviewThreads"`
-	Mine struct {
-		Nodes []myReview `json:"nodes"`
-	} `json:"mine"`
-}
-
-// A reviewRequest asks a person for a review, or a team, which has no login.
-type reviewRequest struct {
-	RequestedReviewer struct {
-		Login string `json:"login"`
-	} `json:"requestedReviewer"`
-}
-
-type myReview struct {
-	State string `json:"state"`
-	Body  string `json:"body"`
 }
 
 // A prCheck is a check run (name, status, conclusion) or a commit status (context, state).
@@ -611,42 +522,6 @@ func prSignature(p watchedPr, me string, on []string) string {
 	return strings.Join(sig, " ")
 }
 
-// dueSignature is the review a marked watcher owes the PR, and whether it owes one, by the rules
-// fld-watch's own pass applies: the whole PR when it asks for my review and the watcher never
-// reviewed it, and the new commits when its head moved on from the commit the watcher last
-// reviewed, unless my latest review approved it. A PR I reviewed by hand, with no marked review
-// and no request, isn't the watcher's.
-func dueSignature(p watchedPr, me string, marked *regexp.Regexp) (string, bool) {
-	last, approved := "", false
-	for _, r := range p.Mine.Nodes {
-		// A pending review is a draft GitHub hasn't dated or placed yet.
-		if r.State == "PENDING" {
-			continue
-		}
-		approved = r.State == "APPROVED"
-		// The last one: the body also holds text the model wrote, which may quote another marker.
-		if m := marked.FindAllStringSubmatch(r.Body, -1); len(m) > 0 {
-			last = m[len(m)-1][1]
-		}
-	}
-	switch {
-	case last == "":
-		asked := slices.ContainsFunc(p.ReviewRequests.Nodes, func(r reviewRequest) bool {
-			return strings.EqualFold(r.RequestedReviewer.Login, me)
-		})
-		return "head=" + p.HeadRefOid + " since=none", asked
-	case last == p.HeadRefOid, approved:
-		return "", false
-	}
-	return "head=" + p.HeadRefOid + " since=" + last, true
-}
-
-// markedSha matches the comment a watcher's review ends with, such as
-// `<!-- fld-review:sha=<40 hex> -->`, and captures the commit.
-func markedSha(marker string) *regexp.Regexp {
-	return regexp.MustCompile("<!-- " + regexp.QuoteMeta(marker) + "([0-9a-f]{40}) -->")
-}
-
 // failingChecks names the checks that failed, sorted and once each. Only failures count, as in
 // t3code: a check queuing, running or passing gives the watcher nothing new, and a new commit
 // already changes the head.
@@ -665,8 +540,7 @@ func failingChecks(checks []prCheck) string {
 }
 
 // prSignatures reads the watcher's PRs, by `owner/name#n`, with their signatures: the union of its
-// searches, in the GitHub repo its checkout's origin points at. For a watcher with a marker, only
-// the PRs due a review, each with the review it is due.
+// searches, in the GitHub repo its checkout's origin points at.
 func prSignatures(w Watcher) (map[string]string, error) {
 	me, err := ghLogin()
 	if err != nil {
@@ -680,13 +554,9 @@ func prSignatures(w Watcher) (map[string]string, error) {
 	if m == nil {
 		return nil, fmt.Errorf("%s's origin isn't on GitHub", tilde(w.Dir))
 	}
-	var marked *regexp.Regexp
-	if w.Marker != "" {
-		marked = markedSha(w.Marker)
-	}
 	sigs := map[string]string{}
 	for _, search := range w.PRs {
-		out, err := sh("", "gh", "api", "graphql", "-f", "query="+watchQuery, "-f", "q=repo:"+m[1]+" is:pr "+search, "-f", "me="+me)
+		out, err := sh("", "gh", "api", "graphql", "-f", "query="+watchQuery, "-f", "q=repo:"+m[1]+" is:pr "+search)
 		if err != nil {
 			return nil, err
 		}
@@ -701,14 +571,8 @@ func prSignatures(w Watcher) (map[string]string, error) {
 			return nil, err
 		}
 		for _, p := range res.Data.Search.Nodes {
-			switch {
-			case p.Number == 0:
-			case marked == nil:
+			if p.Number != 0 {
 				sigs[p.key()] = prSignature(p, me, w.On)
-			default:
-				if sig, due := dueSignature(p, me, marked); due {
-					sigs[p.key()] = sig
-				}
 			}
 		}
 	}

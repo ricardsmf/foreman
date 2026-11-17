@@ -2128,7 +2128,7 @@ func TestFindWatcherAfterARename(t *testing.T) {
 			t.Errorf("took %+v for the watcher", other)
 		}
 	}
-	if it := watcherItem(w, []rexSession{renamed}, "", nil); it.Group != idle || it.Session != "s1" {
+	if it := watcherItem(w, []rexSession{renamed}, ""); it.Group != idle || it.Session != "s1" {
 		t.Errorf("queue row: %+v", it)
 	}
 	o := rexSession{ID: "o1", Label: "renamed", Procs: []rexProc{{Cmd: "claude", Dir: orchestratorDir}}}

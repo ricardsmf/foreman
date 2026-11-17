@@ -40,8 +40,6 @@ type State struct {
 	// WatcherPrs maps each polled watcher's name to its PRs' signatures at its last wake, by
 	// `owner/name#n`: the board wakes it again only when one differs.
 	WatcherPrs map[string]map[string]string `json:"watcherPrs,omitempty"`
-	// WatcherUnreviewed maps a watcher with a marker to the PRs it was woken for and didn't review.
-	WatcherUnreviewed map[string][]string `json:"watcherUnreviewed,omitempty"`
 	// WatcherRan maps a scheduled watcher's name to the latest of its times the board has dealt
 	// with, as RFC 3339: the board wakes it again only when a later one has passed.
 	WatcherRan map[string]string `json:"watcherRan,omitempty"`
@@ -132,9 +130,6 @@ func readState() State {
 	}
 	if s.WatcherPrs == nil {
 		s.WatcherPrs = map[string]map[string]string{}
-	}
-	if s.WatcherUnreviewed == nil {
-		s.WatcherUnreviewed = map[string][]string{}
 	}
 	if s.WatcherRan == nil {
 		s.WatcherRan = map[string]string{}
