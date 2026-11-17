@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -74,6 +75,17 @@ func loadConfig() error {
 			}
 			if w.Marker != "" && len(w.PRs) == 0 {
 				return fmt.Errorf("%s: watcher %s has a marker and no prs: the marker says which of its prs are due a review", tilde(configFile), w.Name)
+			}
+			if (len(w.On) > 0 || w.Batch != 0) && (len(w.PRs) == 0 || w.Marker != "") {
+				return fmt.Errorf("%s: watcher %s: on and batch are for a watcher with prs and no marker: a marked one is woken for the PRs due a review", tilde(configFile), w.Name)
+			}
+			for _, part := range w.On {
+				if !slices.Contains(wakeParts, part) {
+					return fmt.Errorf("%s: watcher %s: on has %q, which isn't one of %s", tilde(configFile), w.Name, part, strings.Join(wakeParts, ", "))
+				}
+			}
+			if w.Batch < 0 {
+				return fmt.Errorf("%s: watcher %s: batch is how many PRs a pass takes, so not %d", tilde(configFile), w.Name, w.Batch)
 			}
 			if rest, ok := strings.CutPrefix(w.Dir, "~/"); ok {
 				w.Dir = filepath.Join(home, rest)

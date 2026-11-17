@@ -30,22 +30,33 @@ type Watcher struct {
 	// reviewed: "fld-review:sha=" for `<!-- fld-review:sha=<sha> -->`. With it the board knows which
 	// PRs are due a review, wakes the watcher only for those, and starts it idle when none is.
 	Marker string `json:"marker,omitempty"`
+	// On names what about a PR wakes an unmarked watcher: "commit" (its head moved), "checks" (a
+	// check newly failing), "conflict", "comment" (a comment or review by someone else) and
+	// "threads" (a review thread opened or resolved). Without it: commit, checks, conflict, comment.
+	On []string `json:"on,omitempty"`
+	// Batch is how many PRs a pass of an unmarked watcher takes at most. A wake then counts only that
+	// many changed PRs as seen, lowest number first, and the rest wake it again once it rests.
+	Batch int `json:"batch,omitempty"`
 	// At is when the board starts a pass by the clock instead: "17:45" every day, or "mon-fri
 	// 17:45". The board types Prompt then, so such a watcher has no PRs and doesn't loop.
 	At string `json:"at,omitempty"`
 }
 
 // Mine, like the other defaults; "watchers" in the config file replaces the list. The searches are
-// the two fld-watch's own pass runs: PRs that request my review, and PRs I reviewed, for new commits.
+// the two fld-watch's own pass runs, my PRs and the PRs that request my review, and it takes three
+// PRs a pass. --once: without it the skill starts a ten-minute loop of its own. The board only
+// says when to look: which PRs are due, and what for, is the skill's to work out, by rules that
+// change with it. A new head is a review due, and a thread resolved may finish one.
 var watchers = []Watcher{{
 	Name:   "fld-pr-watch",
 	Dir:    filepath.Join(home, "work", "code", "reports-app-watch"),
-	Prompt: "/fld-watch",
+	Prompt: "/fld-watch --once",
 	PRs: []string{
-		"user-review-requested:@me is:open draft:false base:develop",
-		"reviewed-by:@me is:open draft:false base:develop",
+		"author:@me is:open draft:false -label:agent-review-done -base:main",
+		"user-review-requested:@me is:open draft:false -base:main",
 	},
-	Marker: "fld-review:sha=",
+	On:    []string{"commit", "threads"},
+	Batch: 3,
 }}
 
 // watcherCommand runs Claude Code in manualMode: the session reads text other people wrote, so
@@ -141,7 +152,8 @@ func startWatchers() (started []string, err error) {
 	if err != nil {
 		return nil, err
 	}
-	recorded := loadState().WatcherSessions
+	state := loadState()
+	recorded := state.WatcherSessions
 	ids := map[string]string{}
 	baselines := map[string]map[string]string{}
 	var failed []string
@@ -153,13 +165,17 @@ func startWatchers() (started []string, err error) {
 		// The pass its prompt starts covers the PRs as they are now, so the poll wakes it only for
 		// what changes after. Read before the start: a change in between wakes it once more, not never.
 		// A watcher with a marker and no PR due starts without a pass: there is nothing to review.
-		// A scheduled watcher starts without one too: its pass belongs to its time.
+		// A scheduled watcher starts without one too: its pass belongs to its time. With a batch the
+		// pass takes only some of what changed, so the rest stays unseen and wakes it again.
 		var baseline map[string]string
 		pass := w.At == ""
 		if len(w.PRs) > 0 {
 			var e error
 			baseline, e = prSignatures(w)
 			pass = w.Marker == "" || e != nil || len(baseline) > 0
+			if e == nil {
+				baseline, _ = seenAfter(state.WatcherPrs[w.Name], baseline, w.Batch)
+			}
 		}
 		prompt := ""
 		if pass {
@@ -291,7 +307,7 @@ func pollWatcher(w Watcher, sessions []rexSession, recorded string) ([]string, e
 	if err != nil {
 		return nil, err
 	}
-	changed, err := wakeIfChanged(w.Name, now, func() error { return wakeWatcher(s, passPrompt(w, now)) })
+	changed, err := wakeIfChanged(w.Name, now, w.Batch, func() error { return wakeWatcher(s, passPrompt(w, now)) })
 	if err == nil && w.Marker != "" {
 		var unreviewed []string
 		if len(changed) == 0 {
@@ -338,21 +354,22 @@ func wakeable(state string) bool {
 
 // wakeIfChanged records the signatures and calls wake when a PR changed since the last wake. The
 // record comes first, under the state lock, so two boards polling at once wake the watcher once;
-// a failed wake puts the old record back for the next poll to retry.
-func wakeIfChanged(name string, now map[string]string, wake func() error) ([]string, error) {
+// a failed wake puts the old record back for the next poll to retry. With a batch, only the PRs
+// seenAfter counts as seen are recorded and returned.
+func wakeIfChanged(name string, now map[string]string, batch int, wake func() error) ([]string, error) {
 	var changed []string
-	var old map[string]string
+	var old, seen map[string]string
 	if _, err := updateState(func(s *State) {
 		old = s.WatcherPrs[name]
-		if changed = changedPrs(old, now); len(changed) > 0 {
-			s.WatcherPrs[name] = now
+		if seen, changed = seenAfter(old, now, batch); len(changed) > 0 {
+			s.WatcherPrs[name] = seen
 		}
 	}); err != nil || len(changed) == 0 {
 		return nil, err
 	}
 	if err := wake(); err != nil {
 		_, _ = updateState(func(s *State) {
-			if maps.Equal(s.WatcherPrs[name], now) {
+			if maps.Equal(s.WatcherPrs[name], seen) {
 				if old == nil {
 					delete(s.WatcherPrs, name)
 				} else {
@@ -379,6 +396,33 @@ func changedPrs(last, now map[string]string) []string {
 	return changed
 }
 
+// seenAfter is what a wake records of the PRs as they are now, and the changed PRs it hands the
+// pass, sorted. Without a batch that is all of them. With one, a pass takes at most that many, so
+// only the batch lowest-numbered changed PRs count as seen: the others keep the signature
+// recorded before, or none, and so still differ at the next poll.
+func seenAfter(old, now map[string]string, batch int) (map[string]string, []string) {
+	changed := changedPrs(old, now)
+	if batch <= 0 || len(changed) <= batch {
+		return now, changed
+	}
+	number := func(key string) int {
+		_, n, _ := strings.Cut(key, "#")
+		num, _ := strconv.Atoi(n)
+		return num
+	}
+	slices.SortFunc(changed, func(a, b string) int { return cmp.Or(number(a)-number(b), strings.Compare(a, b)) })
+	seen := maps.Clone(now)
+	for _, k := range changed[batch:] {
+		if sig, ok := old[k]; ok {
+			seen[k] = sig
+		} else {
+			delete(seen, k)
+		}
+	}
+	handed := slices.Sorted(slices.Values(changed[:batch]))
+	return seen, handed
+}
+
 // One page of a search, with what a PR's signature is made of. Reviews carry the inline comments
 // and their replies, so with the conversation's comments they hold every comment on the PR. My own
 // reviews, oldest first, and who is asked to review say whether a marked watcher owes it one.
@@ -392,6 +436,7 @@ const watchQuery = `query($q: String!, $me: String!) {
       comments(last: 20) { nodes { id author { login } createdAt } }
       reviews(last: 20) { nodes { id author { login } submittedAt } }
       reviewRequests(first: 50) { nodes { requestedReviewer { ... on User { login } } } }
+      reviewThreads(first: 100) { nodes { isResolved } }
       mine: reviews(last: 50, author: $me) { nodes { state body } }
     } }
   }
@@ -424,6 +469,11 @@ type watchedPr struct {
 	ReviewRequests struct {
 		Nodes []reviewRequest `json:"nodes"`
 	} `json:"reviewRequests"`
+	ReviewThreads struct {
+		Nodes []struct {
+			IsResolved bool `json:"isResolved"`
+		} `json:"nodes"`
+	} `json:"reviewThreads"`
 	Mine struct {
 		Nodes []myReview `json:"nodes"`
 	} `json:"mine"`
@@ -464,10 +514,21 @@ func (p watchedPr) key() string {
 	return strings.ToLower(fmt.Sprintf("%s#%d", p.Repository.NameWithOwner, p.Number))
 }
 
-// prSignature is what the watcher last saw of the PR: its head commit, its failing checks,
-// whether it conflicts, and the newest comment or review by someone other than me. Readable, so
-// state.json shows what woke the watcher.
-func prSignature(p watchedPr, me string) string {
+// wakeParts are what a watcher's `on` may name, in the order a signature lists them, and
+// defaultParts the ones a watcher without it is woken on.
+var (
+	wakeParts    = []string{"commit", "checks", "conflict", "comment", "threads"}
+	defaultParts = wakeParts[:4]
+)
+
+// prSignature is what the watcher last saw of the PR, of the parts it is woken on: its head
+// commit, its failing checks, whether it conflicts, the newest comment or review by someone other
+// than me, and its review threads, open and in all. Readable, so state.json shows what woke the
+// watcher.
+func prSignature(p watchedPr, me string, on []string) string {
+	if len(on) == 0 {
+		on = defaultParts
+	}
 	var checks []prCheck
 	if n := p.Commits.Nodes; len(n) > 0 && n[0].Commit.StatusCheckRollup != nil {
 		checks = n[0].Commit.StatusCheckRollup.Contexts.Nodes
@@ -489,7 +550,26 @@ func prSignature(p watchedPr, me string) string {
 			newest, id = at, c.ID
 		}
 	}
-	return fmt.Sprintf("head=%s failing=%s merge=%s comment=%s", p.HeadRefOid, failingChecks(checks), merge, id)
+	open := 0
+	for _, t := range p.ReviewThreads.Nodes {
+		if !t.IsResolved {
+			open++
+		}
+	}
+	part := map[string]string{
+		"commit":   "head=" + p.HeadRefOid,
+		"checks":   "failing=" + failingChecks(checks),
+		"conflict": "merge=" + merge,
+		"comment":  "comment=" + id,
+		"threads":  fmt.Sprintf("threads=%d/%d", open, len(p.ReviewThreads.Nodes)),
+	}
+	var sig []string
+	for _, name := range wakeParts {
+		if slices.Contains(on, name) {
+			sig = append(sig, part[name])
+		}
+	}
+	return strings.Join(sig, " ")
 }
 
 // dueSignature is the review a marked watcher owes the PR, and whether it owes one, by the rules
@@ -585,7 +665,7 @@ func prSignatures(w Watcher) (map[string]string, error) {
 			switch {
 			case p.Number == 0:
 			case marked == nil:
-				sigs[p.key()] = prSignature(p, me)
+				sigs[p.key()] = prSignature(p, me, w.On)
 			default:
 				if sig, due := dueSignature(p, me, marked); due {
 					sigs[p.key()] = sig

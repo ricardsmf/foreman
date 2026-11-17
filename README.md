@@ -369,8 +369,9 @@ attach or link them. A new dispatch empties the directory, and cleaning up a wor
 ## Watchers
 
 A watcher is a Claude Code session that runs one of a repo's skills when there is something for it
-to do. Mine is `fld-pr-watch`: `/fld-watch` in `~/work/code/reports-app-watch`, which reviews the
-PRs that request my review and posts the result under my account.
+to do. Mine is `fld-pr-watch`: `/fld-watch --once` in `~/work/code/reports-app-watch`, which
+reviews my open PRs, posting what blocks them, and drafts a pending review on the PRs that request
+mine.
 
 - The board starts each watcher that has no open Rex session, in the background, and records
   each watcher's session ID. A watcher's session is the recorded one, else one named after it, else
@@ -405,8 +406,8 @@ pass is gone at the next wake, and it reads a PR's state from GitHub again when 
 
 - The board polls when it starts and then every 2 minutes, with one `gh api graphql` request per
   search, scoped to the repo the checkout's `origin` points at. `fld-pr-watch`'s are the two
-  `/fld-watch` runs: `user-review-requested:@me is:open draft:false base:develop` and
-  `reviewed-by:@me is:open draft:false base:develop`.
+  `/fld-watch` runs: `author:@me is:open draft:false -label:agent-review-done -base:main` and
+  `user-review-requested:@me is:open draft:false -base:main`.
 - Each PR's signature is its head commit, the names of its failing checks (a check queuing,
   running or passing doesn't wake it; a new failure does), whether it has a merge conflict, and
   the newest comment or review by someone other than you. A PR whose signature differs from the
@@ -424,8 +425,21 @@ pass is gone at the next wake, and it reads a PR's state from GitHub again when 
   poll compares against the last wake, not the last poll.
 - Two foremans open at once wake a watcher once per change: each wake is recorded under the state
   lock before the prompt is typed. A wake that fails puts the old signatures back for the next poll.
-- A watcher with a `marker` is woken only for the PRs due a review, by the rules `/fld-watch`
-  applies in its own pass, so no wake ends in "nothing to review". The marker is what its reviews
+- `on` picks which of those wake it: `commit`, `checks`, `conflict`, `comment`, and `threads`, a
+  review thread opened or resolved, which is in no signature without it. Without `on`: the first
+  four. `fld-pr-watch` takes `["commit", "threads"]`: a new head is a review due and a thread
+  resolved may finish one, while a failing check or someone's comment gives it nothing to do.
+- `batch` is how many PRs a pass takes at most: three for `/fld-watch`. A wake then counts only
+  that many changed PRs as seen, lowest number first. The rest still differ at the next poll and
+  wake it again once it rests, so every changed PR gets a pass; the pass a start runs counts the
+  same way.
+- The board tells such a watcher nothing about the PRs: which are due, for what, and what else
+  to do about them (`/fld-watch` also labels a PR whose threads are all resolved) is the skill's
+  to work out, by its own rules. The board holds none of them, so they can change with the skill.
+  A PR whose review failed is taken again by the next pass, whichever PR wakes it.
+- A watcher with a `marker` instead has the board work out which PRs are due a review, by the
+  rules `/fld-watch` had while it posted every review outright, so no wake ends in "nothing to
+  review". Those aren't its rules any more (it drafts pending reviews, and reviews my own PRs). The marker is what its reviews
   carry before the commit they reviewed: `fld-review:sha=` for `<!-- fld-review:sha=<sha> -->`.
   A PR is due when it asks for your review and has no marked review of yours, or when its head
   moved on from the commit in your last marked review and your latest review isn't an approval.
@@ -489,9 +503,10 @@ reports, evidence and the agent's Rex session go.
   "watchers": [{
     "name": "fld-pr-watch",
     "dir": "~/work/code/reports-app-watch",
-    "prompt": "/fld-watch",
-    "prs": ["user-review-requested:@me is:open draft:false base:develop", "reviewed-by:@me is:open draft:false base:develop"],
-    "marker": "fld-review:sha="
+    "prompt": "/fld-watch --once",
+    "prs": ["author:@me is:open draft:false -label:agent-review-done -base:main", "user-review-requested:@me is:open draft:false -base:main"],
+    "on": ["commit", "threads"],
+    "batch": 3
   }, {
     "name": "eod",
     "dir": "~/work/eod",
@@ -501,8 +516,8 @@ reports, evidence and the agent's Rex session go.
 }
 ```
 
-`"watchers": []` turns them off. A watcher's `prs` is optional, and its `marker` needs them; see
-[Waking a watcher](#waking-a-watcher). `at` is optional too, and excludes `prs`; see [Waking a
+`"watchers": []` turns them off. A watcher's `prs` is optional; `on` and `batch` need them, and so
+does a `marker`, which excludes those two; see [Waking a watcher](#waking-a-watcher). `at` is optional too, and excludes `prs`; see [Waking a
 watcher by the clock](#waking-a-watcher-by-the-clock).
 
 ## State
