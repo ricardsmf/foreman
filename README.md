@@ -106,8 +106,13 @@ detail pane's place. Type to filter, `↑↓` pick, `enter` set, `esc` back.
   that pushes or posts. A review gets the same.
 - The worktree is `<repo>-<key>`. The most recently committed `origin/` branch containing the
   ticket key is checked out; a local branch of the same name is used as is, unpushed commits and
-  all. Otherwise `rf/<key>-<slug>` is created from `origin/develop`, else origin's default branch.
+  all. With none on origin, the most recently committed local branch containing the key is: the
+  one an agent committed on and nobody pushed, which outlives its worktree's cleanup. Otherwise
+  `rf/<key>-<slug>` is created from `origin/develop`, else origin's default branch.
   A failed fetch is reported and the last fetched refs are used.
+- The repo's worktrees whose directory is gone, removed by hand rather than by `^x`, are forgotten
+  first (`git worktree prune`): git still counts their branch as checked out there, so the
+  dispatch would reuse a directory that isn't there. A review's and a fix's worktree get the same.
 - Without a worktree the agent runs in the checkout itself, which must be on a ticket branch, not
   `develop`, `main`, `master` or a detached HEAD.
 - Each agent starts in a new background Rex session named after the ticket, such as

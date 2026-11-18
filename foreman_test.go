@@ -416,6 +416,58 @@ func TestPrepareWorktreeReusesTheBranchsWorktree(t *testing.T) {
 	}
 }
 
+// A worktree removed by hand, not through git, is still registered with its branch checked out:
+// it isn't reused, and the branch gets a worktree again.
+func TestPrepareWorktreeForgetsAGoneWorktree(t *testing.T) {
+	root := t.TempDir()
+	origin, repo := filepath.Join(root, "origin"), filepath.Join(root, "repo")
+	git(t, root, "init", "-q", "-b", "develop", origin)
+	git(t, origin, "commit", "-q", "--allow-empty", "-m", "base")
+	git(t, origin, "branch", "rf/fld-9-accents")
+	git(t, root, "clone", "-q", origin, repo)
+	cwd := repo + "-fld-9"
+	issue := Issue{Key: "FLD-9", Summary: "Accents"}
+	if _, _, err := prepareWorktree(repo, cwd, issue, func(string) {}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(cwd); err != nil {
+		t.Fatal(err)
+	}
+	dir, branch, err := prepareWorktree(repo, cwd, issue, func(string) {})
+	if err != nil || dir != cwd || branch != "rf/fld-9-accents" {
+		t.Fatalf("got %s on %s, %v; want %s on rf/fld-9-accents", dir, branch, err, cwd)
+	}
+	if got := git(t, cwd, "branch", "--show-current"); got != "rf/fld-9-accents" {
+		t.Errorf("the new worktree is on %q", got)
+	}
+}
+
+// A ticket branch that was never pushed outlives its worktree's cleanup: dispatching the ticket
+// again checks it out with the agent's commits, whatever the ticket's summary reads by then.
+func TestPrepareWorktreeTakesTheLocalTicketBranch(t *testing.T) {
+	root := t.TempDir()
+	origin, repo := filepath.Join(root, "origin"), filepath.Join(root, "repo")
+	git(t, root, "init", "-q", "-b", "main", origin)
+	git(t, origin, "commit", "-q", "--allow-empty", "-m", "base")
+	git(t, root, "clone", "-q", origin, repo)
+	cwd := repo + "-fld-8"
+	if _, _, err := prepareWorktree(repo, cwd, Issue{Key: "FLD-8", Summary: "New thing"}, func(string) {}); err != nil {
+		t.Fatal(err)
+	}
+	git(t, cwd, "commit", "-q", "--allow-empty", "-m", "the agent's work")
+	work := git(t, cwd, "rev-parse", "HEAD")
+	git(t, repo, "worktree", "remove", cwd)
+	git(t, repo, "branch", "rf/fld-80-other")
+
+	dir, branch, err := prepareWorktree(repo, cwd, Issue{Key: "FLD-8", Summary: "Renamed since"}, func(string) {})
+	if err != nil || dir != cwd || branch != "rf/fld-8-new-thing" {
+		t.Fatalf("got %s on %s, %v; want %s on rf/fld-8-new-thing", dir, branch, err, cwd)
+	}
+	if got := git(t, cwd, "rev-parse", "HEAD"); got != work {
+		t.Errorf("HEAD = %s, want the agent's commit %s", got, work)
+	}
+}
+
 // A dispatch that reuses a ticket branch diffs from where it started, leaving out the branch's
 // earlier commits; a review records no start.
 func TestDiffFromReusedBranch(t *testing.T) {
@@ -2794,5 +2846,20 @@ func TestPickApp(t *testing.T) {
 	}
 	if _, err := pickApp(clients[:1]); err == nil {
 		t.Error("pickApp with no app: want an error")
+	}
+}
+
+// A PR branch whose worktree was removed by hand gets a worktree again, not the directory that
+// is gone.
+func TestPrepareFixWorktreeForgetsAGoneWorktree(t *testing.T) {
+	root, repo, _ := fixRepo(t)
+	byHand := filepath.Join(root, "repo-fld-1786")
+	git(t, repo, "worktree", "add", "-q", "--no-track", "-b", "feature/x", byHand, "origin/feature/x")
+	if err := os.RemoveAll(byHand); err != nil {
+		t.Fatal(err)
+	}
+	dir, reused, err := prepareFixWorktree(repo, repo+"-fix-7", "feature/x", "develop", func(string) {})
+	if err != nil || reused || dir != repo+"-fix-7" || !exists(dir) {
+		t.Errorf("got %s, reused %t, %v; want a new worktree at %s", dir, reused, err, repo+"-fix-7")
 	}
 }

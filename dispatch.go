@@ -171,13 +171,38 @@ func baseBranch(remotes []string, originHead string) string {
 // ticketBranch is the origin branch named after the ticket, e.g. origin/li/FLD-1675-x for FLD-1675.
 // remotes is sorted newest commit first, so an old merged branch loses to the live one.
 func ticketBranch(remotes []string, key string) string {
-	keyRe := regexp.MustCompile(`(^|[^a-z0-9])` + regexp.QuoteMeta(strings.ToLower(key)) + `($|[^0-9])`)
+	keyRe := ticketRe(key)
 	for _, b := range remotes {
 		if strings.HasPrefix(b, "origin/") && b != "origin/HEAD" && keyRe.MatchString(strings.ToLower(b)) {
 			return b
 		}
 	}
 	return ""
+}
+
+// ticketRe matches a branch name, in lower case, that holds the ticket's key: fld-1675 is in
+// li/fld-1675-x and not in li/fld-16750.
+func ticketRe(key string) *regexp.Regexp {
+	return regexp.MustCompile(`(^|[^a-z0-9])` + regexp.QuoteMeta(strings.ToLower(key)) + `($|[^0-9])`)
+}
+
+// localTicketBranch is the ticket's branch when origin has none: the local one named after it,
+// where an agent committed and nobody pushed. heads is sorted newest commit first.
+func localTicketBranch(heads []string, key string) string {
+	keyRe := ticketRe(key)
+	for _, b := range heads {
+		if keyRe.MatchString(strings.ToLower(b)) {
+			return b
+		}
+	}
+	return ""
+}
+
+// forgetGone drops the repo's worktrees whose directory is gone, removed by hand: git still counts
+// their branch as checked out there, and refuses the branch and the directory to a new worktree.
+func forgetGone(repo string) error {
+	_, err := sh("", "git", "-C", repo, "worktree", "prune")
+	return err
 }
 
 // prepareWorktree creates `<repo>-<key>` on the ticket's branch, or reuses it, and returns its
@@ -198,8 +223,19 @@ func prepareWorktree(repo, cwd string, issue Issue, progress func(string)) (dir,
 	if err != nil {
 		return "", "", err
 	}
-	if existing := ticketBranch(remotes, issue.Key); existing != "" {
-		branch := strings.TrimPrefix(existing, "origin/")
+	if err := forgetGone(repo); err != nil {
+		return "", "", err
+	}
+	existing := ticketBranch(remotes, issue.Key)
+	branch = strings.TrimPrefix(existing, "origin/")
+	if existing == "" {
+		heads, err := git("for-each-ref", "--sort=-committerdate", "--format=%(refname:short)", "refs/heads")
+		if err != nil {
+			return "", "", err
+		}
+		branch = localTicketBranch(strings.Fields(heads), issue.Key)
+	}
+	if branch != "" {
 		list, err := git("worktree", "list", "--porcelain")
 		if err != nil {
 			return "", "", err
@@ -303,6 +339,9 @@ func prepareFixWorktree(repo, cwd, head, base string, progress func(string)) (di
 		refspecs = append(refspecs, fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", base, base))
 	}
 	if _, err := shFor(fetchTimeout, "", "git", append([]string{"-C", repo, "fetch", "--quiet", "origin"}, refspecs...)...); err != nil {
+		return "", false, err
+	}
+	if err := forgetGone(repo); err != nil {
 		return "", false, err
 	}
 	list, err := git("worktree", "list", "--porcelain")
@@ -682,6 +721,9 @@ func dispatchReview(ctx context.Context, jira *Jira, d PrDispatch, progress func
 		}
 		progress(fmt.Sprintf("Updated worktree %s to %s", tilde(cwd), short(head)))
 	} else {
+		if err := forgetGone(repo); err != nil {
+			return "", err
+		}
 		if _, err := sh("", "git", "-C", repo, "worktree", "add", "--detach", cwd, head); err != nil {
 			return "", err
 		}
