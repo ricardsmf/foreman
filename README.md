@@ -24,6 +24,10 @@ the side in focus alone, full width, and `^z` again both; `^l` while one is alon
 alone. A pane under 110 columns shows only the side in focus. `foreman queue` opens on the queue
 alone.
 
+The board draws on the terminal its output goes to. Where that is no terminal, in a script or an
+agent's shell, foreman starts no board: a word that isn't a command would have been read as a Jira
+project or a search, so a misspelt command fails there, named, with the list of commands.
+
 `foreman open` goes to the `foreman` Rex session, starting it if it isn't running. In Rex,
 `cmd+alt+j` (the `foreman` action in `~/.config/rex/init.lua`) runs `foreman open --print`, which
 prints the session's ID instead of showing it, and selects that session in the app the key was

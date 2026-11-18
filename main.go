@@ -16,6 +16,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/term"
 )
 
 var projectRe = regexp.MustCompile(`(?i)^[A-Z][A-Z0-9]+$`)
@@ -707,6 +708,22 @@ const usage = `usage: foreman [PROJECT | JQL]   the board of tickets and PRs bes
                           read and steer the agents from scripts
        foreman --logout   forget the Atlassian sign-in`
 
+// onTerminal is whether foreman's output goes to a terminal, which the board draws on.
+var onTerminal = func() bool { return term.IsTerminal(os.Stdout.Fd()) }
+
+// noTerminal is why the board doesn't start where it can't draw: in a script, or an agent's shell.
+// What it was given there is more likely a command misspelt than a Jira project or a search, which
+// is what the board would have taken it for.
+func noTerminal(argv []string, queueOnly bool) error {
+	switch {
+	case queueOnly:
+		return errors.New("foreman queue draws on a terminal, and its output goes to none; foreman agents lists what it shows")
+	case len(argv) == 0:
+		return errors.New("the board draws on a terminal, and its output goes to none; foreman --help lists the commands")
+	}
+	return fmt.Errorf("no command %q. The board would take it as a Jira project or a search, but it draws on a terminal, and its output goes to none\n\n%s", argv[0], usage)
+}
+
 func run() error {
 	argv := os.Args[1:]
 	// The whole reference in one page: the orchestrator reads it unasked, and dispatch --help would ask.
@@ -765,6 +782,9 @@ func run() error {
 	if len(argv) > 0 && argv[0] == "--logout" {
 		signOut()
 		return nil
+	}
+	if !onTerminal() {
+		return noTerminal(argv, queueOnly)
 	}
 
 	jql, title := parseArgs(argv)

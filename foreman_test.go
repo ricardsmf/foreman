@@ -3036,3 +3036,18 @@ func TestPrepareFixWorktreeForgetsAGoneWorktree(t *testing.T) {
 		t.Errorf("got %s, reused %t, %v; want a new worktree at %s", dir, reused, err, repo+"-fix-7")
 	}
 }
+
+// Where the board can't draw, what it was given is taken for a command misspelt, and the error
+// names it with the commands there are, in place of a failure to open a terminal.
+func TestNoTerminal(t *testing.T) {
+	err := noTerminal([]string{"agnets", "--json"}, false)
+	if err == nil || !strings.Contains(err.Error(), `no command "agnets"`) || !strings.Contains(err.Error(), "foreman agents | repos") {
+		t.Errorf("a misspelt command: %v", err)
+	}
+	if err := noTerminal(nil, false); err == nil || !strings.Contains(err.Error(), "foreman --help") {
+		t.Errorf("the board: %v", err)
+	}
+	if err := noTerminal(nil, true); err == nil || !strings.Contains(err.Error(), "foreman agents") {
+		t.Errorf("the queue: %v", err)
+	}
+}
