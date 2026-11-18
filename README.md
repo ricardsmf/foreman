@@ -15,6 +15,7 @@ foreman --logout            # forget the Atlassian sign-in
 foreman open                # go to the foreman Rex session, starting it when it isn't running
 foreman watch               # start the watchers and wake them, for launchd
 foreman dispatch --repo foreman 'Add a --verbose flag'   # a task, no ticket
+foreman repos               # the repos a dispatch takes, each with the agent it starts on
 ```
 
 foreman is one program in one pane: the board on the left and the [queue](#queue) on the right.
@@ -158,10 +159,41 @@ foreman dispatch --repo foreman [--agent pi|claude|auto|yolo] [--no-worktree] [-
 foreman dispatch --ticket FLD-1700 [--repo reports-app] [...] ['extra context']
 foreman dispatch --pr reports-app#1185 [--agent claude] ['what to focus on']
 foreman dispatch --pr reports-app#1185 --fix [--agent claude] [--title T] ['what to fix']
+foreman repos [--json] [--in DIR]
 ```
 
 `-` as the text reads it from stdin. A ticket without `--repo` goes to its project's last repo. A
 ticket or PR whose agent session is still open needs `--again`, like the board's second `enter`.
+
+- `--notify` shows the result line, or why nothing was dispatched, as a macOS notification as
+  well: for a dispatch started where nobody reads its output, as [the palette's](#from-rexs-command-palette) is.
+- `foreman repos` lists the repos `--repo` takes, each with the agent a dispatch there starts on.
+  The one the current directory is in, or `--in DIR`, reads `here`, from inside a worktree too.
+  `--json` gives `repos` (each one's `name`, `path`, `agent` and `here`) and `agents` (each
+  one's `label` and `note`).
+
+### From Rex's command palette
+
+`rex/foreman.lua` adds **New Foreman Task…** to Rex: a task handed to an agent from whatever
+session you are in, without a trip to the board. After @almonk's rex-projects.
+
+```lua
+-- ~/.config/rex/init.lua
+package.path = os.getenv("HOME") .. "/projects/foreman/rex/?.lua;" .. package.path
+require("foreman")
+rex.bind("cmd+alt+t", "foreman_task")
+```
+
+- It asks three things in the palette: the repo, with the one the focused pane's program is in
+  first (`here`; a worktree counts as its repo); the agent, with the one a dispatch in that repo
+  starts on first; and the task, in one line. Closing any of them dispatches nothing.
+- It then runs `foreman dispatch --notify` and doesn't wait for it: a dispatch fetches origin
+  first, and Rex gives an action 30 seconds. The result line, or why nothing was dispatched, comes
+  as a notification, and the agent shows in the queue.
+- foreman runs through the login shell, whose `PATH` has it. The repo, the agent and the task
+  travel in the environment, so the shell reads nothing you typed.
+- A pane on a remote host puts no repo first: its directory is that host's.
+- A longer brief, a ticket or a PR goes through the board's form, which has the editor (`^e`).
 
 ### Reading and steering agents
 
@@ -228,7 +260,7 @@ you answer them, and it only passes on what you tell it to.
   --settings '{"disableAutoMode":"disable"}'`), whatever your settings say: without
   `disableAutoMode`, the cursor on a Bash prompt rests on "Yes, and switch to auto mode", and
   one `enter` would hand the session to the auto-mode classifier. The read-only commands
-  (`agents`, `report`, `screen`, `wait`), `answer`, `reply` and `cleanup` run without
+  (`agents`, `repos`, `report`, `screen`, `wait`), `answer`, `reply` and `cleanup` run without
   asking: `reply` refuses a `blocked` agent, so it can't answer a permission prompt, and the
   instructions keep `cleanup` to `--dry-run` unless you ask. The rest, `dispatch` among them,
   follow manual mode: they prompt, unless Claude Code counts the command as read-only.
@@ -587,3 +619,9 @@ dispatch was one record under `dispatches` (a map per field: `dispatched`, `sess
 
 Every call to Rex goes through `rexAPI` (`rex.go`); `rexCLI` (`rex_cli.go`) is the only code that
 runs `rex`, and the tests put a fake in its place.
+
+`rex/foreman.lua` runs inside Rex, not in foreman. `go test` covers it as well: `lua_test.go`
+runs it in gopher-lua, the Lua Rex embeds, against a stand-in for the `rex` table, with
+`foreman repos` answered by the command itself. To try a change in Rex before reloading the
+config, `rex do rex/foreman.lua --action foreman_task`: the prompts show in the app, and a task
+that is answered is really dispatched. `rex config reload` loads the file for the key.

@@ -23,6 +23,8 @@ import (
 )
 
 const commandsUsage = `usage: foreman agents [--json] [--prs]   every dispatched agent and watcher, by queue group
+       foreman repos [--json] [--in DIR]  the repos a dispatch takes, each with the agent it starts
+                                          on; the one DIR is in (default: this directory) reads here
        foreman report KEY                the agent's report and its evidence files
        foreman screen [--lines N] KEY     the end of the agent's pane (0: all of it), then its seen token
        foreman reply [--now] [--seen TOKEN] KEY TEXT|-

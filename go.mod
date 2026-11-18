@@ -6,6 +6,7 @@ require (
 	charm.land/bubbletea/v2 v2.1.1
 	github.com/charmbracelet/x/ansi v0.11.9
 	github.com/modelcontextprotocol/go-sdk v1.8.0
+	github.com/yuin/gopher-lua v1.1.2
 	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/oauth2 v0.37.0
 	golang.org/x/text v0.43.0

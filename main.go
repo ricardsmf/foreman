@@ -703,7 +703,7 @@ const usage = `usage: foreman [PROJECT | JQL]   the board of tickets and PRs bes
        foreman watch      start the watchers and wake them, for launchd
        foreman dispatch   start an agent on a task, a ticket or a PR
        foreman orchestrator [--new]   Claude Code that hands work to agents (^g on the board)
-       foreman agents | report | screen | reply | wait | cleanup | ask | answer
+       foreman agents | repos | report | screen | reply | wait | cleanup | ask | answer
                           read and steer the agents from scripts
        foreman --logout   forget the Atlassian sign-in`
 
@@ -742,6 +742,8 @@ func run() error {
 				return nil
 			}
 			return runWatch(os.Stdout)
+		case "repos":
+			return runRepos(rest, os.Stdout)
 		case "agents":
 			return runAgents(rest, os.Stdout)
 		case "report":

@@ -6,6 +6,7 @@ package main
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -32,11 +33,13 @@ optional extra context. "-" reads TEXT from stdin. Options go before TEXT.
   --no-worktree   work in the checkout itself, which must be on a work branch
   --poteto        follow pstack's poteto-mode skill
   --title TITLE   the task's title (default: TEXT's first line), or a fix's (default: the PR's)
-  --again         start even though the ticket's or PR's agent session is still open`
+  --again         start even though the ticket's or PR's agent session is still open
+  --notify        show the result line, or the failure, as a notification too: for a dispatch
+                  started where nobody reads its output, as from Rex's command palette`
 
 type dispatchArgs struct {
-	repo, ticket, pr, agent, title, text string
-	noWorktree, poteto, again, fix       bool
+	repo, ticket, pr, agent, title, text   string
+	noWorktree, poteto, again, fix, notify bool
 }
 
 func parseDispatchArgs(argv []string, stdin io.Reader) (dispatchArgs, error) {
@@ -48,6 +51,7 @@ func parseDispatchArgs(argv []string, stdin io.Reader) (dispatchArgs, error) {
 	fs.StringVar(&a.pr, "pr", "", "")
 	fs.StringVar(&a.agent, "agent", "", "")
 	fs.StringVar(&a.title, "title", "", "")
+	fs.BoolVar(&a.notify, "notify", false, "")
 	fs.BoolVar(&a.noWorktree, "no-worktree", false, "")
 	fs.BoolVar(&a.poteto, "poteto", false, "")
 	fs.BoolVar(&a.again, "again", false, "")
@@ -173,10 +177,28 @@ func runDispatch(argv []string) error {
 	if err != nil {
 		return fmt.Errorf("%w\n\n%s", err, dispatchUsage)
 	}
+	text, err := dispatchFrom(a)
+	if a.notify {
+		if err != nil {
+			_ = notify("foreman didn't dispatch", err.Error())
+		} else {
+			_ = notify("foreman", text)
+		}
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Println(text)
+	return nil
+}
+
+// dispatchFrom starts the agent the arguments ask for and returns the result line.
+func dispatchFrom(a dispatchArgs) (string, error) {
+	var err error
 	agent := ""
 	if a.agent != "" {
 		if agent, err = resolveAgent(a.agent); err != nil {
-			return err
+			return "", err
 		}
 	}
 	progress := func(line string) { fmt.Fprintln(os.Stderr, line) }
@@ -184,7 +206,7 @@ func runDispatch(argv []string) error {
 	repo := ""
 	if a.repo != "" {
 		if repo, err = resolveRepo(a.repo, repos); err != nil {
-			return err
+			return "", err
 		}
 	}
 
@@ -199,7 +221,7 @@ func runDispatch(argv []string) error {
 	switch {
 	case a.pr != "":
 		if pr, err = findPr(a.pr); err != nil {
-			return err
+			return "", err
 		}
 		key, repo = pr.Key, pr.Checkout
 		if a.fix {
@@ -209,7 +231,7 @@ func runDispatch(argv []string) error {
 		key = strings.ToUpper(a.ticket)
 		if repo == "" {
 			if repo = state.RepoByProject[project(key)]; repo == "" {
-				return fmt.Errorf("no repo used for %s yet; pass --repo", project(key))
+				return "", fmt.Errorf("no repo used for %s yet; pass --repo", project(key))
 			}
 		}
 		progress("Reading " + key + "…")
@@ -218,7 +240,7 @@ func runDispatch(argv []string) error {
 			err = errors.New("not in Jira")
 		}
 		if err != nil {
-			return fmt.Errorf("%s: %w", key, err)
+			return "", fmt.Errorf("%s: %w", key, err)
 		}
 		issue = list[0]
 	}
@@ -226,7 +248,7 @@ func runDispatch(argv []string) error {
 	agent = cmp.Or(agent, defaultAgent(state, repo))
 	if session := state.Dispatched[key].Session; key != "" && session != "" && !a.again {
 		if states, err := agentStates(); err == nil && states[session] != "" {
-			return fmt.Errorf("%s's agent session is still open (%s); pass --again to start a second agent", key, states[session])
+			return "", fmt.Errorf("%s's agent session is still open (%s); pass --again to start a second agent", key, states[session])
 		}
 	}
 	_, _ = updateState(func(s *State) {
@@ -246,8 +268,77 @@ func runDispatch(argv []string) error {
 		text, err = dispatchTask(TaskDispatch{Repo: repo, Agent: agent, Worktree: !a.noWorktree, Poteto: a.poteto, Title: a.title, Task: a.text}, progress)
 	}
 	if err != nil {
-		return fmt.Errorf("%s: %w", cmp.Or(key, "task"), err)
+		return "", fmt.Errorf("%s: %w", cmp.Or(key, "task"), err)
 	}
-	fmt.Println(text)
+	return text, nil
+}
+
+// A repoInfo is a repo a dispatch can go to, as the repos command reports it.
+type repoInfo struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+	// Agent is the agent a dispatch there starts on.
+	Agent string `json:"agent"`
+	// Here is whether the directory asked about is inside the repo or one of its worktrees.
+	Here bool `json:"here,omitempty"`
+}
+
+// runRepos lists the repos a dispatch takes, each with the agent it would start on, and the
+// agents there are: what a picker outside foreman shows, such as the one in Rex's palette.
+func runRepos(argv []string, out io.Writer) error {
+	fs := newFlags("repos")
+	asJSON := fs.Bool("json", false, "")
+	dir := fs.String("in", "", "")
+	if _, err := parseFlags(fs, argv, 0); err != nil {
+		return err
+	}
+	if *dir == "" {
+		*dir, _ = os.Getwd()
+	}
+	here, s := repoAt(*dir), loadState()
+	infos := []repoInfo{}
+	nameW, pathW := 0, 0
+	for _, r := range listRepos() {
+		info := repoInfo{Name: filepath.Base(r), Path: r, Agent: defaultAgent(s, r), Here: samePath(r, here)}
+		infos = append(infos, info)
+		nameW, pathW = max(nameW, len(info.Name)), max(pathW, len(tilde(r)))
+	}
+	if *asJSON {
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		return enc.Encode(struct {
+			Repos  []repoInfo `json:"repos"`
+			Agents []Agent    `json:"agents"`
+		}{infos, agents})
+	}
+	for _, r := range infos {
+		note := ""
+		if r.Here {
+			note = "  here"
+		}
+		if _, err := fmt.Fprintf(out, "%-*s  %-*s  %s%s\n", nameW, r.Name, pathW, tilde(r.Path), r.Agent, note); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// repoAt is the main checkout of the repo dir is in, from anywhere inside it or inside one of its
+// worktrees; "" outside git.
+func repoAt(dir string) string {
+	for d := filepath.Clean(dir); ; d = filepath.Dir(d) {
+		if main := mainCheckout(d); main != "" {
+			return main
+		}
+		if d == filepath.Dir(d) {
+			return ""
+		}
+	}
+}
+
+// samePath is whether a and b are one directory, by whatever symlink each was reached.
+func samePath(a, b string) bool {
+	ra, errA := filepath.EvalSymlinks(a)
+	rb, errB := filepath.EvalSymlinks(b)
+	return errA == nil && errB == nil && ra == rb
 }

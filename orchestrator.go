@@ -60,6 +60,7 @@ Agents commit on their branch and stop there. Merging, pushing, opening a PR and
 var orchestratorTools = []string{
 	"Bash(foreman --help)",
 	"Bash(foreman agents:*)",
+	"Bash(foreman repos:*)",
 	"Bash(foreman report:*)",
 	"Bash(foreman screen:*)",
 	"Bash(foreman wait:*)",

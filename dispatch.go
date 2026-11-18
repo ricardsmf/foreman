@@ -29,7 +29,10 @@ var (
 	installedPlugins = filepath.Join(home, ".claude", "plugins", "installed_plugins.json")
 )
 
-type Agent struct{ Label, Note string }
+type Agent struct {
+	Label string `json:"label"`
+	Note  string `json:"note"`
+}
 
 var agents = []Agent{
 	{agentPi, "pi, default tools"},

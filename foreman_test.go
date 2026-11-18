@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -1508,6 +1509,10 @@ func TestParseDispatchArgs(t *testing.T) {
 	if err != nil || a.repo != "foreman" || a.agent != "pi" || a.text != "add a flag" {
 		t.Errorf("task: %+v, %v", a, err)
 	}
+	a, err = parseDispatchArgs([]string{"--repo", "foreman", "--notify", "--", "-v", "is", "a", "flag"}, nil)
+	if err != nil || !a.notify || a.text != "-v is a flag" {
+		t.Errorf("a task after --: %+v, %v", a, err)
+	}
 	a, err = parseDispatchArgs([]string{"--ticket", "FLD-1", "-"}, strings.NewReader("look at x\n"))
 	if err != nil || a.ticket != "FLD-1" || a.text != "look at x" {
 		t.Errorf("ticket with stdin: %+v, %v", a, err)
@@ -1596,6 +1601,89 @@ func TestPrepareTaskWorktree(t *testing.T) {
 	}
 	if _, err := prepareTaskWorktree(repo, cwd, "Add a flag", 1, func(string) {}); err == nil {
 		t.Error("reused an existing directory")
+	}
+}
+
+// foreman repos lists the repos a dispatch takes with the agent each starts on, and marks the one
+// a directory is in, from inside a worktree too.
+func TestRepos(t *testing.T) {
+	tempState(t)
+	root := t.TempDir()
+	old := repoRoots
+	repoRoots = []string{root}
+	t.Cleanup(func() { repoRoots = old })
+	app, tool, worktree := filepath.Join(root, "app"), filepath.Join(root, "tool"), filepath.Join(root, "tool-task-1")
+	for _, r := range []string{app, tool} {
+		git(t, root, "init", "-q", "-b", "main", r)
+		git(t, r, "commit", "-q", "--allow-empty", "-m", "base")
+	}
+	git(t, tool, "worktree", "add", "-q", worktree)
+	if _, err := updateState(func(s *State) { s.AgentByRepo[tool] = agentAuto }); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(worktree, "a", "b")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	if err := runRepos([]string{"--json", "--in", sub}, &out); err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Repos  []repoInfo
+		Agents []Agent
+	}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	want := []repoInfo{{Name: "app", Path: app, Agent: agentPi}, {Name: "tool", Path: tool, Agent: agentAuto, Here: true}}
+	if !slices.Equal(got.Repos, want) || !slices.Equal(got.Agents, agents) {
+		t.Errorf("repos --json = %+v, agents %+v; want %+v", got.Repos, got.Agents, want)
+	}
+
+	out.Reset()
+	if err := runRepos([]string{"--in", root}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if lines := strings.Split(strings.TrimSpace(out.String()), "\n"); len(lines) != 2 || !strings.HasSuffix(lines[1], agentAuto) || strings.Contains(out.String(), "here") {
+		t.Errorf("repos outside every repo:\n%s", out.String())
+	}
+}
+
+// --notify shows how a dispatch ended where nobody reads its output: the result line, or why it
+// didn't start.
+func TestDispatchNotifies(t *testing.T) {
+	useFakeRex(t)
+	oldEvidence := evidenceRoot
+	evidenceRoot = t.TempDir()
+	root := t.TempDir()
+	oldRoots, oldNotify := repoRoots, notify
+	repoRoots = []string{root}
+	var told [][2]string
+	notify = func(title, text string) error { told = append(told, [2]string{title, text}); return nil }
+	t.Cleanup(func() { repoRoots, notify, evidenceRoot = oldRoots, oldNotify, oldEvidence })
+	origin, repo := filepath.Join(root, "origin.git"), filepath.Join(root, "tool")
+	git(t, root, "init", "-q", "--bare", "-b", "main", origin)
+	git(t, root, "init", "-q", "-b", "main", repo)
+	git(t, repo, "commit", "-q", "--allow-empty", "-m", "base")
+	git(t, repo, "remote", "add", "origin", origin)
+	git(t, repo, "push", "-q", "origin", "main")
+
+	if err := runDispatch([]string{"--notify", "--repo", "nope", "--agent", "pi", "do it"}); err == nil {
+		t.Error("dispatched to a repo that isn't there")
+	}
+	if len(told) != 1 || told[0][0] != "foreman didn't dispatch" || !strings.Contains(told[0][1], `no repo "nope"`) {
+		t.Errorf("a failed dispatch told %q", told)
+	}
+	if err := runDispatch([]string{"--notify", "--repo", "tool", "--agent", "pi", "--", "Add a flag"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(told) != 2 || told[1][0] != "foreman" || !strings.Contains(told[1][1], "pi is working on task:tool-1") {
+		t.Errorf("a dispatch told %q", told)
+	}
+	if err := runDispatch([]string{"--repo", "nope", "do it"}); err == nil || len(told) != 2 {
+		t.Errorf("without --notify: %v, told %q", err, told)
 	}
 }
 
