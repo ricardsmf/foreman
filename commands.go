@@ -59,18 +59,28 @@ type agentInfo struct {
 	// Pane is the agent's pane in its session.
 	Pane string `json:"pane,omitempty"`
 	// WaitsFor is what a blocked agent says it waits for: permission, question or auth.
-	WaitsFor    string     `json:"waitsFor,omitempty"`
-	Dir         string     `json:"dir,omitempty"`
-	Report      string     `json:"report,omitempty"`
-	ReportAt    *time.Time `json:"reportAt,omitempty"`
-	Screenshots int        `json:"screenshots,omitempty"`
-	Videos      int        `json:"videos,omitempty"`
+	WaitsFor string `json:"waitsFor,omitempty"`
+	// Ports are what the programs in the agent's session listen on, such as its dev server.
+	Ports       []agentPort `json:"ports,omitempty"`
+	Dir         string      `json:"dir,omitempty"`
+	Report      string      `json:"report,omitempty"`
+	ReportAt    *time.Time  `json:"reportAt,omitempty"`
+	Screenshots int         `json:"screenshots,omitempty"`
+	Videos      int         `json:"videos,omitempty"`
 	// Seen is the token reply --seen takes, for what the pane shows now.
 	Seen string `json:"seen,omitempty"`
 	// Question is the one the agent waits on in foreman ask.
 	Question *Question `json:"question,omitempty"`
 	URL      string    `json:"url,omitempty"`    // a PR's
 	Status   string    `json:"status,omitempty"` // a PR's: approved, changes, conflict…
+}
+
+// An agentPort is a TCP port the agent's session listens on, the program that holds it and where
+// a browser opens it.
+type agentPort struct {
+	Port    int    `json:"port"`
+	Process string `json:"process,omitempty"`
+	URL     string `json:"url"`
 }
 
 func kindName(it queueItem) string {
@@ -100,6 +110,9 @@ func agentInfoOf(it queueItem, s State) agentInfo {
 	if it.Kind == prItem {
 		a.State, a.Session, a.Pane, a.URL, a.Status = "", "", "", it.Pr.URL, it.Pr.Status
 		return a
+	}
+	for _, p := range it.Ports {
+		a.Ports = append(a.Ports, agentPort{Port: p.Port, Process: p.Proc, URL: p.url()})
 	}
 	switch {
 	case it.Orchestrator:
@@ -192,6 +205,9 @@ func writeAgents(out io.Writer, infos []agentInfo) error {
 		note := ""
 		if a.Report != "" {
 			note = "  report"
+		}
+		for _, p := range a.Ports {
+			note += "  " + p.URL
 		}
 		if _, err := fmt.Fprintf(out, "%-9s  %-*s  %-8s  %s%s\n", a.Group, keyW, a.Key, state, a.Title, note); err != nil {
 			return err

@@ -180,9 +180,10 @@ foreman answer KEY TEXT|-           answer the question KEY waits on
 - `agents --json` gives each one's `key`, `kind` (ticket, review, fix, task, watcher, pr), `group`,
   `state` as the agent reports it to Rex (working, blocked, error, done, idle, open) or `closed`,
   `title`, `agent`, `session`, `pane` (the agent's pane in it), `waitsFor` (what a `blocked` agent
-  says it waits for: `permission`, `question` or `auth`, when it says), `dir`, `report` and
-  `reportAt`, evidence counts, and `seen`, the
-  seen token of an agent whose session is open.
+  says it waits for: `permission`, `question` or `auth`, when it says), `ports` (what the
+  programs in its session [listen on](#ports), each with its `port`, `process` and `url`), `dir`,
+  `report` and `reportAt`, evidence counts, and `seen`, the seen token of an agent whose session
+  is open. The plain listing ends a row with those URLs.
 - `reply` refuses a closed session, and a working agent unless `--now`: pi and Claude Code each
   handle text typed mid-turn their own way. To an agent waiting in `foreman ask`, it is the answer.
 - A seen token, printed by `screen` under the pane and by `agents --json` as `seen`, stands for
@@ -317,8 +318,9 @@ whose program reports a status.
 It reads the state file every few seconds, since `foreman dispatch`, `ask` and the other commands
 write it too, and takes your PRs from the board's load, every five minutes. The Rex sessions
 foreman follows by their events, for the board and the queue alike: one Lua listener
-(`rex do --all`) prints each status a program reports, with the record itself, and foreman applies
-it to the picture of the sessions it keeps, with no call to Rex, so a row moves as its agent stops.
+(`rex do --all`) prints each status a program reports, with the record itself, and each change to
+the ports a pane's programs listen on, with the list, and foreman applies them to the picture of
+the sessions it keeps, with no call to Rex, so a row moves as its agent stops.
 A session or a pane opening, or a program exiting, takes a listing; so does every 15 seconds, in
 case an event was missed. While the listener isn't running the sessions are listed every few
 seconds. The pane's title carries the count of items in the first two groups, `foreman (3)`.
@@ -336,11 +338,30 @@ Keys: `↑↓` pick, `enter` go to the agent's session, resuming a closed one (a
 the ticket its title or branch names; with no agent, to the board's dispatch form on that ticket, which takes the focus;
 with no ticket, the browser), `f` type a reply that is sent to the agent's pane, `y` or `n` answer the prompt an agent waits on (see [Answering a
 prompt](#answering-a-prompt)), `v` open the screenshots and videos, `d` the worktree's diff in git's
-pager, `o` the ticket or PR in the browser, `x` mark reviewed (the agent moves to idle or closed
+pager, `o` the ticket or PR in the browser, `p` a [port](#ports) its session listens on, `x` mark reviewed (the agent moves to idle or closed
 until it writes a new report; a PR goes until its status changes), `K` twice close the agent's Rex
 session, or on a closed one drop it from the queue (its worktree and report stay), `c` list or fold
 the closed agents, `^u`/`^d` scroll, `^r` reload, `?` every key, `q` close the queue, leaving the board alone at full width (`^z` there brings the
 queue back beside it; `^c` quits foreman).
+
+### Ports
+
+A row names the port its agent's session listens on, `:5173`, or `:3000 +1` with more, while a
+program there has one open: the dev server the agent started and left running, or one you started
+in a shell split beside it. So what the agent built can be opened as it runs in its worktree.
+
+- The detail starts with where each port is opened and the program that holds it
+  (`http://localhost:5173 (vite)`); for an agent that waits on a prompt or asks a question, it
+  comes after that.
+- `p` opens it in the browser. With several, each `p` opens the next, lowest first, and the
+  status line says which comes after.
+- They are every pane's in the session, one entry a port number: a server on both `127.0.0.1`
+  and `::1` is one. One bound to a single other address is opened there instead of `localhost`.
+- Every port is opened as `http`, whatever speaks on it; the program's name is there to tell a
+  dev server from a debugger's port.
+- Rex lists the ports of programs still attached to the terminal, so a server that detached as a
+  daemon isn't among them, and it looks for new ones about once a second while terminals are
+  busy. It takes Rex 0.1.0-preview.20; an older server lists none.
 
 ### Answering a prompt
 

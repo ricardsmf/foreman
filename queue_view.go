@@ -4,6 +4,8 @@ package main
 
 import (
 	"fmt"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -108,6 +110,32 @@ func itemLabel(it queueItem) (string, string) {
 	return fg(cOverlay, "◇"), fg(cOverlay, what)
 }
 
+// portsMark is the row's note of what the agent's session listens on: its lowest port, and how
+// many more there are.
+func portsMark(ports []rexPort) string {
+	if len(ports) == 0 {
+		return ""
+	}
+	mark := ":" + strconv.Itoa(ports[0].Port)
+	if len(ports) > 1 {
+		mark += fmt.Sprintf(" +%d", len(ports)-1)
+	}
+	return mark
+}
+
+// portsLine is the detail's line about those ports: where each is opened and what holds it.
+func portsLine(ports []rexPort) string {
+	var urls []string
+	for _, p := range ports {
+		u := p.url()
+		if p.Proc != "" {
+			u += " (" + p.Proc + ")"
+		}
+		urls = append(urls, u)
+	}
+	return "**Listening:** " + strings.Join(urls, " · ") + ", `p` opens it"
+}
+
 func (q *queueModel) render(width, h int) []string {
 	dot := fg(cSurface, " · ")
 	need := fg(cGreen, "nothing needs you")
@@ -134,6 +162,8 @@ func (q *queueModel) render(width, h int) []string {
 		keys = "↑↓ pick · enter list them · ? all keys"
 	} else if ok && pressable(it) && q.seen[detailKey(it)] != "" {
 		keys = "y press enter · n press esc · " + keys
+	} else if ok && len(it.Ports) > 0 {
+		keys = "p open " + portsMark(it.Ports[:1]) + " · " + keys
 	}
 	if q.showClosed {
 		keys += " · c fold closed"
@@ -208,6 +238,9 @@ func (q *queueModel) render(width, h int) []string {
 			what = fg(cYellow, ansi.Truncate(it.Doing, max(16, width/3), "…"))
 		}
 		var ev []string
+		if len(it.Ports) > 0 {
+			ev = append(ev, portsMark(it.Ports))
+		}
 		if it.Shots > 0 {
 			ev = append(ev, fmt.Sprintf("▣ %d", it.Shots))
 		}
@@ -251,6 +284,15 @@ func (q *queueModel) render(width, h int) []string {
 		lines := q.details[detailKey(it)]
 		if lines == nil {
 			lines = []string{"# " + it.Key + ": " + it.Title, "", fg(cOverlay, "Loading…")}
+		}
+		// Not part of the detail that is kept: the ports change while a report stays as it is.
+		// Under a prompt or a question, which the detail starts with, else over the rest.
+		switch {
+		case len(it.Ports) == 0:
+		case it.Agent == "blocked" || it.Question != nil:
+			lines = append(slices.Clone(lines), "", portsLine(it.Ports))
+		default:
+			lines = append([]string{portsLine(it.Ports), ""}, lines...)
 		}
 		detail = renderMarkdown(lines, width)
 	}

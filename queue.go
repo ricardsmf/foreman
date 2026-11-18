@@ -42,14 +42,15 @@ type queueItem struct {
 	Group   group
 	Key     string
 	Title   string
-	Agent   string // the agent's reported state, "" when its session is closed
-	Doing   string // what the agent says it is doing, when it reports that
-	Session string // the open session's ID, else the recorded one
-	Block   string // the agent's pane in that session, "" when it is closed
-	Waits   string // what a blocked agent says it waits for: permission, question or auth
-	Dir     string // the worktree
-	Repo    string // the repo it works in, by its main checkout's directory name; "" for none
-	Report  string // report.md's path, "" when the agent wrote none
+	Agent   string    // the agent's reported state, "" when its session is closed
+	Doing   string    // what the agent says it is doing, when it reports that
+	Session string    // the open session's ID, else the recorded one
+	Block   string    // the agent's pane in that session, "" when it is closed
+	Waits   string    // what a blocked agent says it waits for: permission, question or auth
+	Ports   []rexPort // what the programs in its session listen on
+	Dir     string    // the worktree
+	Repo    string    // the repo it works in, by its main checkout's directory name; "" for none
+	Report  string    // report.md's path, "" when the agent wrote none
 	When    time.Time
 	Shots   int // images and terminal captures
 	Videos  int
@@ -70,10 +71,10 @@ type queueItem struct {
 	Fold int
 }
 
-// on puts the item on its open session: the agent's state, its pane, and what it says it is doing
-// or waits for.
+// on puts the item on its open session: the agent's state, its pane, what it says it is doing or
+// waits for, and the ports the session listens on.
 func (it *queueItem) on(s rexSession) {
-	it.Agent, it.Session, it.Block, it.Doing, it.Waits = s.State, s.ID, s.Block, s.Msg, s.Kind
+	it.Agent, it.Session, it.Block, it.Doing, it.Waits, it.Ports = s.State, s.ID, s.Block, s.Msg, s.Kind, s.Ports
 }
 
 // dismissKey is the item's key in State.Dismissed. A review agent and its PR share a key, so the
@@ -363,6 +364,7 @@ type queueModel struct {
 	feedback    *reply              // the reply being typed to an agent
 	confirmKill string              // the session the first K asked to close
 	seen        map[string]string   // by key + sig: the seen token of the prompt a detail shows
+	portNext    map[string]int      // by key: which of an agent's ports p opens next
 	reported    string              // the last status reported to Rex
 	records     map[string]string   // the last record reported to Rex for each item that waits on me
 	statusAt    time.Time           // when the status line was set: it clears after statusTTL
@@ -765,6 +767,23 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 		if it.Kind == agentItem {
 			return q.openDiff(it)
 		}
+	case "p":
+		if len(it.Ports) == 0 {
+			q.say("Nothing in "+it.Key+"'s session listens on a port", cOverlay)
+			return nil
+		}
+		// One port a press, in turn: which of several is the app, only I can tell.
+		n := q.portNext[it.Key] % len(it.Ports)
+		if q.portNext == nil {
+			q.portNext = map[string]int{}
+		}
+		q.portNext[it.Key] = n + 1
+		openURL(it.Ports[n].url())
+		said := "Opened " + it.Ports[n].url()
+		if len(it.Ports) > 1 {
+			said += fmt.Sprintf("; p again opens :%d", it.Ports[(n+1)%len(it.Ports)].Port)
+		}
+		q.say(said, cOverlay)
 	case "o":
 		switch {
 		case it.Watcher, it.Orchestrator:

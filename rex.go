@@ -9,6 +9,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/netip"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -27,12 +29,56 @@ type rexRecord struct {
 	At    time.Time
 }
 
-// A rexPane is a terminal of a session, with what its program reports and what it runs.
+// A rexPane is a terminal of a session, with what its program reports, what it runs and the ports
+// its programs listen on.
 type rexPane struct {
 	ID, Label string
 	Placed    bool // in a window, rather than detached
 	Records   []rexRecord
 	Proc      rexProc
+	Ports     []rexPort
+}
+
+// A rexPort is a TCP port a program in a terminal listens on, such as a dev server an agent
+// started there.
+type rexPort struct {
+	Port int    `json:"port"`
+	Addr string `json:"address"`
+	Proc string `json:"process"` // the program that holds it, by name: vite, python3
+}
+
+// local is whether localhost reaches the port: a socket on loopback or on every interface.
+func (p rexPort) local() bool {
+	ip, err := netip.ParseAddr(p.Addr)
+	return err != nil || ip.IsLoopback() || ip.IsUnspecified()
+}
+
+// url is where a browser on this machine opens the port.
+func (p rexPort) url() string {
+	host := "localhost"
+	if !p.local() {
+		host = p.Addr
+	}
+	return "http://" + net.JoinHostPort(host, strconv.Itoa(p.Port))
+}
+
+// sessionPorts are the ports the programs in the panes listen on, lowest first, one entry a port
+// number: a server on both 127.0.0.1 and ::1 is one thing to open.
+func sessionPorts(panes []rexPane) []rexPort {
+	var out []rexPort
+	for _, p := range panes {
+		for _, port := range p.Ports {
+			n := slices.IndexFunc(out, func(o rexPort) bool { return o.Port == port.Port })
+			switch {
+			case n < 0:
+				out = append(out, port)
+			case !out[n].local() && port.local():
+				out[n] = port
+			}
+		}
+	}
+	slices.SortFunc(out, func(a, b rexPort) int { return a.Port - b.Port })
+	return out
 }
 
 // A rexProc is a terminal's program and the directory it runs in.
@@ -43,7 +89,8 @@ type rexProc struct {
 
 // A rexSession is an open Rex session. State, Kind, Msg and Block describe its agent's pane, once
 // resolveAgents or on has picked it: the most urgent state the pane's program reports ("open" when
-// it reports none), what a blocked one waits for, and what it says it is doing.
+// it reports none), what a blocked one waits for, and what it says it is doing. Ports are every
+// pane's: a server started in a shell split beside the agent serves the same worktree.
 type rexSession struct {
 	ID, Label string
 	State     string
@@ -52,6 +99,7 @@ type rexSession struct {
 	Kind      string
 	Block     string
 	Panes     []rexPane
+	Ports     []rexPort
 }
 
 // runsClaudeIn is whether one of the session's terminals runs Claude Code in dir.
@@ -129,7 +177,7 @@ func (s rexSession) on(block string) rexSession {
 func resolveAgents(sessions []rexSession, panes map[string]string) []rexSession {
 	out := make([]rexSession, len(sessions))
 	for n, s := range sessions {
-		s.Procs = nil
+		s.Procs, s.Ports = nil, sessionPorts(s.Panes)
 		for _, p := range s.Panes {
 			if p.Proc != (rexProc{}) {
 				s.Procs = append(s.Procs, p.Proc)
@@ -195,13 +243,15 @@ var rex rexAPI = rexCLI{}
 // A rexEvent is something that changed in Rex, as the listener reports it.
 type rexEvent struct {
 	// Type is listening (the stream started), status (a pane's program reported), removed (records
-	// went), closed (a pane), gone (a session), renamed (a session), sync (something only a listing
-	// shows: a new session or pane, a program that exited) or down (the stream ended).
+	// went), ports (what a pane's programs listen on changed), closed (a pane), gone (a session),
+	// renamed (a session), sync (something only a listing shows: a new session or pane, a program
+	// that exited) or down (the stream ended).
 	Type    string          `json:"e"`
 	Session string          `json:"session"`
 	Block   string          `json:"block"`
 	Label   string          `json:"label"`
 	IDs     json.RawMessage `json:"ids"`
+	Ports   json.RawMessage `json:"ports"`
 	wireRecord
 }
 
@@ -278,7 +328,7 @@ func (p *rexPicture) apply(ev rexEvent) (changed, resync bool) {
 		changed = p.sessions[s].Label != ev.Label
 		p.sessions[s].Label = ev.Label
 		return changed, false
-	case "closed", "status", "removed":
+	case "closed", "status", "removed", "ports":
 	default:
 		return false, true
 	}
@@ -300,6 +350,11 @@ func (p *rexPicture) apply(ev rexEvent) (changed, resync bool) {
 		before := len(panes[b].Records)
 		panes[b].Records = slices.DeleteFunc(panes[b].Records, func(r rexRecord) bool { return slices.Contains(ids, r.ID) })
 		return len(panes[b].Records) != before, false
+	case "ports":
+		now := luaList[rexPort](ev.Ports)
+		changed = !slices.Equal(panes[b].Ports, now)
+		panes[b].Ports = now
+		return changed, false
 	}
 	now := ev.record()
 	r := slices.IndexFunc(panes[b].Records, func(r rexRecord) bool { return r.ID == now.ID })

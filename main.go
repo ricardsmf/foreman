@@ -29,7 +29,8 @@ func parseArgs(argv []string) (jql, title string) {
 	return fmt.Sprintf("project = %s AND statusCategory != Done ORDER BY updated DESC", project), project + " open tickets"
 }
 
-func openURL(url string) { _ = exec.Command("open", url).Start() }
+// openURL opens the URL in the browser; tests put a fake here.
+var openURL = func(url string) { _ = exec.Command("open", url).Start() }
 
 // Row is a ticket or a PR in the board's common shape.
 type Row struct {

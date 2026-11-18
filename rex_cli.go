@@ -23,10 +23,29 @@ local function attach(id)
 end
 `
 
+// portsLua turns a terminal's ports reply, or its ports_changed event, into the list foreman keeps:
+// each TCP port with its address and the name of the program that holds it, a script's before its
+// interpreter's. A server from before terminals listed their ports gives none.
+const portsLua = `
+local function ports(reply)
+  local names, out = {}, {}
+  for _, p in ipairs(reply.processes or {}) do
+    local name = p.script or p.argv0 or p.name or ""
+    names[p.pid] = (name:match("([^/]+)$") or name):gsub("^%-", "")
+  end
+  for _, p in ipairs(reply.ports or {}) do
+    if p.protocol == "tcp" then
+      table.insert(out, {port = p.port, address = p.address or "", process = names[p.pid or 0] or ""})
+    end
+  end
+  return out
+end
+`
+
 // sessionsScript returns every session with its panes: each one's label, whether it is placed, the
-// records its programs report over OSC 7501 (pi and Claude Code report working, blocked, done…)
-// and the program it runs with its directory.
-const sessionsScript = attachLua + `
+// records its programs report over OSC 7501 (pi and Claude Code report working, blocked, done…),
+// the program it runs with its directory, and the ports its programs listen on.
+const sessionsScript = attachLua + portsLua + `
 local out = {}
 local list = rex.call("session.list")
 for _, s in ipairs((list or {}).sessions or {}) do
@@ -45,6 +64,8 @@ for _, s in ipairs((list or {}).sessions or {}) do
     if okp and p and p.child then
       pane.cmd, pane.dir = p.child.argv0 or "", p.child.cwd or ""
     end
+    local okq, q = pcall(rex.call, "block.method", {session_id = s.session_id, block_id = b.block_id, method = "ports"})
+    pane.ports = okq and q and ports(q) or {}
     table.insert(panes, pane)
   end
   table.insert(out, {id = s.session_id, label = s.label, panes = panes})
@@ -69,6 +90,7 @@ func decodeSessions(out string) ([]rexSession, error) {
 		Label   string          `json:"label"`
 		Placed  bool            `json:"placed"`
 		Records json.RawMessage `json:"records"`
+		Ports   json.RawMessage `json:"ports"`
 		rexProc
 	}
 	var raw []struct {
@@ -86,7 +108,7 @@ func decodeSessions(out string) ([]rexSession, error) {
 	for _, r := range raw {
 		s := rexSession{ID: r.ID, Label: r.Label}
 		for _, p := range luaList[pane](r.Panes) {
-			rp := rexPane{ID: p.ID, Label: p.Label, Placed: p.Placed, Proc: p.rexProc}
+			rp := rexPane{ID: p.ID, Label: p.Label, Placed: p.Placed, Proc: p.rexProc, Ports: luaList[rexPort](p.Ports)}
 			for _, w := range luaList[wireRecord](p.Records) {
 				rp.Records = append(rp.Records, w.record())
 			}
@@ -253,10 +275,14 @@ func (rexCLI) press(session, block, key string) error {
 }
 
 // eventsScript prints a line of JSON for each thing an agent's row shows that changed, in any
-// session: a status with the record itself, so it needs no reading back, and what closed or was
-// renamed. What only a listing can show (a new session or pane, a program that exited) is a sync.
-const eventsScript = `
+// session: a status with the record itself and a pane's ports with the list, so they need no
+// reading back, and what closed or was renamed. What only a listing can show (a new session or
+// pane, a program that exited) is a sync.
+const eventsScript = portsLua + `
 local function say(t) print(rex.json.encode(t)) end
+rex.on("terminal.ports_changed", function(ctx, ev)
+  say{e = "ports", session = ev.session_id, block = ev.block_id, ports = ports(ev)}
+end)
 rex.on("terminal.program_status_changed", function(ctx, ev)
   local r = ev.record or {}
   say{e = "status", session = ev.session_id, block = ev.block_id, id = ev.id or "",
