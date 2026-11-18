@@ -96,6 +96,48 @@ func TestStoppedWatcherStaysStopped(t *testing.T) {
 	}
 }
 
+// One foreman watch at a time: a second fails to start while the first holds the lock, and the
+// queue's row of a watcher it would wake says when none runs.
+func TestOneWatchAtATime(t *testing.T) {
+	tempState(t)
+	t.Cleanup(func() { watchers = nil })
+	watchers = []Watcher{{Name: "w", Dir: "/r/watch", Prompt: "/fld-watch", PRs: []string{"is:open"}}, {Name: "looper", Dir: "/r/loop", Prompt: "/loop 10m /sweep"}}
+	if watchRuns() {
+		t.Fatal("a foreman watch runs before any started")
+	}
+	release, err := holdWatchLock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := holdWatchLock(); err == nil || !strings.Contains(err.Error(), "already runs") {
+		t.Errorf("a second foreman watch: %v", err)
+	}
+	if !watchRuns() {
+		t.Error("the lock is held and no foreman watch is seen")
+	}
+	release()
+	if watchRuns() {
+		t.Error("a foreman watch is seen after it stopped")
+	}
+
+	q := &queueModel{details: map[string][]string{}}
+	sessions := []rexSession{{ID: "s1", Label: "w", State: "idle"}, {ID: "s2", Label: "looper", State: "idle"}}
+	labels := func(watching bool) map[string]string {
+		q.Update(queueStateMsg{State{}, sessions, true, watching})
+		out := map[string]string{}
+		for _, it := range q.all {
+			_, out[it.Key] = itemLabel(it)
+		}
+		return out
+	}
+	if got := labels(false); !strings.Contains(got["w"], "foreman watch isn't running") || !strings.Contains(got["looper"], "between passes") {
+		t.Errorf("no foreman watch: %q", got)
+	}
+	if got := labels(true); !strings.Contains(got["w"], "waits for a PR to change") {
+		t.Errorf("a foreman watch runs: %q", got)
+	}
+}
+
 // A watcher that waits on me, or failed, is told once per thing it waits on.
 func TestTickAlerts(t *testing.T) {
 	f := useFakeRex(t)

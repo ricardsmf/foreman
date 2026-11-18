@@ -700,7 +700,7 @@ const usage = `usage: foreman [PROJECT | JQL]   the board of tickets and PRs bes
        foreman queue      the same, opened on the queue alone: every dispatched agent by state,
                           and PRs that need you
        foreman open [--print]   go to the foreman Rex session, starting it when it isn't running
-       foreman watch      start the watchers and wake them without the board, for launchd
+       foreman watch      start the watchers and wake them, for launchd
        foreman dispatch   start an agent on a task, a ticket or a PR
        foreman orchestrator [--new]   Claude Code that hands work to agents (^g on the board)
        foreman agents | report | screen | reply | wait | cleanup | ask | answer
@@ -799,16 +799,6 @@ func run() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go followRex(ctx, func() { prog.Send(rexEventMsg{}) })
-	go func() {
-		started, err := startWatchers()
-		switch {
-		case err != nil:
-			prog.Send(statusMsg{err.Error(), cRed, true})
-		case len(started) > 0:
-			prog.Send(statusMsg{"Started " + strings.Join(started, ", "), cSubtext, false})
-		}
-		pollWatchers(func(text string, c Color) { prog.Send(statusMsg{text, c, false}) })
-	}()
 	_, err := prog.Run()
 	if q.reported != "" {
 		// A done record outlives the program: without this the session and its items would stay marked.

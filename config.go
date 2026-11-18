@@ -66,9 +66,9 @@ func loadConfig() error {
 					return fmt.Errorf("%s: watcher %s: at %w", tilde(configFile), w.Name, err)
 				}
 			}
-			// The board types the prompt on every wake: a loop would start another schedule each time.
+			// foreman watch types the prompt on every wake: a loop would start another schedule each time.
 			if (len(w.PRs) > 0 || w.At != "") && strings.HasPrefix(strings.TrimSpace(w.Prompt), "/loop ") {
-				return fmt.Errorf("%s: the board wakes watcher %s (it has prs or at), so its prompt runs once per wake and can't be a /loop", tilde(configFile), w.Name)
+				return fmt.Errorf("%s: foreman watch wakes watcher %s (it has prs or at), so its prompt runs once per wake and can't be a /loop", tilde(configFile), w.Name)
 			}
 			if (len(w.On) > 0 || w.Batch != 0) && len(w.PRs) == 0 {
 				return fmt.Errorf("%s: watcher %s: on and batch say how its prs wake it, and it has none", tilde(configFile), w.Name)

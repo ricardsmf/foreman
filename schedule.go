@@ -65,35 +65,26 @@ func (sc schedule) last(now time.Time) time.Time {
 }
 
 // wakeIfDue calls wake when one of the schedule's times has passed since the one recorded for the
-// watcher, and returns that time. Like wakeIfChanged it records first, under the state lock, so two
-// boards wake the watcher once, and puts the record back when the wake fails. Two cases are
-// recorded without a wake: a watcher the board hasn't polled before starts from its next time, and
-// a time from an earlier day is skipped, since the day a late pass would report on is over.
+// watcher, and returns that time. Like wakeIfChanged it records after the wake, so a failed one is
+// retried. Two cases are recorded without a wake: a watcher never polled before starts from its
+// next time, and a time from an earlier day is skipped, since the day a late pass would report on
+// is over.
 func wakeIfDue(name string, sc schedule, now time.Time, wake func() error) (time.Time, error) {
 	due := sc.last(now)
-	stamp := due.Format(time.RFC3339)
-	var old string
-	fire := false
-	if _, err := updateState(func(s *State) {
-		old = s.WatcherRan[name]
-		ran, err := time.Parse(time.RFC3339, old)
-		if err == nil && !due.After(ran) {
-			return
-		}
-		s.WatcherRan[name] = stamp
-		y, m, d := now.Date()
-		dy, dm, dd := due.Date()
-		fire = err == nil && y == dy && m == dm && d == dd
-	}); err != nil || !fire {
-		return time.Time{}, err
+	ran, err := time.Parse(time.RFC3339, loadState().WatcherRan[name])
+	if err == nil && !due.After(ran) {
+		return time.Time{}, nil
 	}
-	if err := wake(); err != nil {
-		_, _ = updateState(func(s *State) {
-			if s.WatcherRan[name] == stamp {
-				s.WatcherRan[name] = old
-			}
-		})
-		return time.Time{}, fmt.Errorf("waking it: %w", err)
+	y, m, d := now.Date()
+	dy, dm, dd := due.Date()
+	fire := err == nil && y == dy && m == dm && d == dd
+	if fire {
+		if err := wake(); err != nil {
+			return time.Time{}, fmt.Errorf("waking it: %w", err)
+		}
+	}
+	if _, err := updateState(func(s *State) { s.WatcherRan[name] = due.Format(time.RFC3339) }); err != nil || !fire {
+		return time.Time{}, err
 	}
 	return due, nil
 }

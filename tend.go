@@ -1,14 +1,19 @@
 package main
 
-// foreman watch: the watchers looked after with no board open. Besides waking them as the board
-// does, it starts one whose session is gone, and tells me what the queue would show if I were
-// looking: a watcher that waits on me or failed, and one whose skills fell behind its repo.
+// foreman watch: what looks after the watchers, the board open or not. It starts one whose session
+// is gone, wakes each when a PR of its changed or its time came, and tells me what the queue would
+// show if I were looking: a watcher that waits on me or failed, and one whose skills fell behind
+// its repo.
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -39,12 +44,51 @@ type watchLoop struct {
 	checked map[string]time.Time // when each watcher's checkout was last compared
 }
 
-// runWatch is `foreman watch`, which launchd keeps running from login. It prints what the board's
-// status bar would show, each line with its time, and returns only when the config names no watcher.
+// holdWatchLock takes the lock a foreman watch holds for its life, and fails when another holds
+// it: two would each wake a watcher for the same change. The queue reads from the same lock
+// whether one runs.
+func holdWatchLock() (release func(), err error) {
+	file := stateFile + ".watch.lock"
+	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(file, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = f.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, errors.New("foreman watch already runs")
+		}
+		return nil, err
+	}
+	return func() { _ = f.Close() }, nil
+}
+
+// watchRuns is whether a foreman watch holds its lock. A shared lock, so two that ask at once
+// don't take each other for it.
+func watchRuns() bool {
+	f, err := os.Open(stateFile + ".watch.lock")
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	return syscall.Flock(int(f.Fd()), syscall.LOCK_SH|syscall.LOCK_NB) != nil
+}
+
+// runWatch is `foreman watch`, which launchd keeps running from login. It prints each start, wake
+// and failure with its time, and returns only when the config names no watcher or another foreman
+// watch runs.
 func runWatch(out io.Writer) error {
 	if len(watchers) == 0 {
 		return nil
 	}
+	release, err := holdWatchLock()
+	if err != nil {
+		return err
+	}
+	defer release()
 	l := &watchLoop{
 		note:    func(text string, _ Color) { fmt.Fprintln(out, time.Now().Format("2006-01-02 15:04:05"), text) },
 		lastErr: map[string]string{}, alerted: map[string]string{}, behind: map[string]string{}, checked: map[string]time.Time{},
@@ -66,7 +110,7 @@ func (l *watchLoop) tick(now time.Time) time.Duration {
 	}
 	l.rexDown = ""
 	// A watcher whose session is gone (Rex restarted, Claude Code exited) is started again here,
-	// unless I stopped it: the board only starts them when it opens.
+	// unless I stopped it.
 	started, err := startWatchers()
 	if e := errText(err); e != l.lastErr[""] {
 		l.lastErr[""] = e
@@ -121,7 +165,7 @@ func (l *watchLoop) alert(w Watcher, s rexSession) {
 
 // skills tells me, once per upstream commit, that the watcher's checkout is behind its repo in
 // `.claude`: it runs its skills from there, and a skill that moved on changes what a pass does,
-// and may change the searches the board should poll. It only says so. Moving the checkout
+// and may change the searches to poll. It only says so. Moving the checkout
 // forward stays mine to do.
 func (l *watchLoop) skills(w Watcher, now time.Time) {
 	if now.Sub(l.checked[w.Name]) < skillsCheck {

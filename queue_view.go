@@ -85,6 +85,9 @@ func itemLabel(it queueItem) (string, string) {
 				what = "waits for a PR to change, or " + it.At
 			}
 		}
+		if it.Unwoken {
+			what = "nothing wakes it: foreman watch isn't running"
+		}
 		if it.Agent == "" {
 			what = "not running, enter starts it"
 		}
@@ -104,6 +107,8 @@ func itemLabel(it queueItem) (string, string) {
 		return fg(cGreen, "✓"), fg(cGreen, what) + fg(cOverlay, " (closed)")
 	case it.Group == toReview:
 		return fg(cGreen, "✓"), fg(cGreen, what)
+	case it.Unwoken:
+		return fg(cRed, "○"), fg(cRed, what)
 	case it.Group == idle:
 		return fg(cGreen, "○"), fg(cOverlay, what)
 	}

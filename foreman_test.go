@@ -761,7 +761,7 @@ func TestAgentsResultDoesNotReschedule(t *testing.T) {
 	// Outside Rex: in it, the queue's first state is also reported to Rex.
 	t.Setenv("REX_SESSION", "")
 	q := &queueModel{details: map[string][]string{}}
-	if _, cmd := q.Update(queueStateMsg{State{}, nil, true}); cmd != nil {
+	if _, cmd := q.Update(queueStateMsg{State{}, nil, true, true}); cmd != nil {
 		t.Error("queueStateMsg with no items returned a command")
 	}
 }

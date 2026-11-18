@@ -73,7 +73,7 @@ func TestScheduleLast(t *testing.T) {
 	}
 }
 
-// A scheduled watcher is woken once per time, from the first one after the board met it. A failed
+// A scheduled watcher is woken once per time, from the first one after its first poll. A failed
 // wake is retried, a time missed on an earlier day is skipped, and one missed today still runs.
 func TestWakeIfDue(t *testing.T) {
 	old := stateFile
@@ -95,7 +95,7 @@ func TestWakeIfDue(t *testing.T) {
 			t.Fatalf("%s: %d wakes, want %d (returned %v)", what, wakes, wantWakes, at)
 		}
 	}
-	poll("new to the board, yesterday's time passed", nov(17, 17, 0), 0)
+	poll("never polled before, yesterday's time passed", nov(17, 17, 0), 0)
 	poll("its time came", nov(17, 17, 46), 1)
 	poll("the same time again", nov(17, 17, 48), 1)
 
@@ -107,7 +107,7 @@ func TestWakeIfDue(t *testing.T) {
 	}
 	poll("retry after a failed wake", nov(18, 17, 48), 2)
 
-	poll("Thursday's time missed, the board back on Friday morning", nov(20, 9, 0), 2)
+	poll("Thursday's time missed, foreman watch back on Friday morning", nov(20, 9, 0), 2)
 	if got := loadState().WatcherRan["eod"]; got != nov(19, 17, 45).Format(time.RFC3339) {
 		t.Errorf("the skipped time wasn't recorded: %s", got)
 	}
@@ -152,7 +152,7 @@ func TestPollSchedule(t *testing.T) {
 	}
 }
 
-// The board starting isn't a scheduled watcher's time: it starts at its prompt, without a pass.
+// Starting a scheduled watcher isn't its time: it starts at its prompt, without a pass.
 func TestScheduledWatcherStartsWithoutAPass(t *testing.T) {
 	f := useFakeRex(t)
 	t.Cleanup(func() { watchers = nil })

@@ -43,13 +43,13 @@ type State struct {
 	// WatcherSessions maps each watcher's name to its Rex session ID: it may rename the session.
 	WatcherSessions map[string]string `json:"watcherSessions,omitempty"`
 	// WatcherPrs maps each polled watcher's name to its PRs' signatures at its last wake, by
-	// `owner/name#n`: the board wakes it again only when one differs.
+	// `owner/name#n`: foreman watch wakes it again only when one differs.
 	WatcherPrs map[string]map[string]string `json:"watcherPrs,omitempty"`
 	// WatcherStopped holds the watchers I stopped from the queue: nothing starts one again until I
 	// start it there, or run it by hand in its checkout.
 	WatcherStopped map[string]bool `json:"watcherStopped,omitempty"`
-	// WatcherRan maps a scheduled watcher's name to the latest of its times the board has dealt
-	// with, as RFC 3339: the board wakes it again only when a later one has passed.
+	// WatcherRan maps a scheduled watcher's name to the latest of its times foreman watch has dealt
+	// with, as RFC 3339: it wakes the watcher again only when a later one has passed.
 	WatcherRan map[string]string `json:"watcherRan,omitempty"`
 	// Orchestrator is the orchestrator's Rex session ID: it may rename the session.
 	Orchestrator string `json:"orchestrator,omitempty"`

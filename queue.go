@@ -57,10 +57,12 @@ type queueItem struct {
 	Pr      *Pr
 	// Watcher marks a watcher's session rather than a dispatched agent's.
 	Watcher bool
-	// Polled marks a watcher the board wakes when its PRs change, rather than one that loops.
+	// Polled marks a watcher foreman watch wakes when its PRs change, rather than one that loops.
 	Polled bool
-	// At is the schedule of a watcher the board wakes by the clock.
+	// At is the schedule of a watcher foreman watch wakes by the clock.
 	At string
+	// Unwoken marks a running watcher that nothing wakes: foreman watch, which would, isn't running.
+	Unwoken bool
 	// Orchestrator marks the orchestrator's session.
 	Orchestrator bool
 	// Question is the one the agent waits on in foreman ask.
@@ -324,6 +326,7 @@ type (
 		state    State
 		sessions []rexSession
 		ok       bool // false when listing the sessions failed
+		watching bool // whether a foreman watch runs
 	}
 	queuePrsMsg struct {
 		prs []Pr
@@ -349,6 +352,7 @@ type queueModel struct {
 	width, height int
 	state         State
 	sessions      []rexSession
+	watching      bool // whether a foreman watch runs, as of the last poll
 	prs           []Pr
 	prsAt         time.Time // the last load attempt, failed or not, so a failing gh isn't retried every poll
 	prsLoading    bool
@@ -415,7 +419,7 @@ func (q *queueModel) say(text string, c Color) {
 // costs no call, else by listing them.
 func pollQueue() tea.Msg {
 	sessions, err := agentSessions()
-	return queueStateMsg{loadState(), sessions, err == nil}
+	return queueStateMsg{loadState(), sessions, err == nil, watchRuns()}
 }
 
 // foldClosed is the rows of items: the closed agents become one row that counts them, unless show.
@@ -486,6 +490,9 @@ func queueTick() tea.Cmd {
 func (q *queueModel) rebuild() tea.Cmd {
 	prev, had := q.current()
 	q.all = queueItems(q.state, q.sessions, q.prs)
+	for n, it := range q.all {
+		q.all[n].Unwoken = !q.watching && it.Watcher && (it.Polled || it.At != "") && it.Agent != ""
+	}
 	q.items = foldClosed(q.all, q.showClosed)
 	if had {
 		// The kind too: a review agent and the PR it reviews share a key.
@@ -599,7 +606,7 @@ func (q *queueModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return q, tea.Batch(cmds...)
 	case queueStateMsg:
-		q.state = msg.state
+		q.state, q.watching = msg.state, msg.watching
 		if msg.ok {
 			q.sessions = msg.sessions
 			if fixes := sessionFixes(q.state, q.sessions); len(fixes) > 0 {

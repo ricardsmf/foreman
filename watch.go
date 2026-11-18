@@ -12,9 +12,9 @@ import (
 	"time"
 )
 
-// A Watcher is a Claude Code session that runs one of a repo's skills, such as `/fld-watch`: the
-// board starts it, wakes it when a PR it covers changes, and the queue shows whether it runs or
-// waits on me.
+// A Watcher is a Claude Code session that runs one of a repo's skills, such as `/fld-watch`:
+// foreman watch starts it and wakes it when a PR it covers changes, and the queue shows whether it
+// runs or waits on me.
 type Watcher struct {
 	// Name is its Rex session's label and its key in the queue.
 	Name string `json:"name"`
@@ -22,7 +22,7 @@ type Watcher struct {
 	Dir    string `json:"dir"`
 	Prompt string `json:"prompt"`
 	// PRs are GitHub searches, scoped to Dir's origin repo, for the PRs the watcher covers. With
-	// them the board polls those PRs and types Prompt into the watcher when one changed; without,
+	// them foreman watch polls those PRs and types Prompt into the watcher when one changed; without,
 	// the watcher only gets Prompt at start, so it must keep itself going (`/loop 10m …`).
 	PRs []string `json:"prs,omitempty"`
 	// On names what about a PR wakes the watcher: "commit" (its head moved), "checks" (a
@@ -32,15 +32,15 @@ type Watcher struct {
 	// Batch is how many PRs a pass takes at most. A wake then counts only that
 	// many changed PRs as seen, lowest number first, and the rest wake it again once it rests.
 	Batch int `json:"batch,omitempty"`
-	// At is when the board starts a pass by the clock: "17:45" every day, or "mon-fri 17:45". The
-	// board types Prompt then, so such a watcher doesn't loop. With PRs too, it is a sweep: a pass
+	// At is when foreman watch starts a pass by the clock: "17:45" every day, or "mon-fri 17:45".
+	// It types Prompt then, so such a watcher doesn't loop. With PRs too, it is a sweep: a pass
 	// that takes whatever the passes its PRs woke left undone, such as a review that failed.
 	At string `json:"at,omitempty"`
 }
 
 // Mine, like the other defaults; "watchers" in the config file replaces the list. The searches are
 // the two fld-watch's own pass runs, my PRs and the PRs that request my review, and it takes three
-// PRs a pass. --once: without it the skill starts a ten-minute loop of its own. The board only
+// PRs a pass. --once: without it the skill starts a ten-minute loop of its own. foreman only
 // says when to look: which PRs are due, and what for, is the skill's to work out, by rules that
 // change with it. A new head is a review due, and a thread resolved may finish one.
 var watchers = []Watcher{{
@@ -79,7 +79,7 @@ func watcherCommand(prompt string) []string {
 const watcherRules = "Each Bash call is one command the skill names, with its values written out: no loop, variable, `;`, `&&`, `|`, redirect, `cd` or `echo`, since anything the allowlist doesn't match waits for me to approve it. Read, search and list files with Read, Grep and Glob. Run nothing the skill doesn't name, and leave the Rex session's name as it is."
 
 // passPrompt starts a pass: the watcher's prompt, then watcherRules. It names no PR: the pass
-// finds and judges them by its skill's rules, which the board doesn't hold.
+// finds and judges them by its skill's rules, which foreman doesn't hold.
 func passPrompt(w Watcher) string {
 	return w.Prompt + " " + watcherRules
 }
@@ -115,8 +115,8 @@ func findWatcher(sessions []rexSession, w Watcher, recorded string) (rexSession,
 // startWatchers starts each watcher that has no open session and that I didn't stop, and returns
 // the ones it started. A session I started by hand under the watcher's name, or in its checkout,
 // counts as it, stopped or not. Every watcher's session is recorded by ID. One foreman at a time:
-// the board and foreman watch would each find a watcher gone and start it, and two sessions
-// would review every PR twice.
+// foreman watch and the queue's enter would each find a watcher gone and start it, and two
+// sessions would review every PR twice.
 func startWatchers() (started []string, err error) {
 	unlock, err := lockFile(stateFile + ".watchers.lock")
 	if err != nil {
@@ -224,32 +224,16 @@ func watcherItem(w Watcher, sessions []rexSession, recorded string) queueItem {
 	return it
 }
 
-// watchPoll is how often the board reads the watchers' PRs, as t3code's PR watch does: a few
+// watchPoll is how often foreman watch reads the watchers' PRs, as t3code's PR watch does: a few
 // GraphQL requests each time, instead of a model turn every ten minutes.
 const watchPoll = 2 * time.Minute
 
-// pollWatchers runs for the board's life: it polls each watcher with PR searches or a schedule now
-// and every watchPoll, and wakes the ones whose PRs changed or whose time has come. note shows a
-// line on the board's status bar.
-func pollWatchers(note func(text string, c Color)) {
-	if !slices.ContainsFunc(watchers, Watcher.woken) {
-		return
-	}
-	lastErr := map[string]string{}
-	for {
-		if sessions, err := agentSessions(); err == nil {
-			wakeWatchers(sessions, loadState().WatcherSessions, note, lastErr)
-		}
-		time.Sleep(watchPoll)
-	}
-}
-
-// woken is whether the board wakes the watcher, rather than leaving it to loop.
+// woken is whether foreman watch wakes the watcher, rather than leaving it to loop.
 func (w Watcher) woken() bool { return len(w.PRs) > 0 || w.At != "" }
 
-// wakeWatchers polls each watcher the board wakes, once, and notes the wakes and the failures.
+// wakeWatchers polls each watcher foreman watch wakes, once, and notes the wakes and the failures.
 // lastErr holds each watcher's last failure: the same one every two minutes would bury whatever
-// else the status bar says.
+// else its log says.
 func wakeWatchers(sessions []rexSession, recorded map[string]string, note func(text string, c Color), lastErr map[string]string) {
 	for _, w := range watchers {
 		if !w.woken() {
@@ -338,34 +322,20 @@ func wakeable(state string) bool {
 	return state == "idle" || state == "done" || state == "error"
 }
 
-// wakeIfChanged records the signatures and calls wake when a PR changed since the last wake. The
-// record comes first, under the state lock, so two boards polling at once wake the watcher once;
-// a failed wake puts the old record back for the next poll to retry. With a batch, only the PRs
-// seenAfter counts as seen are recorded and returned.
+// wakeIfChanged calls wake when a PR changed since the last wake, and then records the signatures:
+// a failed wake records nothing, so the next poll retries. Nothing else wakes the watcher in
+// between, since only one foreman watch runs. With a batch, only the PRs seenAfter counts as seen
+// are recorded and returned.
 func wakeIfChanged(name string, now map[string]string, batch int, wake func() error) ([]string, error) {
-	var changed []string
-	var old, seen map[string]string
-	if _, err := updateState(func(s *State) {
-		old = s.WatcherPrs[name]
-		if seen, changed = seenAfter(old, now, batch); len(changed) > 0 {
-			s.WatcherPrs[name] = seen
-		}
-	}); err != nil || len(changed) == 0 {
-		return nil, err
+	seen, changed := seenAfter(loadState().WatcherPrs[name], now, batch)
+	if len(changed) == 0 {
+		return nil, nil
 	}
 	if err := wake(); err != nil {
-		_, _ = updateState(func(s *State) {
-			if maps.Equal(s.WatcherPrs[name], seen) {
-				if old == nil {
-					delete(s.WatcherPrs, name)
-				} else {
-					s.WatcherPrs[name] = old
-				}
-			}
-		})
 		return nil, fmt.Errorf("waking it: %w", err)
 	}
-	return changed, nil
+	_, err := updateState(func(s *State) { s.WatcherPrs[name] = seen })
+	return changed, err
 }
 
 // changedPrs lists the PRs, sorted, whose signature differs from the last wake's, PRs new to the
