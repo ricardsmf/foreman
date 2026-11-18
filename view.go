@@ -605,7 +605,7 @@ func (m *model) renderFormFields(out []string, verb string, width, h int) []stri
 // agentKey is the dispatch a row's mark and ^s follow: its own, else, for a PR not dispatched for
 // review, its fix.
 func (m *model) agentKey(key string) string {
-	if m.state.Dispatched[key] == "" && strings.Contains(key, "#") && m.state.Dispatched[fixKey(key)] != "" {
+	if m.state.Dispatched[key].Dir == "" && strings.Contains(key, "#") && m.state.Dispatched[fixKey(key)].Dir != "" {
 		return fixKey(key)
 	}
 	return key
@@ -614,10 +614,10 @@ func (m *model) agentKey(key string) string {
 // dispatchMark is the board's dispatch column: ◆ coloured by what the agent's Rex session reports,
 // ◇ when the session is closed.
 func (m *model) dispatchMark(key string) string {
-	if m.state.Dispatched[key] == "" {
+	if m.state.Dispatched[key].Dir == "" {
 		return " "
 	}
-	session := m.state.Sessions[key]
+	session := m.state.Dispatched[key].Session
 	switch m.agents[session] {
 	case "blocked", "error":
 		return fg(cRed, "◆")

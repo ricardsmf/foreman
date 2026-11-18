@@ -8,33 +8,38 @@ import (
 	"syscall"
 )
 
+// A Dispatched is everything the state keeps of one dispatch, so forgetting its key forgets it all.
+type Dispatched struct {
+	// Dir is the directory its agent works in.
+	Dir string `json:"dir"`
+	// Session is its agent's latest Rex session: its ID, which survives a rename, or for dispatches
+	// before IDs were kept, its label.
+	Session string `json:"session,omitempty"`
+	// Agent is the agent dispatched, to resume it with once its session is closed.
+	Agent string `json:"agent,omitempty"`
+	// Title is the ticket's or PR's summary, for the queue.
+	Title string `json:"title,omitempty"`
+	// StartedFrom is the commit a ticket's, task's or fix's worktree was on at dispatch: the board
+	// diffs the agent's work from there, leaving out a reused branch's earlier commits.
+	StartedFrom string `json:"startedFrom,omitempty"`
+	// Hidden is whether I dropped its closed session from the queue. The worktree stays dispatched,
+	// for the board's cleanup; reopening the session or dispatching again shows it.
+	Hidden bool `json:"hidden,omitempty"`
+}
+
 type State struct {
 	RepoByProject map[string]string `json:"repoByProject"`
 	// AgentByRepo maps a repo's main checkout to the agent last dispatched there.
 	AgentByRepo map[string]string `json:"agentByRepo,omitempty"`
-	// Dispatched maps a ticket or PR key to the directory its agent works in.
-	Dispatched map[string]string `json:"dispatched"`
-	// Sessions maps a ticket or PR key to its agent's latest Rex session: its ID, which survives a
-	// rename, or for dispatches before IDs were kept, its label.
-	Sessions map[string]string `json:"sessions,omitempty"`
+	// Dispatched maps a ticket, PR or task key to its dispatch.
+	Dispatched map[string]Dispatched `json:"dispatches"`
 	// Panes maps a Rex session's ID to the pane its agent runs in, as Rex made it at dispatch: the
 	// agent's state is read from that pane and replies are typed there, whatever else the session
 	// holds. A session without one (older dispatches) gets its oldest pane that reports a status.
 	Panes map[string]string `json:"panes,omitempty"`
-	// Agents maps a ticket or PR key to the agent dispatched on it, to resume it with once its
-	// session is closed.
-	Agents map[string]string `json:"agents,omitempty"`
-	// Titles maps a ticket or PR key to its summary, for the queue.
-	Titles map[string]string `json:"titles,omitempty"`
-	// StartedFrom maps a ticket, task or fix key to the commit its worktree was on at dispatch: the
-	// board diffs the agent's work from there, leaving out a reused branch's earlier commits.
-	StartedFrom map[string]string `json:"startedFrom,omitempty"`
 	// Dismissed maps a queue item to what it showed when marked reviewed: an agent item, by its key,
 	// moves up again when its report is newer; a PR item, by "pr:" and its key, when its status changes.
 	Dismissed map[string]string `json:"dismissed,omitempty"`
-	// Hidden holds the dispatched keys whose closed session I dropped from the queue. The worktree
-	// stays dispatched, for the board's cleanup; reopening the session or dispatching again shows it.
-	Hidden map[string]bool `json:"hidden,omitempty"`
 	// WatcherSessions maps each watcher's name to its Rex session ID: it may rename the session.
 	WatcherSessions map[string]string `json:"watcherSessions,omitempty"`
 	// WatcherPrs maps each polled watcher's name to its PRs' signatures at its last wake, by
@@ -54,6 +59,34 @@ type State struct {
 	TaskSeq map[string]int `json:"taskSeq,omitempty"`
 	// Board is the view and the filter the board was last on, which it opens on.
 	Board *BoardView `json:"board,omitempty"`
+}
+
+// change applies fn to key's dispatch, when it has one.
+func (s *State) change(key string, fn func(*Dispatched)) {
+	if d, ok := s.Dispatched[key]; ok {
+		fn(&d)
+		s.Dispatched[key] = d
+	}
+}
+
+// legacyDispatches is how a state file held the dispatches before each was one record: a map per
+// field, by key.
+type legacyDispatches struct {
+	Dispatched  map[string]string `json:"dispatched"`
+	Sessions    map[string]string `json:"sessions"`
+	Agents      map[string]string `json:"agents"`
+	Titles      map[string]string `json:"titles"`
+	StartedFrom map[string]string `json:"startedFrom"`
+	Hidden      map[string]bool   `json:"hidden"`
+}
+
+func (l legacyDispatches) records() map[string]Dispatched {
+	out := map[string]Dispatched{}
+	for key, dir := range l.Dispatched {
+		out[key] = Dispatched{Dir: dir, Session: l.Sessions[key], Agent: l.Agents[key], Title: l.Titles[key],
+			StartedFrom: l.StartedFrom[key], Hidden: l.Hidden[key]}
+	}
+	return out
 }
 
 type BoardView struct {
@@ -100,6 +133,13 @@ func readState() State {
 			_ = os.Rename(stateFile, stateFile+".corrupt")
 			s = State{}
 		}
+		// A file from before the records has none: the next save writes them in place of its maps.
+		if s.Dispatched == nil {
+			var old legacyDispatches
+			if json.Unmarshal(b, &old) == nil {
+				s.Dispatched = old.records()
+			}
+		}
 	}
 	if s.RepoByProject == nil {
 		s.RepoByProject = map[string]string{}
@@ -108,28 +148,13 @@ func readState() State {
 		s.AgentByRepo = map[string]string{}
 	}
 	if s.Dispatched == nil {
-		s.Dispatched = map[string]string{}
-	}
-	if s.Sessions == nil {
-		s.Sessions = map[string]string{}
+		s.Dispatched = map[string]Dispatched{}
 	}
 	if s.Panes == nil {
 		s.Panes = map[string]string{}
 	}
-	if s.Agents == nil {
-		s.Agents = map[string]string{}
-	}
-	if s.Titles == nil {
-		s.Titles = map[string]string{}
-	}
-	if s.StartedFrom == nil {
-		s.StartedFrom = map[string]string{}
-	}
 	if s.Dismissed == nil {
 		s.Dismissed = map[string]string{}
-	}
-	if s.Hidden == nil {
-		s.Hidden = map[string]bool{}
 	}
 	if s.WatcherSessions == nil {
 		s.WatcherSessions = map[string]string{}

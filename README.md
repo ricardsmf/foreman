@@ -547,7 +547,13 @@ see [Waking a watcher](#waking-a-watcher). `at` is optional too, with `prs` or w
 
 A running `foreman watch` keeps the code it started with: after `go build -o ~/.local/bin/foreman .`
 restart it with `launchctl kickstart -k gui/$(id -u)/org.nixos.foreman-watch`. It reads the config
-once too, so the same goes for a change to `config.json`.
+once too, so the same goes for a change to `config.json`. The board keeps its code as well:
+`rex kill foreman && foreman open`.
+
+After a change to what `state.json` holds, restart both before anything writes it: a foreman still
+running the old code saves the state without the fields it doesn't know. A file from before each
+dispatch was one record under `dispatches` (a map per field: `dispatched`, `sessions`, `agents`,
+`titles`, `startedFrom`, `hidden`) is read as it is and rewritten at the next save.
 
 Every call to Rex goes through `rexAPI` (`rex.go`); `rexCLI` (`rex_cli.go`) is the only code that
 runs `rex`, and the tests put a fake in its place.

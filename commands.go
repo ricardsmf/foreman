@@ -105,7 +105,7 @@ func agentInfoOf(it queueItem, s State) agentInfo {
 	case it.Orchestrator:
 		a.Agent = agentClaude
 	case !it.Watcher:
-		a.Agent = s.Agents[it.Key]
+		a.Agent = s.Dispatched[it.Key].Agent
 	}
 	if it.Report != "" {
 		at := it.When

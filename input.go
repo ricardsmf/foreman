@@ -74,7 +74,7 @@ func (m *model) boardInput(msg tea.KeyPressMsg) tea.Cmd {
 		if !ok {
 			break
 		}
-		session := m.state.Sessions[m.agentKey(current.Key)]
+		session := m.state.Dispatched[m.agentKey(current.Key)].Session
 		if session == "" || m.agents[session] == "" {
 			m.say("No open agent session for "+current.Key, cOverlay)
 			break

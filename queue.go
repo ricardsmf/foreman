@@ -194,11 +194,11 @@ func evidence(dir string) (media, captures []string) {
 // newest report first.
 func queueItems(s State, sessions []rexSession, prs []Pr) []queueItem {
 	var items []queueItem
-	for key, dir := range s.Dispatched {
-		it := queueItem{Kind: agentItem, Key: key, Title: s.Titles[key], Session: s.Sessions[key], Dir: dir}
-		if rs, ok := findSession(sessions, key, s.Sessions[key]); ok {
+	for key, d := range s.Dispatched {
+		it := queueItem{Kind: agentItem, Key: key, Title: d.Title, Session: d.Session, Dir: d.Dir}
+		if rs, ok := findSession(sessions, key, d.Session); ok {
 			it.on(rs)
-		} else if s.Hidden[key] {
+		} else if d.Hidden {
 			continue
 		}
 		ev := evidenceDir(key)
@@ -291,8 +291,8 @@ func queueItems(s State, sessions []rexSession, prs []Pr) []queueItem {
 // the agent renamed, or a dispatch from before IDs were kept. Recording the ID lets the board find it too.
 func sessionFixes(s State, sessions []rexSession) map[string]string {
 	fixes := map[string]string{}
-	for key := range s.Dispatched {
-		if rs, ok := findSession(sessions, key, s.Sessions[key]); ok && rs.ID != s.Sessions[key] {
+	for key, d := range s.Dispatched {
+		if rs, ok := findSession(sessions, key, d.Session); ok && rs.ID != d.Session {
 			fixes[key] = rs.ID
 		}
 	}
@@ -603,7 +603,7 @@ func (q *queueModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if fixes := sessionFixes(q.state, q.sessions); len(fixes) > 0 {
 				q.state, _ = updateState(func(s *State) {
 					for k, id := range fixes {
-						s.Sessions[k] = id
+						s.change(k, func(d *Dispatched) { d.Session = id })
 					}
 				})
 			}
@@ -843,14 +843,14 @@ func (q *queueModel) prAgent(p Pr) (queueItem, bool) {
 	if _, fixing := q.state.Dispatched[key]; !fixing {
 		key = jiraKey(p, nil)
 	}
-	dir, ok := q.state.Dispatched[key]
+	d, ok := q.state.Dispatched[key]
 	if key == "" || !ok {
 		return queueItem{}, false
 	}
 	if n := slices.IndexFunc(q.all, func(it queueItem) bool { return it.Kind == agentItem && it.Key == key }); n >= 0 {
 		return q.all[n], true
 	}
-	return queueItem{Kind: agentItem, Key: key, Title: q.state.Titles[key], Session: q.state.Sessions[key], Dir: dir}, true
+	return queueItem{Kind: agentItem, Key: key, Title: d.Title, Session: d.Session, Dir: d.Dir}, true
 }
 
 // requestForm asks the board to open its dispatch form on the PR's ticket. A PR that names no
@@ -884,8 +884,7 @@ func (q *queueModel) resume(it queueItem) tea.Cmd {
 			return queueStatusMsg{text: "Resuming " + key + ": " + err.Error(), color: cRed}
 		}
 		_, _ = updateState(func(s *State) {
-			s.Sessions[key] = id
-			s.Agents[key] = agent
+			s.change(key, func(d *Dispatched) { d.Session, d.Agent = id, agent })
 		})
 		if err := rex.show(id); err != nil {
 			return queueStatusMsg{text: "Switching to " + key + "'s session: " + err.Error(), color: cRed}
@@ -905,7 +904,7 @@ func (q *queueModel) hide(it queueItem) tea.Cmd {
 	}
 	q.confirmKill = ""
 	key := it.Key
-	q.state, _ = updateState(func(s *State) { s.Hidden[key] = true })
+	q.state, _ = updateState(func(s *State) { s.change(key, func(d *Dispatched) { d.Hidden = true }) })
 	q.say("Dropped "+key+"; ^x on the board cleans up its worktree", cOverlay)
 	return q.rebuild()
 }
@@ -918,7 +917,7 @@ func (q *queueModel) openDiff(it queueItem) tea.Cmd {
 		return nil
 	}
 	args := []string{"-C", it.Dir, "diff"}
-	if from := diffFrom(it.Dir, it.review(), q.state.StartedFrom[it.Key]); from != "" {
+	if from := diffFrom(it.Dir, it.review(), q.state.Dispatched[it.Key].StartedFrom); from != "" {
 		args = append(args, from)
 	}
 	return tea.ExecProcess(exec.Command("git", args...), func(err error) tea.Msg {

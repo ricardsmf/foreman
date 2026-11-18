@@ -256,14 +256,14 @@ func TestUpdateState(t *testing.T) {
 	stateFile = filepath.Join(t.TempDir(), "sub", "state.json")
 	t.Cleanup(func() { stateFile = old })
 
-	if _, err := updateState(func(s *State) { s.Dispatched["FLD-1"] = "/tmp/x" }); err != nil {
+	if _, err := updateState(func(s *State) { s.Dispatched["FLD-1"] = Dispatched{Dir: "/tmp/x"} }); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := updateState(func(s *State) { s.Sessions["FLD-1"] = "fld-1-x" }); err != nil {
+	if _, err := updateState(func(s *State) { s.change("FLD-1", func(d *Dispatched) { d.Session = "fld-1-x" }) }); err != nil {
 		t.Fatal(err)
 	}
 	s := loadState()
-	if s.Dispatched["FLD-1"] != "/tmp/x" || s.Sessions["FLD-1"] != "fld-1-x" {
+	if s.Dispatched["FLD-1"] != (Dispatched{Dir: "/tmp/x", Session: "fld-1-x"}) {
 		t.Errorf("updates lost: %+v", s)
 	}
 
@@ -285,7 +285,7 @@ func TestUpdateStateAcrossProcesses(t *testing.T) {
 	if name := os.Getenv("FOREMAN_TEST_STATE_WRITER"); name != "" {
 		stateFile = os.Getenv("FOREMAN_TEST_STATE_FILE")
 		for n := range each {
-			if _, err := updateState(func(s *State) { s.Dispatched[fmt.Sprintf("%s-%d", name, n)] = "/w" }); err != nil {
+			if _, err := updateState(func(s *State) { s.Dispatched[fmt.Sprintf("%s-%d", name, n)] = Dispatched{Dir: "/w"} }); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -443,7 +443,7 @@ func TestDiffFromReusedBranch(t *testing.T) {
 	git(t, cwd, "add", ".")
 	git(t, cwd, "commit", "-q", "-m", "my work")
 
-	recorded := loadState().StartedFrom["FLD-5"]
+	recorded := loadState().Dispatched["FLD-5"].StartedFrom
 	if recorded != start || start == "" {
 		t.Fatalf("recorded %q, want the dispatch's HEAD %q", recorded, start)
 	}
@@ -461,7 +461,7 @@ func TestDiffFromReusedBranch(t *testing.T) {
 
 	// Dispatching again, as a review would, records no start and drops the old one.
 	markDispatched("FLD-5", "Thing", cwd, "s", agentPi, "")
-	if got, ok := loadState().StartedFrom["FLD-5"]; ok {
+	if got := loadState().Dispatched["FLD-5"].StartedFrom; got != "" {
 		t.Errorf("a dispatch without a start kept %q", got)
 	}
 }
@@ -556,11 +556,11 @@ func TestQueueItems(t *testing.T) {
 	report("repo#7")
 	report("FLD-4")
 	s := State{
-		Dispatched: map[string]string{"FLD-1": "/w/1", "FLD-2": "/w/2", "FLD-3": "/w/3", "FLD-4": "/w/4", "repo#7": "/w/7", "FLD-5": "/w/5"},
-		Sessions:   map[string]string{"FLD-1": "s1", "FLD-2": "s2", "FLD-3": "s3", "FLD-4": "s4", "repo#7": "s7", "FLD-5": "s5"},
-		Titles:     map[string]string{},
-		Dismissed:  map[string]string{},
-		Hidden:     map[string]bool{},
+		Dispatched: map[string]Dispatched{
+			"FLD-1": {Dir: "/w/1", Session: "s1"}, "FLD-2": {Dir: "/w/2", Session: "s2"}, "FLD-3": {Dir: "/w/3", Session: "s3"},
+			"FLD-4": {Dir: "/w/4", Session: "s4"}, "repo#7": {Dir: "/w/7", Session: "s7"}, "FLD-5": {Dir: "/w/5", Session: "s5"},
+		},
+		Dismissed: map[string]string{},
 	}
 	// FLD-2 asks, FLD-3 works, FLD-5 finished without a report, FLD-4's session is closed.
 	sessions := []rexSession{{ID: "s1", Label: "fld-1-a", State: "done"}, {ID: "s2", Label: "fld-2-b", State: "blocked"}, {ID: "s3", Label: "fld-3-c", State: "working"}, {ID: "s7", Label: "review-repo-7", State: "idle"}, {ID: "s5", Label: "fld-5-e", State: "done"}}
@@ -613,7 +613,7 @@ func TestQueueItems(t *testing.T) {
 	}
 
 	// A review agent and its PR share a key; marking the PR reviewed leaves the agent's report.
-	s.Dispatched["repo#9"] = "/w/9"
+	s.Dispatched["repo#9"] = Dispatched{Dir: "/w/9"}
 	report("repo#9")
 	pr := queueItem{Kind: prItem, Key: "repo#9"}
 	s.Dismissed[pr.dismissKey()] = "in review ✗"
@@ -622,7 +622,7 @@ func TestQueueItems(t *testing.T) {
 	}
 
 	// A closed agent can be dropped; it shows again when its session reopens.
-	s.Hidden["FLD-4"] = true
+	s.change("FLD-4", func(d *Dispatched) { d.Hidden = true })
 	if _, ok := groups(queueItems(s, sessions, prs))["FLD-4"]; ok {
 		t.Error("hidden FLD-4 still listed")
 	}
@@ -655,11 +655,8 @@ func TestQueueGroupsByRepo(t *testing.T) {
 	report("task:tool-1", 2*time.Minute) // tool
 	report("FLD-2", time.Minute)         // app, newest
 	s := State{
-		Dispatched: map[string]string{"FLD-1": "/gone/app-fld-1", "FLD-2": "/gone/app-fld-2", "task:tool-1": "/gone/tool-task-1"},
-		Sessions:   map[string]string{},
-		Titles:     map[string]string{},
+		Dispatched: map[string]Dispatched{"FLD-1": {Dir: "/gone/app-fld-1"}, "FLD-2": {Dir: "/gone/app-fld-2"}, "task:tool-1": {Dir: "/gone/tool-task-1"}},
 		Dismissed:  map[string]string{},
-		Hidden:     map[string]bool{},
 	}
 	var got []string
 	for _, it := range queueItems(s, nil, nil) {
@@ -678,8 +675,7 @@ func TestQueueKeepsItsPlaceAcrossRebuilds(t *testing.T) {
 	q := &queueModel{
 		details: map[string][]string{},
 		state: State{
-			Dispatched: map[string]string{"FLD-1": "/w/1", "FLD-2": "/w/2", "repo#9": "/w/9"},
-			Sessions:   map[string]string{"FLD-1": "s1", "FLD-2": "s2", "repo#9": "s9"},
+			Dispatched: map[string]Dispatched{"FLD-1": {Dir: "/w/1", Session: "s1"}, "FLD-2": {Dir: "/w/2", Session: "s2"}, "repo#9": {Dir: "/w/9", Session: "s9"}},
 		},
 		sessions: []rexSession{{ID: "s1", Label: "fld-1-a", State: "idle"}, {ID: "s2", Label: "fld-2-b", State: "idle"}, {ID: "s9", Label: "review-repo-9", State: "working"}},
 		prs:      []Pr{{Key: "repo#9", Mine: true, Category: "Blocked", Status: "changes"}},
@@ -734,7 +730,7 @@ func TestFindSession(t *testing.T) {
 			t.Errorf("findSession(%s, %s) = %q, want %q", tc.key, tc.recorded, got.ID, tc.want)
 		}
 	}
-	s := State{Dispatched: map[string]string{"FLD-1704": "/w", "FLD-1679": "/w"}, Sessions: map[string]string{"FLD-1704": "fld-1704-test-work-orders"}}
+	s := State{Dispatched: map[string]Dispatched{"FLD-1704": {Dir: "/w", Session: "fld-1704-test-work-orders"}, "FLD-1679": {Dir: "/w"}}}
 	if got := sessionFixes(s, sessions); !maps.Equal(got, map[string]string{"FLD-1704": "session:a"}) {
 		t.Errorf("sessionFixes = %v", got)
 	}
@@ -758,8 +754,8 @@ func TestAgentsResultDoesNotReschedule(t *testing.T) {
 	}
 	// It carries the state file too, which the queue and other boards write; a failed listing of
 	// the sessions keeps the last one.
-	m.Update(agentsMsg{state: State{Dispatched: map[string]string{"FLD-9": "/w"}}})
-	if m.state.Dispatched["FLD-9"] != "/w" || m.agents["fld-1"] != "working" {
+	m.Update(agentsMsg{state: State{Dispatched: map[string]Dispatched{"FLD-9": {Dir: "/w"}}}})
+	if m.state.Dispatched["FLD-9"].Dir != "/w" || m.agents["fld-1"] != "working" {
 		t.Errorf("state = %+v, agents = %v", m.state, m.agents)
 	}
 	// Outside Rex: in it, the queue's first state is also reported to Rex.
@@ -801,10 +797,39 @@ func tempState(t *testing.T) {
 	t.Cleanup(func() { stateFile, evidenceRoot = oldState, oldEvidence })
 }
 
+// A state file from before a dispatch was one record is read into records, and the next save
+// writes them in place of its maps.
+func TestStateReadsDispatchesKeptAsMaps(t *testing.T) {
+	tempState(t)
+	legacy := `{"dispatched":{"FLD-1":"/w/1","FLD-2":"/w/2"},"sessions":{"FLD-1":"s1"},
+		"agents":{"FLD-1":"pi","FLD-9":"pi"},"titles":{"FLD-1":"One"},"startedFrom":{"FLD-1":"abc"},
+		"hidden":{"FLD-2":true},"dismissed":{"FLD-1":"sig"}}`
+	if err := os.WriteFile(stateFile, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]Dispatched{
+		"FLD-1": {Dir: "/w/1", Session: "s1", Agent: "pi", Title: "One", StartedFrom: "abc"},
+		"FLD-2": {Dir: "/w/2", Hidden: true},
+	}
+	if s := loadState(); !maps.Equal(s.Dispatched, want) || s.Dismissed["FLD-1"] != "sig" {
+		t.Fatalf("read %+v, want %+v", s, want)
+	}
+	if _, err := updateState(func(*State) {}); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := os.ReadFile(stateFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(saved), `"agents"`) || !maps.Equal(loadState().Dispatched, want) {
+		t.Errorf("saved %s, want the records alone", saved)
+	}
+}
+
 // dispatched records a dispatch with a report, as one that ran would leave it.
 func dispatched(t *testing.T, key, dir string) {
 	t.Helper()
-	if _, err := updateState(func(s *State) { s.Dispatched[key], s.Titles[key] = dir, key }); err != nil {
+	if _, err := updateState(func(s *State) { s.Dispatched[key] = Dispatched{Dir: dir, Title: key} }); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(evidenceDir(key), 0o755); err != nil {
@@ -857,7 +882,7 @@ func TestCleanupKeepsTheMainCheckout(t *testing.T) {
 	if !exists(filepath.Join(repo, ".git")) {
 		t.Error("the main checkout is gone")
 	}
-	if s := loadState(); !maps.Equal(s.Dispatched, map[string]string{"FLD-3": repo}) {
+	if s := loadState(); !maps.Equal(s.Dispatched, map[string]Dispatched{"FLD-3": {Dir: repo, Title: "FLD-3"}}) {
 		t.Errorf("dispatched = %v, want only the unticked FLD-3", s.Dispatched)
 	}
 	if exists(evidenceDir("FLD-1")) || exists(evidenceDir("FLD-2")) || !exists(evidenceDir("FLD-3")) {
@@ -873,7 +898,7 @@ func TestCleanupDiscardsGoneWorktrees(t *testing.T) {
 	if msg := m.findCleanup()().(cleanupMsg); len(msg.candidates) != 0 || len(msg.failed) != 0 || msg.err != nil {
 		t.Fatalf("cleanup = %+v", msg)
 	}
-	if s := loadState(); len(s.Dispatched) != 0 || len(s.Titles) != 0 {
+	if s := loadState(); len(s.Dispatched) != 0 {
 		t.Errorf("state = %+v", s)
 	}
 	if exists(evidenceDir("FLD-1")) {
@@ -885,7 +910,7 @@ func TestCleanupDiscardsGoneWorktrees(t *testing.T) {
 func TestDispatchAsksBeforeASecondAgent(t *testing.T) {
 	tempState(t)
 	m := &model{
-		state:    State{Sessions: map[string]string{"FLD-1": "s1"}, RepoByProject: map[string]string{}},
+		state:    State{Dispatched: map[string]Dispatched{"FLD-1": {Dir: "/w/1", Session: "s1"}}, RepoByProject: map[string]string{}},
 		agents:   map[string]string{"s1": "working"},
 		repos:    []string{"/r/one"},
 		details:  map[string][]string{},
@@ -933,7 +958,7 @@ func TestTruncatedPrList(t *testing.T) {
 
 func TestStaleDismissals(t *testing.T) {
 	s := State{
-		Dispatched: map[string]string{"FLD-1": "/w/1"},
+		Dispatched: map[string]Dispatched{"FLD-1": {Dir: "/w/1"}},
 		Dismissed:  map[string]string{"FLD-1": "a", "FLD-9": "b", "pr:repo#2": "c", "pr:repo#3": "d", "repo#2": "e"},
 	}
 	prs := []Pr{{Key: "repo#2", Mine: true, Category: "Blocked"}, {Key: "repo#3", Mine: true, Category: "In Progress"}}
@@ -1358,7 +1383,7 @@ func TestDispatchedAgent(t *testing.T) {
 	oldHome := home
 	home = t.TempDir()
 	t.Cleanup(func() { home = oldHome })
-	s := State{Agents: map[string]string{"FLD-1": "Claude (yolo)"}}
+	s := State{Dispatched: map[string]Dispatched{"FLD-1": {Dir: "/w/x", Agent: "Claude (yolo)"}}}
 	if got, _ := dispatchedAgent(s, "FLD-1", "/w/x"); got != "Claude (yolo)" {
 		t.Errorf("recorded agent: got %q", got)
 	}
@@ -1391,9 +1416,7 @@ func TestDispatchedAgent(t *testing.T) {
 func TestPrAgent(t *testing.T) {
 	q := &queueModel{
 		state: State{
-			Dispatched: map[string]string{"FLD-1": "/w/1", "FLD-2": "/w/2"},
-			Sessions:   map[string]string{"FLD-1": "s1", "FLD-2": "s2"},
-			Titles:     map[string]string{"FLD-2": "Two"},
+			Dispatched: map[string]Dispatched{"FLD-1": {Dir: "/w/1", Session: "s1"}, "FLD-2": {Dir: "/w/2", Session: "s2", Title: "Two"}},
 		},
 		all: []queueItem{{Kind: agentItem, Key: "FLD-1", Agent: "idle", Session: "s1"}},
 	}
@@ -1841,8 +1864,7 @@ func TestAgentsCommand(t *testing.T) {
 	dispatched(t, "task:foreman-1", "/w/foreman-task-1")
 	dispatched(t, "FLD-2", "/w/app-fld-2")
 	_, _ = updateState(func(s *State) {
-		s.Sessions["task:foreman-1"], s.Agents["task:foreman-1"] = "s1", agentPi
-		s.Titles["task:foreman-1"] = "Add a flag"
+		s.change("task:foreman-1", func(d *Dispatched) { d.Session, d.Agent, d.Title = "s1", agentPi, "Add a flag" })
 	})
 	old := watchers
 	watchers = []Watcher{{Name: "fld-pr-watch", Dir: "/w/watch", Prompt: "/loop"}}
@@ -1970,8 +1992,7 @@ func TestOrchestratorCommand(t *testing.T) {
 
 func TestAskerKey(t *testing.T) {
 	s := State{
-		Sessions:   map[string]string{"FLD-1": "session:a"},
-		Dispatched: map[string]string{"FLD-1": "/w/app-fld-1", "task:app-2": "/w/app-task-2"},
+		Dispatched: map[string]Dispatched{"FLD-1": {Dir: "/w/app-fld-1", Session: "session:a"}, "task:app-2": {Dir: "/w/app-task-2"}},
 	}
 	for _, tc := range []struct{ session, cwd, want string }{
 		{"session:a", "/elsewhere", "FLD-1"},
@@ -2066,7 +2087,7 @@ func TestQueueShowsQuestions(t *testing.T) {
 	dispatched(t, "FLD-1", "/w/app-fld-1")
 	at := time.Now()
 	_, _ = updateState(func(s *State) {
-		s.Sessions["FLD-1"] = "s1"
+		s.change("FLD-1", func(d *Dispatched) { d.Session = "s1" })
 		s.Questions["FLD-1"] = Question{Text: "Which endpoint?", At: at}
 	})
 	_ = appendLog("FLD-1", logEntry{At: at, By: byAgent, Kind: "question", Text: "Which endpoint?"})
@@ -2343,17 +2364,16 @@ func TestFixKey(t *testing.T) {
 		t.Errorf("a review's kind = %q", got)
 	}
 	q := &queueModel{state: State{
-		Dispatched: map[string]string{"FLD-1": "/w/1", "fix:app#5": "/w/1"},
-		Sessions:   map[string]string{"FLD-1": "s1", "fix:app#5": "s2"},
+		Dispatched: map[string]Dispatched{"FLD-1": {Dir: "/w/1", Session: "s1"}, "fix:app#5": {Dir: "/w/1", Session: "s2"}},
 	}}
 	if it, ok := q.prAgent(Pr{Key: "app#5", Branch: "rf/fld-1-x"}); !ok || it.Key != "fix:app#5" {
 		t.Errorf("prAgent = %+v, %t; want the fix", it, ok)
 	}
-	m := &model{state: State{Dispatched: map[string]string{"fix:app#5": "/w/1"}}}
+	m := &model{state: State{Dispatched: map[string]Dispatched{"fix:app#5": {Dir: "/w/1"}}}}
 	if got := m.agentKey("app#5"); got != "fix:app#5" {
 		t.Errorf("agentKey = %q", got)
 	}
-	m.state.Dispatched["app#5"] = "/w/app-pr-5"
+	m.state.Dispatched["app#5"] = Dispatched{Dir: "/w/app-pr-5"}
 	if got := m.agentKey("app#5"); got != "app#5" {
 		t.Errorf("agentKey with a review = %q", got)
 	}
@@ -2441,7 +2461,7 @@ func TestQueueFoldKeys(t *testing.T) {
 	evidenceRoot = t.TempDir()
 	t.Cleanup(func() { evidenceRoot = old })
 	t.Setenv("REX_SESSION", "")
-	q := &queueModel{details: map[string][]string{}, state: State{Dispatched: map[string]string{"FLD-1": "/w/1", "FLD-2": "/w/2"}}}
+	q := &queueModel{details: map[string][]string{}, state: State{Dispatched: map[string]Dispatched{"FLD-1": {Dir: "/w/1"}, "FLD-2": {Dir: "/w/2"}}}}
 	q.rebuild()
 	if len(q.items) != 1 || q.items[0].Fold != 2 || q.count(closed) != 2 {
 		t.Fatalf("rows: %+v", q.items)
@@ -2708,7 +2728,7 @@ func TestQueueRowShowsWhatAgentDoes(t *testing.T) {
 	t.Cleanup(func() { evidenceRoot = old })
 	t.Setenv("REX_SESSION", "")
 	q := &queueModel{details: map[string][]string{}, width: 100, height: 30,
-		state:    State{Dispatched: map[string]string{"FLD-1": "/w/1"}, Sessions: map[string]string{"FLD-1": "s1"}},
+		state:    State{Dispatched: map[string]Dispatched{"FLD-1": {Dir: "/w/1", Session: "s1"}}},
 		sessions: []rexSession{{ID: "s1", Label: "fld-1", State: "working", Msg: "Running the tests"}}}
 	q.rebuild()
 	if rows := strings.Join(q.render(98, 29), "\n"); !strings.Contains(rows, "Running the tests") {

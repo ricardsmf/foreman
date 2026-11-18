@@ -91,15 +91,15 @@ func readLog(key string) []logEntry {
 // directory holds cwd.
 func askerKey(s State, session, cwd string) (string, error) {
 	if session != "" {
-		for key, id := range s.Sessions {
-			if id == session {
+		for key, d := range s.Dispatched {
+			if d.Session == session {
 				return key, nil
 			}
 		}
 	}
 	cwd = filepath.Clean(cwd)
-	for key, dir := range s.Dispatched {
-		if cwd == dir || strings.HasPrefix(cwd, dir+string(filepath.Separator)) {
+	for key, d := range s.Dispatched {
+		if cwd == d.Dir || strings.HasPrefix(cwd, d.Dir+string(filepath.Separator)) {
 			return key, nil
 		}
 	}

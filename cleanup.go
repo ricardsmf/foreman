@@ -54,7 +54,8 @@ func cleanupCandidates(ctx context.Context, jira *Jira, state State, agents map[
 	// Each check is a Jira or GitHub call plus a few git commands; a long-lived board can have
 	// dozens, and all at once trip rate limits.
 	slots := make(chan struct{}, cleanupWorkers)
-	for key, dir := range state.Dispatched {
+	for key, d := range state.Dispatched {
+		dir := d.Dir
 		if !exists(dir) {
 			gone = append(gone, key)
 			continue
@@ -62,7 +63,7 @@ func cleanupCandidates(ctx context.Context, jira *Jira, state State, agents map[
 		wg.Go(func() {
 			slots <- struct{}{}
 			defer func() { <-slots }()
-			c, ok, err := checkCleanup(ctx, jira, key, dir, agents[state.Sessions[key]] != "")
+			c, ok, err := checkCleanup(ctx, jira, key, dir, agents[d.Session] != "")
 			if err != nil {
 				mu.Lock()
 				failed = append(failed, key+": "+firstLine(err.Error()))
@@ -71,7 +72,7 @@ func cleanupCandidates(ctx context.Context, jira *Jira, state State, agents map[
 			if !ok {
 				return
 			}
-			c.Session = state.Sessions[key]
+			c.Session = d.Session
 			if s := agents[c.Session]; s != "" {
 				c.Agent = s
 			}
@@ -108,12 +109,8 @@ func discard(keys []string) {
 func forget(s *State, keys []string) {
 	for _, k := range keys {
 		delete(s.Dispatched, k)
-		delete(s.Sessions, k)
-		delete(s.Titles, k)
-		delete(s.StartedFrom, k)
 		delete(s.Questions, k)
 		delete(s.Dismissed, k)
-		delete(s.Hidden, k)
 	}
 }
 
@@ -189,7 +186,7 @@ func dropFinished(ctx context.Context, jira *Jira) []string {
 	if len(keys) > 0 {
 		_, _ = updateState(func(s *State) {
 			for _, k := range keys {
-				s.Hidden[k] = true
+				s.change(k, func(d *Dispatched) { d.Hidden = true })
 			}
 		})
 	}

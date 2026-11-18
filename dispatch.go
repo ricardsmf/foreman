@@ -900,7 +900,7 @@ func resumeCommand(agent string) []string {
 // dispatchedAgent is the agent to resume key with: the one recorded at dispatch, else, for
 // dispatches from before agents were recorded, the one with the newest conversation in dir.
 func dispatchedAgent(s State, key, dir string) (string, error) {
-	if a := s.Agents[key]; a != "" {
+	if a := s.Dispatched[key].Agent; a != "" {
 		return a, nil
 	}
 	var newest time.Time
@@ -952,18 +952,9 @@ func headCommit(dir string) string {
 // markDispatched records the dispatch. from is the commit the agent starts from, "" for none.
 func markDispatched(key, title, cwd, session, agent, from string) {
 	_, _ = updateState(func(s *State) {
-		s.Dispatched[key] = cwd
-		if from != "" {
-			s.StartedFrom[key] = from
-		} else {
-			delete(s.StartedFrom, key)
-		}
-		s.Sessions[key] = session
-		s.Agents[key] = agent
-		s.Titles[key] = title
+		s.Dispatched[key] = Dispatched{Dir: cwd, Session: session, Agent: agent, Title: title, StartedFrom: from}
 		delete(s.Questions, key)
 		delete(s.Dismissed, key)
-		delete(s.Hidden, key)
 	})
 }
 

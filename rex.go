@@ -502,9 +502,9 @@ func repoSibling(s State, repo string, open []rexSession) string {
 		return ""
 	}
 	same := map[string]bool{}
-	for key, dir := range s.Dispatched {
-		if id := s.Sessions[key]; id != "" && repoOf(key, dir) == repo {
-			same[id] = true
+	for key, d := range s.Dispatched {
+		if d.Session != "" && repoOf(key, d.Dir) == repo {
+			same[d.Session] = true
 		}
 	}
 	for _, w := range watchers {
@@ -529,8 +529,8 @@ func recordPane(s *State, session, block string, open []rexSession) {
 	for _, o := range open {
 		keep[o.ID] = true
 	}
-	for _, id := range s.Sessions {
-		keep[id] = true
+	for _, d := range s.Dispatched {
+		keep[d.Session] = true
 	}
 	for _, id := range s.WatcherSessions {
 		keep[id] = true

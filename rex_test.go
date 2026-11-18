@@ -314,7 +314,7 @@ func TestNewSessionRecordsItsPane(t *testing.T) {
 		s.Panes["s-open"] = "block:open"
 		s.Panes["s-closed"] = "block:closed"
 		// Closed, but still a dispatch's session: its pane stays with it.
-		s.Sessions["FLD-7"], s.Panes["s-resumable"] = "s-resumable", "block:r"
+		s.Dispatched["FLD-7"], s.Panes["s-resumable"] = Dispatched{Dir: "/w7", Session: "s-resumable"}, "block:r"
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -378,10 +378,10 @@ func TestNewSessionJoinsItsRepo(t *testing.T) {
 		rexSession{ID: "s1", Label: "fld-1"}, rexSession{ID: "s2", Label: "other"},
 		rexSession{ID: "s3", Label: "fld-3"}, rexSession{ID: "s4", Label: "fld-4"})
 	if _, err := updateState(func(s *State) {
-		s.Dispatched["FLD-1"], s.Sessions["FLD-1"] = wt1, "s1"
-		s.Dispatched["FLD-3"], s.Sessions["FLD-3"] = wt3, "s3"
-		s.Dispatched["FLD-4"], s.Sessions["FLD-4"] = "/gone/elsewhere-fld-4", "s4"
-		s.Dispatched["FLD-5"], s.Sessions["FLD-5"] = wt1, "s-closed"
+		s.Dispatched["FLD-1"] = Dispatched{Dir: wt1, Session: "s1"}
+		s.Dispatched["FLD-3"] = Dispatched{Dir: wt3, Session: "s3"}
+		s.Dispatched["FLD-4"] = Dispatched{Dir: "/gone/elsewhere-fld-4", Session: "s4"}
+		s.Dispatched["FLD-5"] = Dispatched{Dir: wt1, Session: "s-closed"}
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -410,7 +410,7 @@ func TestReplyGoesToTheAgentsPane(t *testing.T) {
 		pane("block:0", true, rexRecord{State: "working"}), // older, and not the agent's
 	}})
 	if _, err := updateState(func(s *State) {
-		s.Dispatched["FLD-1"], s.Sessions["FLD-1"], s.Panes["s1"] = "/w", "s1", "block:1"
+		s.Dispatched["FLD-1"], s.Panes["s1"] = Dispatched{Dir: "/w", Session: "s1"}, "block:1"
 	}); err != nil {
 		t.Fatal(err)
 	}

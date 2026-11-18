@@ -462,7 +462,7 @@ func (m *model) submit() tea.Cmd {
 		key = fixKey(key)
 	}
 	// A second agent would work in the first one's worktree, and the board would lose track of the first.
-	if session := m.state.Sessions[key]; session != "" && m.agents[session] != "" && !f.confirmed {
+	if session := m.state.Dispatched[key].Session; session != "" && m.agents[session] != "" && !f.confirmed {
 		f.confirmed = true
 		m.say(fmt.Sprintf("%s's agent session is still open (%s); enter again starts a second agent", key, m.agents[session]), cYellow)
 		m.statusSticky = true

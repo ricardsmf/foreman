@@ -224,7 +224,7 @@ func runDispatch(argv []string) error {
 	}
 
 	agent = cmp.Or(agent, defaultAgent(state, repo))
-	if session := state.Sessions[key]; key != "" && session != "" && !a.again {
+	if session := state.Dispatched[key].Session; key != "" && session != "" && !a.again {
 		if states, err := agentStates(); err == nil && states[session] != "" {
 			return fmt.Errorf("%s's agent session is still open (%s); pass --again to start a second agent", key, states[session])
 		}
