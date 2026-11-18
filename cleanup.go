@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -271,14 +272,24 @@ func (m *model) removeWorktrees() tea.Cmd {
 func removeCandidates(picked []cleanupCandidate) cleanedMsg {
 	var done, errs []string
 	removed, forgotten := 0, 0
+	branches := map[string]string{}
 	for _, c := range picked {
 		if c.Main {
 			forgotten++
 		} else {
+			// A ticket may have several branches: the one its worktree is on is the one to go back to.
+			branch := ""
+			if isTicket(c.Key) {
+				out, _ := sh("", "git", "-C", c.Dir, "branch", "--show-current")
+				branch = strings.TrimSpace(out)
+			}
 			// Without --force git refuses a worktree with changes; the branch and its commits stay.
 			if _, err := sh("", "git", "-C", c.Repo, "worktree", "remove", c.Dir); err != nil {
 				errs = append(errs, fmt.Sprintf("%s: %s", tilde(c.Dir), firstLine(err.Error())))
 				continue
+			}
+			if branch != "" {
+				branches[c.Key] = branch
 			}
 			removed++
 		}
@@ -290,6 +301,9 @@ func removeCandidates(picked []cleanupCandidate) cleanedMsg {
 		}
 	}
 	discard(done)
+	if len(branches) > 0 {
+		_, _ = updateState(func(s *State) { maps.Copy(s.Branches, branches) })
+	}
 	return cleanedMsg{removed, forgotten, errs}
 }
 

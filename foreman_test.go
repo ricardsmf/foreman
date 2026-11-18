@@ -62,14 +62,14 @@ func TestTicketBranch(t *testing.T) {
 		"upstream/FLD-1676-fork",
 		"origin/rf/fld-1676-mine",
 	}
-	for key, want := range map[string]string{
-		"FLD-1675": "origin/li/FLD-1675-live",
-		"FLD-1676": "origin/rf/fld-1676-mine", // not the fork's
-		"FLD-167":  "",                        // a prefix of another key
-		"FLD-9999": "",
+	for key, want := range map[string][]string{
+		"FLD-1675": {"li/FLD-1675-live", "li/FLD-1675-old"},
+		"FLD-1676": {"rf/fld-1676-mine"}, // not the fork's
+		"FLD-167":  nil,                  // a prefix of another key
+		"FLD-9999": nil,
 	} {
-		if got := ticketBranch(remotes, key); got != want {
-			t.Errorf("ticketBranch(%s) = %q, want %q", key, got, want)
+		if got := ticketBranches(remotes, key); !slices.Equal(got, want) {
+			t.Errorf("ticketBranches(%s) = %q, want %q", key, got, want)
 		}
 	}
 }
@@ -360,7 +360,7 @@ func TestPrepareWorktreeKeepsLocalCommits(t *testing.T) {
 	unpushed := git(t, repo, "rev-parse", "li/FLD-7-thing")
 
 	cwd := repo + "-fld-7"
-	_, branch, err := prepareWorktree(repo, cwd, Issue{Key: "FLD-7", Summary: "Thing"}, func(string) {})
+	_, branch, err := prepareWorktree(repo, cwd, Issue{Key: "FLD-7", Summary: "Thing"}, "", func(string) {})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -380,7 +380,7 @@ func TestPrepareWorktreeNewBranch(t *testing.T) {
 	git(t, root, "clone", "-q", origin, repo)
 
 	cwd := repo + "-fld-8"
-	_, branch, err := prepareWorktree(repo, cwd, Issue{Key: "FLD-8", Summary: "New thing"}, func(string) {})
+	_, branch, err := prepareWorktree(repo, cwd, Issue{Key: "FLD-8", Summary: "New thing"}, "", func(string) {})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -403,7 +403,7 @@ func TestPrepareWorktreeReusesTheBranchsWorktree(t *testing.T) {
 	byHand := filepath.Join(root, "repo-accents")
 	git(t, repo, "worktree", "add", "-q", "--track", "-b", "rf/fld-9-accents", byHand, "origin/rf/fld-9-accents")
 
-	dir, branch, err := prepareWorktree(repo, repo+"-fld-9", Issue{Key: "FLD-9", Summary: "Accents"}, func(string) {})
+	dir, branch, err := prepareWorktree(repo, repo+"-fld-9", Issue{Key: "FLD-9", Summary: "Accents"}, "", func(string) {})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -428,13 +428,13 @@ func TestPrepareWorktreeForgetsAGoneWorktree(t *testing.T) {
 	git(t, root, "clone", "-q", origin, repo)
 	cwd := repo + "-fld-9"
 	issue := Issue{Key: "FLD-9", Summary: "Accents"}
-	if _, _, err := prepareWorktree(repo, cwd, issue, func(string) {}); err != nil {
+	if _, _, err := prepareWorktree(repo, cwd, issue, "", func(string) {}); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.RemoveAll(cwd); err != nil {
 		t.Fatal(err)
 	}
-	dir, branch, err := prepareWorktree(repo, cwd, issue, func(string) {})
+	dir, branch, err := prepareWorktree(repo, cwd, issue, "", func(string) {})
 	if err != nil || dir != cwd || branch != "rf/fld-9-accents" {
 		t.Fatalf("got %s on %s, %v; want %s on rf/fld-9-accents", dir, branch, err, cwd)
 	}
@@ -452,7 +452,7 @@ func TestPrepareWorktreeTakesTheLocalTicketBranch(t *testing.T) {
 	git(t, origin, "commit", "-q", "--allow-empty", "-m", "base")
 	git(t, root, "clone", "-q", origin, repo)
 	cwd := repo + "-fld-8"
-	if _, _, err := prepareWorktree(repo, cwd, Issue{Key: "FLD-8", Summary: "New thing"}, func(string) {}); err != nil {
+	if _, _, err := prepareWorktree(repo, cwd, Issue{Key: "FLD-8", Summary: "New thing"}, "", func(string) {}); err != nil {
 		t.Fatal(err)
 	}
 	git(t, cwd, "commit", "-q", "--allow-empty", "-m", "the agent's work")
@@ -460,12 +460,97 @@ func TestPrepareWorktreeTakesTheLocalTicketBranch(t *testing.T) {
 	git(t, repo, "worktree", "remove", cwd)
 	git(t, repo, "branch", "rf/fld-80-other")
 
-	dir, branch, err := prepareWorktree(repo, cwd, Issue{Key: "FLD-8", Summary: "Renamed since"}, func(string) {})
+	dir, branch, err := prepareWorktree(repo, cwd, Issue{Key: "FLD-8", Summary: "Renamed since"}, "", func(string) {})
 	if err != nil || dir != cwd || branch != "rf/fld-8-new-thing" {
 		t.Fatalf("got %s on %s, %v; want %s on rf/fld-8-new-thing", dir, branch, err, cwd)
 	}
 	if got := git(t, cwd, "rev-parse", "HEAD"); got != work {
 		t.Errorf("HEAD = %s, want the agent's commit %s", got, work)
+	}
+}
+
+// A ticket with several branches goes back to the one its worktree was last on: the one cleanup
+// recorded, or the one git still lists for a worktree removed by hand. With neither, or once
+// origin no longer has that branch, it takes the most recently committed.
+func TestPrepareWorktreeGoesBackToItsBranch(t *testing.T) {
+	root := t.TempDir()
+	origin, repo := filepath.Join(root, "origin"), filepath.Join(root, "repo")
+	// A day apart: branches committed in the same second sort by name.
+	t.Setenv("GIT_COMMITTER_DATE", "2026-01-01T00:00:00Z")
+	git(t, root, "init", "-q", "-b", "develop", origin)
+	git(t, origin, "commit", "-q", "--allow-empty", "-m", "base")
+	git(t, origin, "branch", "rf/fld-4-page")
+	t.Setenv("GIT_COMMITTER_DATE", "2026-01-02T00:00:00Z")
+	git(t, origin, "checkout", "-q", "-b", "rf/fld-4-page-docs")
+	git(t, origin, "commit", "-q", "--allow-empty", "-m", "docs")
+	git(t, origin, "checkout", "-q", "develop")
+	git(t, root, "clone", "-q", origin, repo)
+
+	cwd, issue := repo+"-fld-4", Issue{Key: "FLD-4", Summary: "Page"}
+	on := func(what, last, want string) {
+		t.Helper()
+		if _, branch, err := prepareWorktree(repo, cwd, issue, last, func(string) {}); err != nil || branch != want {
+			t.Errorf("%s: on %q, %v; want %s", what, branch, err, want)
+		}
+	}
+	on("nothing known", "", "rf/fld-4-page-docs")
+	git(t, repo, "worktree", "remove", cwd)
+	on("the branch cleanup recorded", "rf/fld-4-page", "rf/fld-4-page")
+	if err := os.RemoveAll(cwd); err != nil {
+		t.Fatal(err)
+	}
+	on("a worktree removed by hand", "", "rf/fld-4-page")
+	git(t, repo, "worktree", "remove", cwd)
+	on("a recorded branch origin no longer has", "rf/fld-4-gone", "rf/fld-4-page-docs")
+}
+
+// A local ticket branch that was pushed and is gone from origin was merged or dropped there: the
+// ticket dispatched again gets a new branch beside it, from where new work starts.
+func TestPrepareWorktreeLeavesABranchOriginDropped(t *testing.T) {
+	root := t.TempDir()
+	origin, repo := filepath.Join(root, "origin"), filepath.Join(root, "repo")
+	git(t, root, "init", "-q", "-b", "main", origin)
+	git(t, origin, "commit", "-q", "--allow-empty", "-m", "base")
+	git(t, origin, "checkout", "-q", "-b", "rf/fld-8-new-thing")
+	git(t, origin, "commit", "-q", "--allow-empty", "-m", "merged long ago")
+	git(t, origin, "checkout", "-q", "main")
+	git(t, root, "clone", "-q", origin, repo)
+	git(t, repo, "branch", "--track", "rf/fld-8-new-thing", "origin/rf/fld-8-new-thing")
+	git(t, origin, "branch", "-q", "-D", "rf/fld-8-new-thing")
+
+	cwd := repo + "-fld-8"
+	_, branch, err := prepareWorktree(repo, cwd, Issue{Key: "FLD-8", Summary: "New thing"}, "", func(string) {})
+	if err != nil || branch != "rf/fld-8-new-thing-2" {
+		t.Fatalf("on %q, %v; want a new rf/fld-8-new-thing-2", branch, err)
+	}
+	if got, want := git(t, cwd, "rev-parse", "HEAD"), git(t, repo, "rev-parse", "origin/main"); got != want {
+		t.Errorf("the new branch starts at %s, want origin/main %s", got, want)
+	}
+}
+
+// Cleanup notes the branch a ticket's worktree was on, for the ticket's next dispatch, which
+// drops the note. A task has one branch and gets none.
+func TestCleanupRemembersTheTicketsBranch(t *testing.T) {
+	tempState(t)
+	root := t.TempDir()
+	repo, ticket, task := filepath.Join(root, "repo"), filepath.Join(root, "repo-fld-1"), filepath.Join(root, "repo-task-1")
+	git(t, root, "init", "-q", "-b", "main", repo)
+	git(t, repo, "commit", "-q", "--allow-empty", "-m", "base")
+	git(t, repo, "worktree", "add", "-q", "-b", "rf/fld-1-page", ticket)
+	git(t, repo, "worktree", "add", "-q", "-b", "rf/a-task", task)
+	dispatched(t, "FLD-1", ticket)
+	dispatched(t, "task:repo-1", task)
+
+	msg := removeCandidates([]cleanupCandidate{{Key: "FLD-1", Dir: ticket, Repo: repo}, {Key: "task:repo-1", Dir: task, Repo: repo}})
+	if msg.removed != 2 || len(msg.errs) != 0 {
+		t.Fatalf("cleaned = %+v", msg)
+	}
+	if got := loadState().Branches; !maps.Equal(got, map[string]string{"FLD-1": "rf/fld-1-page"}) {
+		t.Errorf("branches = %v, want FLD-1 on rf/fld-1-page", got)
+	}
+	markDispatched("FLD-1", "Page", ticket, "", agentPi, "")
+	if got := loadState().Branches; len(got) != 0 {
+		t.Errorf("after the next dispatch: branches = %v", got)
 	}
 }
 
@@ -486,7 +571,7 @@ func TestDiffFromReusedBranch(t *testing.T) {
 	git(t, repo, "commit", "-q", "-m", "earlier work")
 	git(t, repo, "checkout", "-q", "develop")
 
-	cwd, _, err := prepareWorktree(repo, repo+"-fld-5", Issue{Key: "FLD-5", Summary: "Thing"}, func(string) {})
+	cwd, _, err := prepareWorktree(repo, repo+"-fld-5", Issue{Key: "FLD-5", Summary: "Thing"}, "", func(string) {})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -529,7 +614,7 @@ func TestDiffFromFallsBackToTheMergeBase(t *testing.T) {
 	git(t, origin, "branch", "rf/fld-6-thing")
 	git(t, origin, "commit", "-q", "--allow-empty", "-m", "develop moves on")
 	git(t, root, "clone", "-q", origin, repo)
-	cwd, _, err := prepareWorktree(repo, repo+"-fld-6", Issue{Key: "FLD-6", Summary: "Thing"}, func(string) {})
+	cwd, _, err := prepareWorktree(repo, repo+"-fld-6", Issue{Key: "FLD-6", Summary: "Thing"}, "", func(string) {})
 	if err != nil {
 		t.Fatal(err)
 	}

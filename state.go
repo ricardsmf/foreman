@@ -57,6 +57,9 @@ type State struct {
 	Questions map[string]Question `json:"questions,omitempty"`
 	// TaskSeq holds the last task number used in each repo, by the repo's directory name.
 	TaskSeq map[string]int `json:"taskSeq,omitempty"`
+	// Branches maps a ticket to the branch its worktree was on when cleanup removed it: of the
+	// several a ticket may have, its next dispatch goes back to that one, and drops the note.
+	Branches map[string]string `json:"branches,omitempty"`
 	// Board is the view and the filter the board was last on, which it opens on.
 	Board *BoardView `json:"board,omitempty"`
 }
@@ -173,6 +176,9 @@ func readState() State {
 	}
 	if s.TaskSeq == nil {
 		s.TaskSeq = map[string]int{}
+	}
+	if s.Branches == nil {
+		s.Branches = map[string]string{}
 	}
 	return s
 }

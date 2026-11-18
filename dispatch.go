@@ -171,16 +171,18 @@ func baseBranch(remotes []string, originHead string) string {
 	return ""
 }
 
-// ticketBranch is the origin branch named after the ticket, e.g. origin/li/FLD-1675-x for FLD-1675.
-// remotes is sorted newest commit first, so an old merged branch loses to the live one.
-func ticketBranch(remotes []string, key string) string {
+// ticketBranches are origin's branches named after the ticket, without their origin/:
+// li/FLD-1675-x for FLD-1675. They keep remotes' order, newest commit first, so an old merged
+// branch comes after the live one.
+func ticketBranches(remotes []string, key string) []string {
 	keyRe := ticketRe(key)
+	var out []string
 	for _, b := range remotes {
-		if strings.HasPrefix(b, "origin/") && b != "origin/HEAD" && keyRe.MatchString(strings.ToLower(b)) {
-			return b
+		if name, ok := strings.CutPrefix(b, "origin/"); ok && name != "HEAD" && keyRe.MatchString(strings.ToLower(name)) {
+			out = append(out, name)
 		}
 	}
-	return ""
+	return out
 }
 
 // ticketRe matches a branch name, in lower case, that holds the ticket's key: fld-1675 is in
@@ -189,16 +191,34 @@ func ticketRe(key string) *regexp.Regexp {
 	return regexp.MustCompile(`(^|[^a-z0-9])` + regexp.QuoteMeta(strings.ToLower(key)) + `($|[^0-9])`)
 }
 
-// localTicketBranch is the ticket's branch when origin has none: the local one named after it,
-// where an agent committed and nobody pushed. heads is sorted newest commit first.
-func localTicketBranch(heads []string, key string) string {
+// unpushedTicketBranches are the local branches named after the ticket that were never pushed,
+// newest commit first: where an agent committed and nobody pushed. One with an upstream is left
+// out: origin's is gone by the time this is asked, so it was merged or dropped there.
+func unpushedTicketBranches(repo, key string) ([]string, error) {
+	out, err := sh("", "git", "-C", repo, "for-each-ref", "--sort=-committerdate", "--format=%(refname:short) %(upstream)", "refs/heads")
+	if err != nil {
+		return nil, err
+	}
 	keyRe := ticketRe(key)
-	for _, b := range heads {
-		if keyRe.MatchString(strings.ToLower(b)) {
-			return b
+	var names []string
+	for _, line := range strings.Split(out, "\n") {
+		if f := strings.Fields(line); len(f) == 1 && keyRe.MatchString(strings.ToLower(f[0])) {
+			names = append(names, f[0])
 		}
 	}
-	return ""
+	return names, nil
+}
+
+// freeBranch is name, or name-2, name-3… when a branch of that name is here or on origin.
+func freeBranch(repo string, remotes []string, name string) string {
+	branch := name
+	for i := 2; ; i++ {
+		_, local := sh("", "git", "-C", repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
+		if local != nil && !slices.Contains(remotes, "origin/"+branch) {
+			return branch
+		}
+		branch = fmt.Sprintf("%s-%d", name, i)
+	}
 }
 
 // forgetGone drops the repo's worktrees whose directory is gone, removed by hand: git still counts
@@ -210,8 +230,9 @@ func forgetGone(repo string) error {
 
 // prepareWorktree creates `<repo>-<key>` on the ticket's branch, or reuses it, and returns its
 // directory and branch. A ticket branch already checked out elsewhere, in a worktree made by hand,
-// is worked on there: git won't check a branch out twice.
-func prepareWorktree(repo, cwd string, issue Issue, progress func(string)) (dir, branch string, err error) {
+// is worked on there: git won't check a branch out twice. Of several branches the ticket has,
+// last is the one to go back to: the branch its worktree was on when cleanup removed it.
+func prepareWorktree(repo, cwd string, issue Issue, last string, progress func(string)) (dir, branch string, err error) {
 	git := func(args ...string) (string, error) { return sh("", "git", append([]string{"-C", repo}, args...)...) }
 	if exists(cwd) {
 		out, err := sh("", "git", "-C", cwd, "branch", "--show-current")
@@ -226,21 +247,28 @@ func prepareWorktree(repo, cwd string, issue Issue, progress func(string)) (dir,
 	if err != nil {
 		return "", "", err
 	}
+	// A worktree removed by hand is still listed, with the branch it was on: read that before
+	// it is forgotten.
+	list, err := git("worktree", "list", "--porcelain")
+	if err != nil {
+		return "", "", err
+	}
+	last = cmp.Or(branchAt(list, cwd), last)
 	if err := forgetGone(repo); err != nil {
 		return "", "", err
 	}
-	existing := ticketBranch(remotes, issue.Key)
-	branch = strings.TrimPrefix(existing, "origin/")
-	if existing == "" {
-		heads, err := git("for-each-ref", "--sort=-committerdate", "--format=%(refname:short)", "refs/heads")
-		if err != nil {
+	branches := ticketBranches(remotes, issue.Key)
+	if len(branches) == 0 {
+		if branches, err = unpushedTicketBranches(repo, issue.Key); err != nil {
 			return "", "", err
 		}
-		branch = localTicketBranch(strings.Fields(heads), issue.Key)
 	}
-	if branch != "" {
-		list, err := git("worktree", "list", "--porcelain")
-		if err != nil {
+	if len(branches) > 0 {
+		branch = branches[0]
+		if slices.Contains(branches, last) {
+			branch = last
+		}
+		if list, err = git("worktree", "list", "--porcelain"); err != nil {
 			return "", "", err
 		}
 		if at := checkedOutAt(list, branch); at != "" {
@@ -255,14 +283,15 @@ func prepareWorktree(repo, cwd string, issue Issue, progress func(string)) (dir,
 			progress(fmt.Sprintf("Created worktree %s on the local %s", tilde(cwd), branch))
 			return cwd, branch, nil
 		}
-		if _, err := git("worktree", "add", "--track", "-b", branch, cwd, existing); err != nil {
+		if _, err := git("worktree", "add", "--track", "-b", branch, cwd, "origin/"+branch); err != nil {
 			return "", "", err
 		}
 		progress(fmt.Sprintf("Created worktree %s on %s", tilde(cwd), branch))
 		return cwd, branch, nil
 	}
 
-	branch = branchPrefix + strings.ToLower(issue.Key) + "-" + slug(issue.Summary)
+	// A branch of the new name may be here already, pushed once and gone from origin since.
+	branch = freeBranch(repo, remotes, branchPrefix+strings.ToLower(issue.Key)+"-"+slug(issue.Summary))
 	if err := newBranchWorktree(repo, cwd, branch, base, progress); err != nil {
 		return "", "", err
 	}
@@ -309,15 +338,7 @@ func prepareTaskWorktree(repo, cwd, title string, n int, progress func(string)) 
 	if err != nil {
 		return "", err
 	}
-	name := branchPrefix + cmp.Or(slug(title), fmt.Sprintf("task-%d", n))
-	branch = name
-	for i := 2; ; i++ {
-		_, local := sh("", "git", "-C", repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
-		if local != nil && !slices.Contains(remotes, "origin/"+branch) {
-			break
-		}
-		branch = fmt.Sprintf("%s-%d", name, i)
-	}
+	branch = freeBranch(repo, remotes, branchPrefix+cmp.Or(slug(title), fmt.Sprintf("task-%d", n)))
 	return branch, newBranchWorktree(repo, cwd, branch, base, progress)
 }
 
@@ -386,6 +407,21 @@ func checkedOutAt(list, branch string) string {
 	return ""
 }
 
+// branchAt is the branch the worktree at dir has checked out, from `git worktree list
+// --porcelain`. dir may be gone: git lists a worktree removed by hand until it is pruned.
+func branchAt(list, dir string) string {
+	at := false
+	for _, line := range strings.Split(list, "\n") {
+		if p, ok := strings.CutPrefix(line, "worktree "); ok {
+			// git spells the path by its real directory; the name in the same parent is the same place.
+			at = filepath.Base(p) == filepath.Base(dir) && samePath(filepath.Dir(p), filepath.Dir(dir))
+		} else if b, ok := strings.CutPrefix(line, "branch refs/heads/"); ok && at {
+			return b
+		}
+	}
+	return ""
+}
+
 func firstLine(s string) string { return strings.SplitN(s, "\n", 2)[0] }
 
 // dispatch creates or reuses the ticket's worktree and starts the agent on it in a new Rex session named after the ticket.
@@ -403,7 +439,7 @@ func dispatch(ctx context.Context, jira *Jira, d Dispatch, progress func(string)
 	cwd := repo
 	var branch string
 	if d.Worktree {
-		dir, b, err := prepareWorktree(repo, repo+"-"+keyLower, issue, progress)
+		dir, b, err := prepareWorktree(repo, repo+"-"+keyLower, issue, loadState().Branches[issue.Key], progress)
 		if err != nil {
 			return "", err
 		}
@@ -456,6 +492,9 @@ func workBranch(repo string) (string, error) {
 const taskPrefix = "task:"
 
 func isTask(key string) bool { return strings.HasPrefix(key, taskPrefix) }
+
+// isTicket is whether the key is a Jira ticket's: not a task's, and not a PR's or its fix's.
+func isTicket(key string) bool { return !isTask(key) && !strings.Contains(key, "#") }
 
 // A fix's key is its PR's with this prefix, fix:reports-app#1260: a review of the same PR keeps
 // its own state, session and report.
@@ -1000,6 +1039,7 @@ func markDispatched(key, title, cwd, session, agent, from string) {
 		s.Dispatched[key] = Dispatched{Dir: cwd, Session: session, Agent: agent, Title: title, StartedFrom: from}
 		delete(s.Questions, key)
 		delete(s.Dismissed, key)
+		delete(s.Branches, key)
 	})
 }
 

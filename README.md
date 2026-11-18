@@ -107,10 +107,16 @@ detail pane's place. Type to filter, `↑↓` pick, `enter` set, `esc` back.
   that pushes or posts. A review gets the same.
 - The worktree is `<repo>-<key>`. The most recently committed `origin/` branch containing the
   ticket key is checked out; a local branch of the same name is used as is, unpushed commits and
-  all. With none on origin, the most recently committed local branch containing the key is: the
-  one an agent committed on and nobody pushed, which outlives its worktree's cleanup. Otherwise
-  `rf/<key>-<slug>` is created from `origin/develop`, else origin's default branch.
+  all. With none on origin, the most recently committed local branch containing the key that was
+  never pushed (it has no upstream) is: the one an agent committed on, which outlives its
+  worktree's cleanup. Otherwise `rf/<key>-<slug>` is created from `origin/develop`, else origin's
+  default branch, with `-2`, `-3`… when that name is taken: a local branch whose origin branch is
+  gone was merged or dropped there, and stays as it is.
   A failed fetch is reported and the last fetched refs are used.
+- A ticket with several such branches, a stack or one for its docs, goes back to the one its
+  worktree was last on, while that one is still among them: `^x` records it as it removes the
+  worktree, and git still lists a worktree removed by hand with its branch. With neither, it
+  takes the most recently committed.
 - The repo's worktrees whose directory is gone, removed by hand rather than by `^x`, are forgotten
   first (`git worktree prune`): git still counts their branch as checked out there, so the
   dispatch would reuse a directory that isn't there. A review's and a fix's worktree get the same.
@@ -597,7 +603,7 @@ see [Waking a watcher](#waking-a-watcher). `at` is optional too, with `prs` or w
 ## State
 
 - State (repo per project, last agent per repo, dispatched tickets, PRs and tasks with their sessions and titles, each session's agent pane, the last task number per repo, queue items
-  marked reviewed, each watcher's PR signatures at its last wake, each scheduled watcher's last time, the watchers you stopped) is in
+  marked reviewed, each watcher's PR signatures at its last wake, each scheduled watcher's last time, the watchers you stopped, the branch each cleaned-up ticket's worktree was on) is in
   `~/.local/state/foreman/state.json`, written atomically. foreman and its commands (`dispatch`, `ask`, `answer`…) all write it,
   so each write holds `state.json.lock`, and foreman re-reads it every few seconds. An unreadable
   file is moved to `state.json.corrupt` rather than overwritten.
