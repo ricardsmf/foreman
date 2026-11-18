@@ -2158,6 +2158,25 @@ func TestFindWatcherAfterARename(t *testing.T) {
 	}
 }
 
+// A watcher I started from a shell is found too. Rex started the shell there, or login over it, so
+// Claude Code is a program under that one, and behind whatever command it runs.
+func TestFindWatcherStartedFromAShell(t *testing.T) {
+	w := Watcher{Name: "fld-pr-watch", Dir: "/w/watch", Prompt: "/loop"}
+	sessions, err := decodeSessions(`[{"id":"s1","label":"scratch","panes":[
+		{"id":"b1","label":"shell","placed":true,"records":[{"id":"","state":"idle"}],
+			"procs":[{"cmd":"-fish","dir":"/w/watch"}]},
+		{"id":"b2","label":"shell","placed":true,"records":[{"id":"","state":"working"}],
+			"procs":[{"cmd":"gh","dir":"/w/watch/app"},{"cmd":"claude","dir":"/w/watch"},{"cmd":"-fish","dir":"/Users/me"}]}]}]`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Its state is the pane's that runs it, not the older shell's beside it.
+	s, ok := findWatcher(resolveAgents(sessions, nil), w, "")
+	if !ok || s.ID != "s1" || s.Block != "b2" || s.State != "working" {
+		t.Errorf("findWatcher = %+v, %t; want s1 on b2, working", s, ok)
+	}
+}
+
 func TestParseDispatchArgsFix(t *testing.T) {
 	a, err := parseDispatchArgs([]string{"--pr", "app#1", "--fix", "--title", "Comments", "--agent", "pi", "the", "nits"}, nil)
 	if err != nil || !a.fix || a.pr != "app#1" || a.title != "Comments" || a.text != "the nits" {

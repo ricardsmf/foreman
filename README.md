@@ -398,7 +398,7 @@ mine.
 - The board starts each watcher that has no open Rex session and that you didn't stop, in the
   background, and records
   each watcher's session ID. A watcher's session is the recorded one, else one named after it, else
-  one running Claude Code in its checkout: Claude renames its session when Rex's startup hook says
+  one running Claude Code in its checkout, started by foreman or by you from a shell there: Claude renames its session when Rex's startup hook says
   so, and a watcher started twice would review every PR twice.
 - It runs `claude --permission-mode manual --settings '{"disableAutoMode":"disable"}' <prompt>`:
   only the commands its checkout's `.claude/settings.local.json` allows run unasked, and no prompt

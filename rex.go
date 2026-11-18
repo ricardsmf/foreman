@@ -35,8 +35,10 @@ type rexPane struct {
 	ID, Label string
 	Placed    bool // in a window, rather than detached
 	Records   []rexRecord
-	Proc      rexProc
-	Ports     []rexPort
+	// Procs are its programs: the one in the foreground, then each parent up to the one Rex
+	// started. Not that one alone: from a shell it is the shell, or login over it on macOS.
+	Procs []rexProc
+	Ports []rexPort
 }
 
 // A rexPort is a TCP port a program in a terminal listens on, such as a dev server an agent
@@ -119,7 +121,7 @@ func (p rexProc) runsClaudeIn(dir string) bool {
 // onClaudeIn is the session with the pane that runs Claude Code in dir as its agent's.
 func (s rexSession) onClaudeIn(dir string) rexSession {
 	for _, p := range s.Panes {
-		if p.Proc.runsClaudeIn(dir) {
+		if slices.ContainsFunc(p.Procs, func(p rexProc) bool { return p.runsClaudeIn(dir) }) {
 			return s.on(p.ID)
 		}
 	}
@@ -179,9 +181,7 @@ func resolveAgents(sessions []rexSession, panes map[string]string) []rexSession 
 	for n, s := range sessions {
 		s.Procs, s.Ports = nil, sessionPorts(s.Panes)
 		for _, p := range s.Panes {
-			if p.Proc != (rexProc{}) {
-				s.Procs = append(s.Procs, p.Proc)
-			}
+			s.Procs = append(s.Procs, p.Procs...)
 		}
 		out[n] = s.on(s.agentPane(panes[s.ID]))
 		// A session with no pane left is still open.

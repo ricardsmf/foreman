@@ -44,7 +44,9 @@ end
 
 // sessionsScript returns every session with its panes: each one's label, whether it is placed, the
 // records its programs report over OSC 7501 (pi and Claude Code report working, blocked, done…),
-// the program it runs with its directory, and the ports its programs listen on.
+// the programs it runs with their directories, and the ports its programs listen on. The programs
+// are the one in the foreground and each parent up to the one Rex started: Claude Code that I
+// started from a shell is neither end of that line while it runs a command.
 const sessionsScript = attachLua + portsLua + `
 local out = {}
 local list = rex.call("session.list")
@@ -53,7 +55,7 @@ for _, s in ipairs((list or {}).sessions or {}) do
   local panes = {}
   local blocks = rex.call("session.list_blocks", {session_id = s.session_id})
   for _, b in ipairs((blocks or {}).blocks or {}) do
-    local pane = {id = b.block_id, label = b.label or "", placed = b.placement == "placed", records = {}}
+    local pane = {id = b.block_id, label = b.label or "", placed = b.placement == "placed", records = {}, procs = {}}
     local ok, st = pcall(rex.call, "block.method", {session_id = s.session_id, block_id = b.block_id, method = "program_status"})
     if ok and st then
       for _, r in ipairs(st.records or {}) do
@@ -61,8 +63,17 @@ for _, s in ipairs((list or {}).sessions or {}) do
       end
     end
     local okp, p = pcall(rex.call, "block.method", {session_id = s.session_id, block_id = b.block_id, method = "process"})
-    if okp and p and p.child then
-      pane.cmd, pane.dir = p.child.argv0 or "", p.child.cwd or ""
+    if okp and type(p) == "table" then
+      local seen = {}
+      local function add(q)
+        if type(q) == "table" and q.pid and q.argv0 and q.cwd and not seen[q.pid] then
+          seen[q.pid] = true
+          table.insert(pane.procs, {cmd = q.argv0, dir = q.cwd})
+        end
+      end
+      add(p.foreground)
+      for _, a in ipairs(type(p.ancestors) == "table" and p.ancestors or {}) do add(a) end
+      add(p.child)
     end
     local okq, q = pcall(rex.call, "block.method", {session_id = s.session_id, block_id = b.block_id, method = "ports"})
     pane.ports = okq and q and ports(q) or {}
@@ -91,7 +102,7 @@ func decodeSessions(out string) ([]rexSession, error) {
 		Placed  bool            `json:"placed"`
 		Records json.RawMessage `json:"records"`
 		Ports   json.RawMessage `json:"ports"`
-		rexProc
+		Procs   json.RawMessage `json:"procs"`
 	}
 	var raw []struct {
 		ID    string          `json:"id"`
@@ -108,7 +119,7 @@ func decodeSessions(out string) ([]rexSession, error) {
 	for _, r := range raw {
 		s := rexSession{ID: r.ID, Label: r.Label}
 		for _, p := range luaList[pane](r.Panes) {
-			rp := rexPane{ID: p.ID, Label: p.Label, Placed: p.Placed, Proc: p.rexProc, Ports: luaList[rexPort](p.Ports)}
+			rp := rexPane{ID: p.ID, Label: p.Label, Placed: p.Placed, Procs: luaList[rexProc](p.Procs), Ports: luaList[rexPort](p.Ports)}
 			for _, w := range luaList[wireRecord](p.Records) {
 				rp.Records = append(rp.Records, w.record())
 			}

@@ -160,15 +160,15 @@ func TestAgentPaneWithoutARecord(t *testing.T) {
 func TestDecodeSessions(t *testing.T) {
 	// A Lua table with no entries is {}, for the panes and for a pane's records alike.
 	out := `[{"id":"s1","label":"fld-1","panes":[
-		{"id":"b1","label":"shell","placed":true,"cmd":"/bin/claude","dir":"/w","records":[{"id":"","state":"blocked","kind":"question","msg":"Which one?","at":"2026-11-12T18:16:30.386655Z"}]},
-		{"id":"b2","label":"shell","placed":false,"records":{}}]},
+		{"id":"b1","label":"shell","placed":true,"procs":[{"cmd":"/bin/claude","dir":"/w"}],"records":[{"id":"","state":"blocked","kind":"question","msg":"Which one?","at":"2026-11-12T18:16:30.386655Z"}]},
+		{"id":"b2","label":"shell","placed":false,"procs":{},"records":{}}]},
 		{"id":"s2","label":"empty","panes":{}}]`
 	sessions, err := decodeSessions(out)
 	if err != nil || len(sessions) != 2 {
 		t.Fatalf("decodeSessions = %v, %v", sessions, err)
 	}
 	p := sessions[0].Panes
-	if len(p) != 2 || !p[0].Placed || p[1].Placed || p[0].Proc != (rexProc{"/bin/claude", "/w"}) || len(p[1].Records) != 0 {
+	if len(p) != 2 || !p[0].Placed || p[1].Placed || !slices.Equal(p[0].Procs, []rexProc{{"/bin/claude", "/w"}}) || len(p[1].Procs) != 0 || len(p[1].Records) != 0 {
 		t.Fatalf("panes = %+v", p)
 	}
 	if r := p[0].Records[0]; r.State != "blocked" || r.Kind != "question" || r.Msg != "Which one?" || r.At.IsZero() {
