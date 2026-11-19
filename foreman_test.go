@@ -139,9 +139,9 @@ func TestMyPrWaitsOn(t *testing.T) {
 		{"changes, no CI", false, ownPr(t, `"reviewDecision":"CHANGES_REQUESTED",`), "changes", "Blocked", needsYou, "changes requested"},
 		{"draft", true, ownPr(t, ""), "draft", "To Do", waiting, "draft"},
 		{"a draft whose CI failed", true, ownPr(t, "", fail), "draft ✗", "Blocked", needsYou, "✗ lint"},
-		{"its reviews aren't in", false, ownPr(t, asked, pass, short, poster), "in review ✓", "To Do", waiting, "needs 2 approvals on 0fab440, has 0"},
+		{"its reviews aren't in", false, ownPr(t, asked, pass, short, poster), "in review ✓", "To Do", waiting, "needs 2 approvals, has 0"},
 		{"its reviews are in", false, ownPr(t, asked, pass, met, poster), "approved ✓", "Done", toReview, "ready to merge"},
-		{"approved, the review check still short", false, ownPr(t, `"reviewDecision":"APPROVED",`, pass, short), "in review ✓", "To Do", waiting, "needs 2 approvals on 0fab440, has 0"},
+		{"approved, the review check still short", false, ownPr(t, `"reviewDecision":"APPROVED",`, pass, short), "in review ✓", "To Do", waiting, "needs 2 approvals, has 0"},
 		{"a thread to answer", false, ownPr(t, threads+asked, pass), "threads ✓", "Blocked", needsYou, "1 thread to answer"},
 		{"reviewers asked", false, ownPr(t, asked, pass), "in review ✓", "To Do", waiting, "with ana +1"},
 		{"nobody asked", false, ownPr(t, "", pass), "in review ✓", "To Do", waiting, "no reviewer asked"},
@@ -162,6 +162,29 @@ func TestMyPrWaitsOn(t *testing.T) {
 	}
 	if got := strings.Join(checks(v), "\n"); got != "## Checks\n\n- ○ review-tier waits for its reviews\n\n1/2 passed\n" {
 		t.Errorf("checks:\n%s", got)
+	}
+	// What others did on it, bots and me aside, and since when it has been open for review.
+	const said = `"headRefOid":"abc","createdAt":"2026-11-16T14:00:00Z","timelineItems":{"nodes":[{"createdAt":"2026-11-17T09:00:00Z"}]},
+		"comments":{"nodes":[{"author":{"__typename":"User","login":"ana"},"createdAt":"2026-11-19T10:00:00Z"},
+			{"author":{"__typename":"Bot","login":"github-actions"},"createdAt":"2026-11-19T12:00:00Z"},
+			{"author":{"__typename":"User","login":"ME"},"createdAt":"2026-11-19T10:30:00Z"}]},
+		"reviews":{"nodes":[{"author":{"__typename":"User","login":"rui"},"state":"APPROVED","submittedAt":"2026-11-19T11:00:00Z"},
+			{"author":{"__typename":"User","login":"eva"},"state":"PENDING"}]},`
+	var p Pr
+	p.waitsOn(false, ownPr(t, said, pass), "me")
+	if p.News != "rui approved" || !p.NewsAt.Equal(time.Date(2026, 11, 19, 11, 0, 0, 0, time.UTC)) ||
+		!p.Since.Equal(time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)) || p.Head != "abc" {
+		t.Errorf("news %q at %v, open for review since %v, head %q", p.News, p.NewsAt, p.Since, p.Head)
+	}
+	// What I answered since isn't news: by a comment, or by a commit.
+	answered := ownPr(t, strings.Replace(said, "2026-11-19T10:30:00Z", "2026-11-19T11:30:00Z", 1), pass)
+	if what, _ := answered.news("me"); what != "" {
+		t.Errorf("news I commented after: %q", what)
+	}
+	pushed := ownPr(t, said, pass)
+	pushed.Commits.Nodes[0].Commit.CommittedDate = "2026-11-19T12:00:00Z"
+	if what, _ := pushed.news("me"); what != "" {
+		t.Errorf("news I pushed after: %q", what)
 	}
 	// Approved on top of another open PR of mine, it isn't mine to merge yet.
 	if g, wait := prWait(Pr{Review: "approved", CI: "passed"}, &Pr{Number: 11}); g != waiting || wait != "approved, after #11" {
@@ -237,6 +260,75 @@ func TestQueueListsMyPrsByStack(t *testing.T) {
 	prs[1].Failing = []string{"Lint and build"}
 	if it := queueItems(s, nil, prs)[0]; it.Key != "app#12" || it.Group != needsYou {
 		t.Errorf("another check fails: %s first, under %s", it.Key, groupNames[it.Group])
+	}
+
+	// What someone did on a PR that waits on others is mine to read, until I mark it or open it;
+	// what they do next brings it back.
+	prs[1].CI, prs[1].Failing = "passed", nil
+	prs[4].News, prs[4].NewsAt = "ana commented", time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC)
+	news := queueItems(s, nil, prs)[0]
+	if _, what := itemLabel(news); news.Key != "app#10" || news.Group != toReview || !strings.Contains(what, "new: ana commented") {
+		t.Fatalf("news: %s under %s, %q", news.Key, groupNames[news.Group], what)
+	}
+	if got := prWaitLines(news)[0]; !strings.HasPrefix(got, "**Latest from others:** ana commented, ") {
+		t.Errorf("detail: %s", got)
+	}
+	s.Dismissed[news.dismissKey()] = news.Sig
+	if it := queueItems(s, nil, prs)[0]; it.Group != waiting {
+		t.Errorf("read: %s still under %s", it.Key, groupNames[it.Group])
+	}
+	prs[4].News, prs[4].NewsAt = "ana approved", prs[4].NewsAt.Add(time.Hour)
+	if it := queueItems(s, nil, prs)[0]; it.Key != "app#10" || it.Group != toReview {
+		t.Errorf("more news: %s first, under %s", it.Key, groupNames[it.Group])
+	}
+}
+
+// An agent whose worktree is on the head commit of an open PR of mine has its work there to
+// review: its report no longer waits on me, and its row names the PR.
+func TestReportInAPr(t *testing.T) {
+	tempState(t)
+	put := func(path, text string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	main, wt := t.TempDir(), filepath.Join(t.TempDir(), "app-fld-1")
+	gitDir := filepath.Join(main, ".git", "worktrees", "app-fld-1")
+	put(filepath.Join(main, ".git", "HEAD"), "ref: refs/heads/main\n")
+	put(filepath.Join(main, ".git", "packed-refs"), "# pack-refs with: peeled fully-peeled sorted\nc0ffee refs/heads/rf/fld-1-x\n")
+	put(filepath.Join(gitDir, "HEAD"), "ref: refs/heads/rf/fld-1-x\n")
+	put(filepath.Join(gitDir, "commondir"), "../..\n")
+	put(filepath.Join(wt, ".git"), "gitdir: "+gitDir+"\n")
+	if branch, commit := worktreeHead(wt); branch != "rf/fld-1-x" || commit != "c0ffee" {
+		t.Fatalf("worktreeHead = %q, %q", branch, commit)
+	}
+	dispatched(t, "FLD-1", wt)
+	agent := func(prs ...Pr) queueItem {
+		items := queueItems(loadState(), nil, prs)
+		return items[slices.IndexFunc(items, func(it queueItem) bool { return it.Kind == agentItem && it.Key == "FLD-1" })]
+	}
+	pr := Pr{Key: "app#5", Number: 5, Mine: true, Checkout: main, Branch: "rf/fld-1-x", Head: "c0ffee"}
+	if it := agent(); it.Group != toReview || it.InPr != "" {
+		t.Errorf("no PR: under %s, in %q", groupNames[it.Group], it.InPr)
+	}
+	it := agent(pr)
+	if _, what := itemLabel(it); it.Group != closed || it.InPr != "app#5" || !strings.Contains(what, "in #5") {
+		t.Errorf("in a PR: under %s, in %q, %q", groupNames[it.Group], it.InPr, what)
+	}
+	// Someone else's PR on that branch, or mine in another checkout, doesn't hold it.
+	other, elsewhere := pr, pr
+	other.Mine, elsewhere.Checkout = false, t.TempDir()
+	if it := agent(other, elsewhere); it.Group != toReview {
+		t.Errorf("not my PR here: under %s", groupNames[it.Group])
+	}
+	// A commit the PR doesn't have yet: the report is to read again.
+	put(filepath.Join(main, ".git", "refs", "heads", "rf", "fld-1-x"), "beef\n")
+	if it := agent(pr); it.Group != toReview || it.InPr != "" {
+		t.Errorf("a commit not pushed: under %s, in %q", groupNames[it.Group], it.InPr)
 	}
 }
 
@@ -2351,7 +2443,7 @@ func TestAskAnswered(t *testing.T) {
 			t.Error(err)
 		}
 	}
-	answer, err := ask("FLD-1", "Which endpoint?", time.Minute, time.Second, sleep)
+	answer, err := ask("FLD-1", "Which endpoint?", time.Minute, time.Second, sleep, nobodyTyped)
 	if err != nil || answer != "Use the v2 endpoint" {
 		t.Fatalf("ask = %q, %v", answer, err)
 	}
@@ -2367,13 +2459,89 @@ func TestAskAnswered(t *testing.T) {
 	}
 }
 
+func nobodyTyped() (string, bool) { return "", false }
+
+// What I type into the agent's session while it waits in foreman ask answers it too.
+func TestAskAnsweredInItsSession(t *testing.T) {
+	tempState(t)
+	dispatched(t, "FLD-1", "/w/app-fld-1")
+	looks := 0
+	typed := func() (string, bool) {
+		looks++
+		return "use the v2 endpoint", looks == 2
+	}
+	answer, err := ask("FLD-1", "Which endpoint?", time.Minute, time.Second, func(time.Duration) {}, typed)
+	if err != nil || !strings.Contains(answer, "use the v2 endpoint") || !strings.Contains(answer, "one answer, not two") {
+		t.Fatalf("ask = %q, %v", answer, err)
+	}
+	if _, ok := loadState().Questions["FLD-1"]; ok {
+		t.Error("the answered question is still pending")
+	}
+	if log := readLog("FLD-1"); len(log) != 2 || log[1].By != byMe || log[1].Kind != "answer" || log[1].Text != "(typed in its session) use the v2 endpoint" {
+		t.Errorf("log = %+v", log)
+	}
+}
+
+// What I type is what Claude Code queues from me in the agent's conversation after it asks: not
+// what was there before, what Claude Code queues itself, or another conversation.
+func TestTypedInto(t *testing.T) {
+	oldHome := home
+	home = t.TempDir()
+	t.Cleanup(func() { home = oldHome })
+	dir := "/w/app-fld-1"
+	if _, ok := typedInto(dir)(); ok {
+		t.Error("typed with no conversation")
+	}
+	conv := filepath.Join(claudeProjectDir(dir), "a.jsonl")
+	add := func(file, text string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		f, err := os.OpenFile(file, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = f.Close() }()
+		if _, err := f.WriteString(text); err != nil {
+			t.Fatal(err)
+		}
+	}
+	queued := func(content string) string {
+		b, _ := json.Marshal(map[string]any{"type": "queue-operation", "operation": "enqueue", "timestamp": "2026-11-19T12:00:00Z", "content": content})
+		return string(b)
+	}
+	add(conv, queued("typed before it asked")+"\n")
+	typed := typedInto(dir)
+	if said, ok := typed(); ok {
+		t.Errorf("typed before it asked: %q", said)
+	}
+	add(conv, `{"type":"assistant","message":{"content":"queue-operation"}}`+"\n"+
+		queued(`<event nonce="x" kind="repl-eval">done</event>`)+"\n"+queued("<task-notification>done</task-notification>")+"\n"+
+		`{"type":"queue-operation","operation":"dequeue"}`+"\n")
+	add(filepath.Join(claudeProjectDir(dir), "b.jsonl"), queued("typed into another conversation")+"\n")
+	if said, ok := typed(); ok {
+		t.Errorf("queued by Claude Code, or elsewhere: %q", said)
+	}
+	// A line is read once it is whole.
+	line := queued("  go with <Tabs>, not a select\n")
+	add(conv, line[:20])
+	if said, ok := typed(); ok {
+		t.Errorf("half a line: %q", said)
+	}
+	add(conv, line[20:]+"\n")
+	if said, ok := typed(); !ok || said != "go with <Tabs>, not a select" {
+		t.Errorf("typed = %q, %t", said, ok)
+	}
+}
+
 // Unanswered, ask gives up and says so.
 func TestAskUnanswered(t *testing.T) {
 	tempState(t)
 	dispatched(t, "FLD-1", "/w/app-fld-1")
 	pending := false
 	sleep := func(time.Duration) { _, pending = loadState().Questions["FLD-1"] }
-	_, err := ask("FLD-1", "Which endpoint?", 3*time.Second, time.Second, sleep)
+	_, err := ask("FLD-1", "Which endpoint?", 3*time.Second, time.Second, sleep, nobodyTyped)
 	if err == nil || !strings.Contains(err.Error(), "stop to ask me") || !pending {
 		t.Fatalf("err %v, pending while it waited %t", err, pending)
 	}
@@ -2390,7 +2558,7 @@ func TestAskWithdrawn(t *testing.T) {
 	tempState(t)
 	dispatched(t, "FLD-1", "/w/app-fld-1")
 	sleep := func(time.Duration) { markDispatched("FLD-1", "t", "/w/app-fld-1", "s2", agentPi, "") }
-	if _, err := ask("FLD-1", "?", time.Minute, time.Second, sleep); err == nil || !strings.Contains(err.Error(), "withdrawn") {
+	if _, err := ask("FLD-1", "?", time.Minute, time.Second, sleep, nobodyTyped); err == nil || !strings.Contains(err.Error(), "withdrawn") {
 		t.Errorf("err = %v", err)
 	}
 }

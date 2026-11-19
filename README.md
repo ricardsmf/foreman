@@ -286,6 +286,11 @@ typed into a working agent. Claude agents run it without a permission prompt.
 
 - The question puts the agent under **needs you** (`asks you`) at once, with the question in the
   detail pane; `f` answers it, as does `foreman answer` or `foreman reply`.
+- What you type into the agent's own session while it waits answers it too, for a Claude Code
+  agent. Claude Code queues what is typed mid-turn and notes it in the conversation as it is
+  typed, so `ask` returns it at the next look, the question leaves the queue, and the queued
+  message reaches the agent after the command, as the same answer. pi keeps no such note: a pi
+  agent is answered from the queue.
 - Unanswered after 8 minutes, `ask` tells the agent to put the question in its report and stop to
   ask me; a later reply is typed into its pane as usual. Dispatching the agent again withdraws it,
   and a question whose agent's session closed is no longer shown.
@@ -348,20 +353,25 @@ worktree counts as its repo:
    what the agent last wrote); then your PRs with failed CI (the row names
    the check, `✗ Tests (2/4) +1`), changes requested, a review thread to answer or a conflict (`✗`).
 2. **review**: agents that finished with a report you haven't marked reviewed (`✓`), newest first,
-   with their evidence (`▣ 3` screenshots or captures, `▶ video`); then your approved PRs whose CI
+   with their evidence (`▣ 3` screenshots or captures, `▶ video`). An agent whose worktree is on
+   the head commit of an open PR of yours isn't among them: its work is in the PR to review, so
+   its row reads `in #1395` and sits under idle or closed, until a commit there isn't pushed yet; then your approved PRs whose CI
    passed or has no checks (`✓`), ready to merge. One stacked on another open PR of yours isn't
-   yours to merge yet: it waits, `approved, after #1366`.
+   yours to merge yet: it waits, `approved, after #1366`. A PR that waits on others comes here when someone else
+   comments on it or reviews it, `new: ana approved`, bots aside, until `x` or `o` on its row,
+   or until you answer on the PR or push to it.
 3. **working**: agents still working (`●` yellow), with the end of their screen, refreshed every
    poll. The row says what the agent reports doing, when it does (Claude Code names its current
    step over OSC 7501), rather than `working`.
 4. **waiting**: your PRs that wait on someone else (`○`), so every PR you have open is somewhere
    in the queue. The row says on what: its reviews (what the review check says is missing,
-   `needs 2 approvals on 0fab440, has 0`; without one, who was asked, `with ana +2`, or `no
+   `needs 2 approvals, has 0`, less the commit it names; without one, who was asked, `with ana +2`, or `no
    reviewer asked`), `CI running`, the PR under it, or `draft`. A ticket's PRs sit together and a
    stack runs from its bottom up, by the branch each merges into: a row right under the PR it is
-   stacked on starts with `↳` and says only what its title adds to that one's. The age is since
-   the PR last changed. A PR's detail starts with what it waits on in full, who was asked to
-   review it and the PR it is stacked on.
+   stacked on starts with `↳` and says only what its title adds to that one's. The age is how
+   long it has been open for review: since it was made, or last taken out of draft. A PR's
+   detail starts with the latest thing someone else did on it, then what it waits on in full, who
+   was asked to review it and the PR it is stacked on.
 5. **idle**: agents whose session is open with nothing new for you (`○`), reviewed or without a report.
 6. **closed**: agents whose session is closed (`◇`), folded into one row that counts them (`▸ 8
    closed`); `c`, or `enter` on that row, lists them, and `c` folds them again. A stopped watcher
@@ -402,8 +412,8 @@ Keys: `↑↓` pick, `enter` go to the agent's session, resuming a closed one (a
 the ticket its title or branch names; with no agent, to the board's dispatch form on that ticket, which takes the focus;
 with no ticket, the browser), `f` type a reply that is sent to the agent's pane, `y` or `n` answer the prompt an agent waits on (see [Answering a
 prompt](#answering-a-prompt)), `v` open the screenshots and videos, `d` the worktree's diff in git's
-pager, `o` the ticket or PR in the browser, `p` a [port](#ports) its session listens on, `x` mark reviewed (the agent moves to idle or closed
-until it writes a new report; a PR moves to **waiting** until what it waits on changes), `K` twice close the agent's Rex
+pager, `o` the ticket or PR in the browser (a PR's news is then read), `p` a [port](#ports) its session listens on, `x` mark reviewed (the agent moves to idle or closed
+until it writes a new report; a PR moves to **waiting** until what it waits on changes or someone writes on it), `K` twice close the agent's Rex
 session, or on a closed one drop it from the queue (its worktree and report stay), `c` list or fold
 the closed agents, `^u`/`^d` scroll, `^r` reload, `?` every key, `q` close the queue, leaving the board alone at full width (`^z` there brings the
 queue back beside it; `^c` quits foreman).

@@ -30,9 +30,13 @@ type Pr struct {
 	Checkout  string
 	Requested bool
 	Mine      bool
-	Updated   time.Time
 
 	// What my PR waits on; others' PRs have none of it.
+	Head  string    // its head commit
+	Since time.Time // when it was opened for review: made, or last taken out of draft
+	// News is the last thing someone else did on it, a bot aside ("ana approved"), and NewsAt when.
+	News      string
+	NewsAt    time.Time
 	Base      string // the branch it merges into
 	Draft     bool
 	Conflict  bool     // it conflicts with its base
@@ -134,10 +138,13 @@ const prsQuery = `query($all: String!, $requested: String!, $mine: String!, $fir
   }
   mine: search(query: $mine, type: ISSUE, first: 100) @include(if: $first) {
     nodes { ... on PullRequest {
-      number reviewDecision mergeable baseRefName repository { nameWithOwner }
+      number reviewDecision mergeable baseRefName headRefOid createdAt repository { nameWithOwner }
+      timelineItems(last: 1, itemTypes: [READY_FOR_REVIEW_EVENT]) { nodes { ... on ReadyForReviewEvent { createdAt } } }
+      comments(last: 10) { nodes { author { __typename login } createdAt } }
+      reviews(last: 10) { nodes { author { __typename login } state submittedAt } }
       reviewRequests(first: 20) { nodes { requestedReviewer { ... on User { login } ... on Team { name } } } }
       reviewThreads(first: 100) { nodes { isResolved comments(last: 1) { nodes { author { login } } } } }
-      commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
+      commits(last: 1) { nodes { commit { committedDate statusCheckRollup { contexts(first: 100) { nodes {
         ... on CheckRun { name status conclusion } ... on StatusContext { context state description }
       } } } } } }
     } }
@@ -162,6 +169,19 @@ type prNode struct {
 	ReviewDecision string `json:"reviewDecision"`
 	Mergeable      string `json:"mergeable"`
 	Base           string `json:"baseRefName"`
+	Head           string `json:"headRefOid"`
+	CreatedAt      string `json:"createdAt"`
+	TimelineItems  struct {
+		Nodes []struct {
+			CreatedAt string `json:"createdAt"`
+		} `json:"nodes"`
+	} `json:"timelineItems"`
+	Comments struct {
+		Nodes []prEvent `json:"nodes"`
+	} `json:"comments"`
+	Reviews struct {
+		Nodes []prEvent `json:"nodes"`
+	} `json:"reviews"`
 	ReviewRequests struct {
 		Nodes []struct {
 			RequestedReviewer *struct {
@@ -181,6 +201,7 @@ type prNode struct {
 	Commits struct {
 		Nodes []struct {
 			Commit struct {
+				CommittedDate     string `json:"committedDate"`
 				StatusCheckRollup *struct {
 					Contexts struct {
 						Nodes []prCheck `json:"nodes"`
@@ -189,6 +210,43 @@ type prNode struct {
 			} `json:"commit"`
 		} `json:"nodes"`
 	} `json:"commits"`
+}
+
+// A prEvent is a comment on my PR (createdAt) or a review of it (state, submittedAt).
+type prEvent struct {
+	Author *struct {
+		Typename string `json:"__typename"`
+		Login    string `json:"login"`
+	} `json:"author"`
+	State       string `json:"state"`
+	CreatedAt   string `json:"createdAt"`
+	SubmittedAt string `json:"submittedAt"`
+}
+
+// news is the last thing someone else did on my PR, and when: a comment or a review, a reply in
+// a thread being a review too. Bots' aren't news, nor is a review still being written. Nor is
+// anything I answered since, by a comment, a review or a commit: I have read it then.
+func (p prNode) news(me string) (string, time.Time) {
+	what, newest, mine := "", "", ""
+	if n := p.Commits.Nodes; len(n) > 0 {
+		mine = n[0].Commit.CommittedDate
+	}
+	for _, e := range append(slices.Clone(p.Comments.Nodes), p.Reviews.Nodes...) {
+		at := cmp.Or(e.CreatedAt, e.SubmittedAt)
+		switch {
+		case at == "" || e.Author == nil || e.Author.Typename == "Bot" || e.State == "PENDING" || e.State == "DISMISSED":
+		case strings.EqualFold(e.Author.Login, me):
+			mine = max(mine, at)
+		case at > newest:
+			did := map[string]string{"": "commented", "APPROVED": "approved", "CHANGES_REQUESTED": "asked for changes"}[e.State]
+			what, newest = e.Author.Login+" "+cmp.Or(did, "reviewed"), at
+		}
+	}
+	if newest == "" || mine >= newest {
+		return "", time.Time{}
+	}
+	at, _ := time.Parse(time.RFC3339, newest)
+	return what, at
 }
 
 func (p prNode) id() string {
@@ -205,7 +263,14 @@ var (
 // review check stands for the reviews: failing or pending, they aren't in, whatever else GitHub
 // says; passed, they are. Neither it nor an ignored check counts as CI.
 func (p *Pr) waitsOn(isDraft bool, own prNode, me string) {
-	p.Base, p.Draft, p.Conflict = own.Base, isDraft, own.Mergeable == "CONFLICTING"
+	p.Base, p.Head, p.Draft, p.Conflict = own.Base, own.Head, isDraft, own.Mergeable == "CONFLICTING"
+	p.Since, _ = time.Parse(time.RFC3339, own.CreatedAt)
+	if ready := own.TimelineItems.Nodes; len(ready) > 0 {
+		if at, err := time.Parse(time.RFC3339, ready[len(ready)-1].CreatedAt); err == nil {
+			p.Since = at
+		}
+	}
+	p.News, p.NewsAt = own.news(me)
 	for _, r := range own.ReviewRequests.Nodes {
 		if who := r.RequestedReviewer; who != nil && cmp.Or(who.Login, who.Name) != "" {
 			p.Reviewers = append(p.Reviewers, cmp.Or(who.Login, who.Name))
@@ -372,7 +437,6 @@ func openPrs() (prs []Pr, truncated bool, err error) {
 			author = p.Author.Login
 		}
 		repo := p.Repository.NameWithOwner
-		updated, _ := time.Parse(time.RFC3339, p.UpdatedAt)
 		pr := Pr{
 			Key:       fmt.Sprintf("%s#%d", p.Repository.Name, p.Number),
 			Summary:   p.Title,
@@ -384,7 +448,6 @@ func openPrs() (prs []Pr, truncated bool, err error) {
 			Checkout:  repos[strings.ToLower(repo)],
 			Requested: isRequested,
 			Mine:      isMine,
-			Updated:   updated,
 		}
 		switch {
 		case isMine:

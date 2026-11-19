@@ -6,12 +6,14 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -132,7 +134,7 @@ func runAsk(argv []string, stdin io.Reader, out io.Writer) error {
 			return err
 		}
 	}
-	answer, err := ask(*key, text, *wait, time.Second, time.Sleep)
+	answer, err := ask(*key, text, *wait, time.Second, time.Sleep, typedInto(s.Dispatched[*key].Dir))
 	if err != nil {
 		return err
 	}
@@ -140,9 +142,66 @@ func runAsk(argv []string, stdin io.Reader, out io.Writer) error {
 	return nil
 }
 
+// typedInto watches the Claude Code conversation in dir for what I type into it from now on: the
+// function it returns gives the first such message, once there is one. The agent runs foreman ask
+// inside its turn, so what I type meanwhile is queued, and Claude Code notes each queued message in
+// the conversation as it is typed. The conversation is the newest in dir, which the agent wrote to
+// just before asking; only what is added to it after this call is read. pi keeps no such note.
+func typedInto(dir string) func() (string, bool) {
+	none := func() (string, bool) { return "", false }
+	if dir == "" {
+		return none
+	}
+	files, _ := filepath.Glob(filepath.Join(claudeProjectDir(dir), "*.jsonl"))
+	newest, newestMod, from := "", time.Time{}, int64(0)
+	for _, f := range files {
+		if fi, err := os.Stat(f); err == nil && fi.ModTime().After(newestMod) {
+			newest, newestMod, from = f, fi.ModTime(), fi.Size()
+		}
+	}
+	if newest == "" {
+		return none
+	}
+	return func() (string, bool) {
+		f, err := os.Open(newest)
+		if err != nil {
+			return "", false
+		}
+		defer func() { _ = f.Close() }()
+		if _, err := f.Seek(from, io.SeekStart); err != nil {
+			return "", false
+		}
+		r := bufio.NewReader(f)
+		for {
+			line, err := r.ReadBytes('\n')
+			if err != nil {
+				// A line still being written is read whole at the next look.
+				return "", false
+			}
+			from += int64(len(line))
+			if !bytes.Contains(line, []byte(`"queue-operation"`)) {
+				continue
+			}
+			var e struct{ Type, Operation, Content string }
+			if json.Unmarshal(line, &e) == nil && e.Type == "queue-operation" && e.Operation == "enqueue" && typedByMe(e.Content) {
+				return strings.TrimSpace(e.Content), true
+			}
+		}
+	}
+}
+
+// queuedTag starts what Claude Code queues on its own: an event, a task's notification, an agent's message.
+var queuedTag = regexp.MustCompile(`^<[a-zA-Z][a-zA-Z-]*[ >]`)
+
+// typedByMe is whether a queued message is one I typed rather than one Claude Code queued itself.
+func typedByMe(content string) bool {
+	content = strings.TrimSpace(content)
+	return content != "" && !queuedTag.MatchString(content)
+}
+
 // ask records the question, which the queue shows as needing me, and polls until it is answered,
-// or wait runs out.
-func ask(key, text string, wait, poll time.Duration, sleep func(time.Duration)) (string, error) {
+// in the queue or by what typed gives, a message I typed into the agent's session, or wait runs out.
+func ask(key, text string, wait, poll time.Duration, sleep func(time.Duration), typed func() (string, bool)) (string, error) {
 	q := Question{Text: text, At: time.Now()}
 	if _, err := updateState(func(s *State) { s.Questions[key] = q }); err != nil {
 		return "", err
@@ -157,6 +216,11 @@ func ask(key, text string, wait, poll time.Duration, sleep func(time.Duration)) 
 		if got.Answer != "" {
 			_, _ = updateState(func(s *State) { clearQuestion(s, key, q.At) })
 			return got.Answer, nil
+		}
+		if said, ok := typed(); ok {
+			_, _ = updateState(func(s *State) { clearQuestion(s, key, q.At) })
+			_ = appendLog(key, logEntry{By: byMe, Kind: "answer", Text: "(typed in its session) " + said})
+			return "I answered in your session instead of the queue:\n\n" + said + "\n\nThe same message reaches you after this command: it is one answer, not two.", nil
 		}
 	}
 	_, _ = updateState(func(s *State) { clearQuestion(s, key, q.At) })

@@ -60,7 +60,7 @@ var groupNames = map[group]string{needsYou: "needs you", toReview: "review", wor
 // itemLabel is the item's coloured mark and its state.
 func itemLabel(it queueItem) (string, string) {
 	if it.Kind == prItem {
-		what := cmp.Or(it.Wait, it.Pr.Status)
+		what := cmp.Or(it.News, it.Wait, it.Pr.Status)
 		switch it.Group {
 		case needsYou:
 			return fg(cRed, "✗"), fg(cRed, what)
@@ -75,6 +75,10 @@ func itemLabel(it queueItem) (string, string) {
 	}
 	if it.Report == "" {
 		what = "no report"
+	}
+	// Its work is in a PR of mine, which the queue lists: the row says which.
+	if _, n, ok := strings.Cut(it.InPr, "#"); ok {
+		what = "in #" + n
 	}
 	if it.Orchestrator {
 		what = "waiting for you"

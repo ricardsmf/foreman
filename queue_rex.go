@@ -65,7 +65,7 @@ func itemRecords(items []queueItem) map[string]string {
 		state, kind, msg := "done", "", "report ready"
 		switch {
 		case it.Kind == prItem:
-			id, msg = "pr-"+id, "PR "+cmp.Or(it.Wait, it.Pr.Status)
+			id, msg = "pr-"+id, "PR "+cmp.Or(it.News, it.Wait, it.Pr.Status)
 			if it.urgent() {
 				state = "blocked"
 			}

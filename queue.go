@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -59,6 +60,11 @@ type queueItem struct {
 	Shots   int // images and terminal captures
 	Videos  int
 	Pr      *Pr
+	// InPr is the open PR of mine whose head is the commit the agent's worktree is on: its work is
+	// there to review, so its report no longer waits on me.
+	InPr string
+	// News is what someone else did on a PR that I haven't marked seen, which lifts it to review.
+	News string
 	// Wait is what a PR waits on, in a few words, and On the PR of mine it is stacked on, "" for
 	// none. Under marks a PR listed right under that one's stack, where its row drops what its
 	// title repeats of the title above. Order is its place among my PRs, stacks kept together.
@@ -259,16 +265,79 @@ func prWait(p Pr, on *Pr) (group, string) {
 	case p.CI == "running":
 		return waiting, "CI running"
 	case p.Needs != "":
-		// A status says which rule asks for the reviews, then what is missing: the row has room for that.
+		// A status says which rule asks for the reviews, then what is missing, and on which commit:
+		// the row has room for what is missing.
 		_, needs, ok := cutLast(p.Needs, ": ")
 		if !ok {
 			needs = p.Needs
 		}
-		return waiting, needs
+		return waiting, onCommit.ReplaceAllString(needs, "")
 	case len(p.Reviewers) == 0:
 		return waiting, "no reviewer asked"
 	}
 	return waiting, "with " + listed(p.Reviewers, 1)
+}
+
+// onCommit is a status naming the commit it speaks of, which the PR's row has no use for.
+var onCommit = regexp.MustCompile(` on [0-9a-f]{7,40}\b`)
+
+// prHolding is the open PR of mine that holds the work in dir: its branch is the one checked out
+// there, in the same repo, and its head the commit dir is on, so nothing there is still unpushed.
+func prHolding(prs []Pr, dir string) string {
+	branch, commit := worktreeHead(dir)
+	if branch == "" || commit == "" {
+		return ""
+	}
+	main := mainCheckout(dir)
+	for _, p := range prs {
+		if p.Mine && p.Branch == branch && p.Head == commit && p.Checkout != "" && filepath.Clean(p.Checkout) == main {
+			return p.Key
+		}
+	}
+	return ""
+}
+
+// worktreeHead is the branch checked out in dir and the commit it is on, "" for a detached HEAD or
+// no checkout. Like mainCheckout it reads git's files: the queue asks for every agent at each poll.
+func worktreeHead(dir string) (branch, commit string) {
+	gitDir := filepath.Join(dir, ".git")
+	st, err := os.Stat(gitDir)
+	if err != nil {
+		return "", ""
+	}
+	if !st.IsDir() {
+		b, _ := os.ReadFile(gitDir)
+		to, ok := strings.CutPrefix(strings.TrimSpace(string(b)), "gitdir: ")
+		if !ok {
+			return "", ""
+		}
+		if gitDir = to; !filepath.IsAbs(gitDir) {
+			gitDir = filepath.Join(dir, to)
+		}
+	}
+	head, _ := os.ReadFile(filepath.Join(gitDir, "HEAD"))
+	ref, ok := strings.CutPrefix(strings.TrimSpace(string(head)), "ref: ")
+	if !ok {
+		return "", ""
+	}
+	branch = strings.TrimPrefix(ref, "refs/heads/")
+	// A worktree's refs are its main checkout's.
+	common := gitDir
+	if b, err := os.ReadFile(filepath.Join(gitDir, "commondir")); err == nil {
+		if common = strings.TrimSpace(string(b)); !filepath.IsAbs(common) {
+			common = filepath.Join(gitDir, common)
+		}
+	}
+	if b, err := os.ReadFile(filepath.Join(common, ref)); err == nil {
+		return branch, strings.TrimSpace(string(b))
+	}
+	packed, _ := os.ReadFile(filepath.Join(common, "packed-refs"))
+	for _, l := range strings.Split(string(packed), "\n") {
+		if sha, name, ok := strings.Cut(l, " "); ok && name == ref {
+			return branch, sha
+		}
+	}
+	return branch, ""
 }
 
 // cutLast cuts s around the last sep.
@@ -357,12 +426,15 @@ func queueItems(s State, sessions []rexSession, prs []Pr) []queueItem {
 			it.Sig += fmt.Sprintf(" q%d", q.At.Unix())
 		}
 		reviewed := s.Dismissed[key] == it.Sig
+		if !it.review() {
+			it.InPr = prHolding(prs, d.Dir)
+		}
 		switch {
 		case it.urgent() && !reviewed:
 			it.Group = needsYou
 		case it.Agent == "working":
 			it.Group = working
-		case it.Report != "" && !reviewed:
+		case it.Report != "" && !reviewed && it.InPr == "":
 			it.Group = toReview
 		case it.Agent != "":
 			it.Group = idle
@@ -383,15 +455,22 @@ func queueItems(s State, sessions []rexSession, prs []Pr) []queueItem {
 			continue
 		}
 		st := stacks[p.Key]
-		it := queueItem{Kind: prItem, Key: p.Key, Title: p.Summary, Pr: &p, When: p.Updated, Order: st.order}
+		it := queueItem{Kind: prItem, Key: p.Key, Title: p.Summary, Pr: &p, When: p.Since, Order: st.order}
 		it.Group, it.Wait = prWait(p, st.parent)
 		if st.parent != nil {
 			it.On = st.parent.Key
 		}
 		it.Sig = p.Status + " " + it.Wait
-		// Marked reviewed, it waits with the rest until what it waits on changes.
-		if it.pending() && s.Dismissed[prDismissKey(p.Key)] == it.Sig {
+		if p.News != "" {
+			it.Sig += " " + p.NewsAt.UTC().Format(time.RFC3339)
+		}
+		switch reviewed := s.Dismissed[prDismissKey(p.Key)] == it.Sig; {
+		// Marked reviewed, it waits with the rest until what it waits on changes or someone writes on it.
+		case reviewed:
 			it.Group = waiting
+		// What someone did on a PR that waits on others is mine to read.
+		case it.Group == waiting && p.News != "":
+			it.Group, it.News = toReview, "new: "+p.News
 		}
 		items = append(items, it)
 	}
@@ -691,6 +770,14 @@ func (q *queueModel) loadDetail() tea.Cmd {
 // check's own words, who is asked to review, and the PR it is stacked on.
 func prWaitLines(it queueItem) []string {
 	p := it.Pr
+	var out []string
+	if p.News != "" {
+		when := age(p.NewsAt) + " ago"
+		if when == "now ago" {
+			when = "just now"
+		}
+		out = append(out, "**Latest from others:** "+p.News+", "+when, "")
+	}
 	parts := []string{it.Wait}
 	if p.Needs != "" && it.Group == waiting && !p.Draft {
 		parts = []string{p.Needs}
@@ -701,7 +788,7 @@ func prWaitLines(it queueItem) []string {
 	if it.On != "" {
 		parts = append(parts, "stacked on "+it.On)
 	}
-	return []string{"**Waits on:** " + strings.Join(parts, " · "), ""}
+	return append(out, "**Waits on:** "+strings.Join(parts, " · "), "")
 }
 
 // itemDetail is the item's report, its evidence and terminal captures, or for an agent that wrote
@@ -971,6 +1058,10 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 			q.say("A task has no ticket or PR to open", cOverlay)
 		case it.Pr != nil:
 			openURL(it.Pr.URL)
+			// Opened, what someone did on it is read.
+			if it.News != "" {
+				return q.markReviewed(it)
+			}
 		case it.review(), isFix(it.Key):
 			if n := slices.IndexFunc(q.prs, func(p Pr) bool { return p.Key == strings.TrimPrefix(it.Key, fixPrefix) }); n >= 0 {
 				openURL(q.prs[n].URL)
@@ -989,14 +1080,7 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 			q.say(it.Key+" has nothing waiting for you", cOverlay)
 			return nil
 		}
-		key, dkey, sig := it.Key, it.dismissKey(), it.Sig
-		q.state, _ = updateState(func(s *State) { s.Dismissed[dkey] = sig })
-		if it.Kind == prItem {
-			q.say("Marked "+key+" reviewed; it comes back when its status changes", cOverlay)
-		} else {
-			q.say("Marked "+key+" reviewed; it moves up again with a new report", cOverlay)
-		}
-		return q.rebuild()
+		return q.markReviewed(it)
 	case "K":
 		if it.Kind == prItem {
 			q.say("A PR has no agent session to close", cOverlay)
@@ -1061,6 +1145,19 @@ func (q *queueModel) requestForm(p Pr) tea.Cmd {
 		return nil
 	}
 	return func() tea.Msg { return openFormMsg{key} }
+}
+
+// markReviewed takes the item out of what waits on me until it has something new: a report, or
+// for a PR, something else to wait on or something someone wrote on it.
+func (q *queueModel) markReviewed(it queueItem) tea.Cmd {
+	key, dkey, sig := it.Key, it.dismissKey(), it.Sig
+	q.state, _ = updateState(func(s *State) { s.Dismissed[dkey] = sig })
+	if it.Kind == prItem {
+		q.say("Marked "+key+" reviewed; it comes back when what it waits on changes or someone writes on it", cOverlay)
+	} else {
+		q.say("Marked "+key+" reviewed; it moves up again with a new report", cOverlay)
+	}
+	return q.rebuild()
 }
 
 // resume reopens a closed agent: a new Rex session in its worktree that continues its latest
