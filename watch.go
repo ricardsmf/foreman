@@ -517,6 +517,8 @@ type prCheck struct {
 	Conclusion string `json:"conclusion"`
 	Context    string `json:"context"`
 	State      string `json:"state"`
+	// Description is what a commit status says of itself; the watchers' query leaves it out.
+	Description string `json:"description"`
 }
 
 // A prComment is a conversation comment (createdAt) or a review (submittedAt).

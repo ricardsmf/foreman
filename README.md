@@ -213,7 +213,7 @@ What the queue shows and does, as commands. KEY is a dispatch's key (`FLD-1700`,
 Options go before or after KEY, except `reply`'s, which go before it.
 
 ```
-foreman agents [--json] [--prs]     every agent and watcher by queue group; --prs adds my PRs that need me
+foreman agents [--json] [--prs]     every agent and watcher by queue group; --prs adds my open PRs
 foreman report KEY                  the report and the paths of its evidence; fails when there is none
 foreman screen [--lines N] KEY      the end of the agent's pane, 40 lines (0: all), and its seen token
 foreman reply [--now] [--seen TOKEN] KEY TEXT|-
@@ -227,7 +227,8 @@ foreman answer KEY TEXT|-           answer the question KEY waits on
 - `agents --json` gives each one's `key`, `kind` (ticket, review, fix, task, watcher, pr), `group`,
   `state` as the agent reports it to Rex (working, blocked, error, done, idle, open) or `closed`,
   `title`, `agent`, `session`, `pane` (the agent's pane in it), `waitsFor` (what a `blocked` agent
-  says it waits for: `permission`, `question` or `auth`, when it says), `ports` (what the
+  says it waits for: `permission`, `question` or `auth`, when it says; for a PR, what its row in
+  the queue says it waits on), `ports` (what the
   programs in its session [listen on](#ports), each with its `port`, `process` and `url`), `dir`,
   `report` and `reportAt`, evidence counts, and `seen`, the seen token of an agent whose session
   is open. The plain listing ends a row with those URLs.
@@ -298,9 +299,16 @@ typed into a working agent. Claude agents run it without a permission prompt.
 - The PR view lists open PRs in the GitHub repos checked out under `~/work/code`, from `gh` (its own
   sign-in), leaving out bots'. They load in the background when the board starts. PRs that request your review come first, marked `requested`, then
   yours.
-- Your PRs show their review state (`in review`, `approved`, `changes`, `conflict`, `draft`) and CI
-  (`✓` passed, `✗` failed, `●` running). Red means something needs you; green means approved with CI
-  done. Their detail pane lists the failing and running checks.
+- Your PRs show their review state (`in review`, `approved`, `changes`, `threads`, `conflict`,
+  `draft`) and CI (`✓` passed, `✗` failed, `●` running). `threads` is an open review thread someone
+  else had the last word in. Red means something needs you; green means approved with CI done.
+  Their detail pane lists the failing and running checks.
+- A repo may hold a PR back with a commit status that fails until it has its reviews:
+  `reviewCheck` in the [config](#config) names it, and mine is `review-tier`. It stands for the
+  reviews, not for CI: while it fails or is pending the PR is `in review`, whatever GitHub's own
+  rule says, and once it passes the PR is `approved`. `ignoreChecks` are left out of CI
+  altogether, as the job that posts that status is: its earlier runs stay on the commit, failed
+  or cancelled.
 - The review worktree is `<repo>-pr-<n>`, detached at the PR head. Dispatching again moves it to
   the current head, unless it has uncommitted changes.
 - The agent gets the PR description, its file list, the Jira ticket named in the title or branch,
@@ -330,23 +338,32 @@ context names.
 
 ## Queue
 
-The queue lists every dispatched agent, whatever its state, and your PRs that need you,
-grouped most urgent first. Within a group a repo's items sit together, under its name, and the
+The queue lists every dispatched agent, whatever its state, and every open PR of yours, by what
+it waits on, grouped most urgent first. Within a group a repo's items sit together, under its name, and the
 repo with the newest report comes first. The repo is the main checkout's directory name, so a
 worktree counts as its repo:
 
 1. **needs you**: agents that stopped to ask something or failed (`●` red), with their report or,
    without one, the end of their screen (less the input box Claude Code ends it with, so it ends on
-   what the agent last wrote); then your PRs with failed CI, changes requested or a
-   conflict (`✗`).
+   what the agent last wrote); then your PRs with failed CI (the row names
+   the check, `✗ Tests (2/4) +1`), changes requested, a review thread to answer or a conflict (`✗`).
 2. **review**: agents that finished with a report you haven't marked reviewed (`✓`), newest first,
    with their evidence (`▣ 3` screenshots or captures, `▶ video`); then your approved PRs whose CI
-   passed or has no checks (`✓`), ready to merge.
+   passed or has no checks (`✓`), ready to merge. One stacked on another open PR of yours isn't
+   yours to merge yet: it waits, `approved, after #1366`.
 3. **working**: agents still working (`●` yellow), with the end of their screen, refreshed every
    poll. The row says what the agent reports doing, when it does (Claude Code names its current
    step over OSC 7501), rather than `working`.
-4. **idle**: agents whose session is open with nothing new for you (`○`), reviewed or without a report.
-5. **closed**: agents whose session is closed (`◇`), folded into one row that counts them (`▸ 8
+4. **waiting**: your PRs that wait on someone else (`○`), so every PR you have open is somewhere
+   in the queue. The row says on what: its reviews (what the review check says is missing,
+   `needs 2 approvals on 0fab440, has 0`; without one, who was asked, `with ana +2`, or `no
+   reviewer asked`), `CI running`, the PR under it, or `draft`. A ticket's PRs sit together and a
+   stack runs from its bottom up, by the branch each merges into: a row right under the PR it is
+   stacked on starts with `↳` and says only what its title adds to that one's. The age is since
+   the PR last changed. A PR's detail starts with what it waits on in full, who was asked to
+   review it and the PR it is stacked on.
+5. **idle**: agents whose session is open with nothing new for you (`○`), reviewed or without a report.
+6. **closed**: agents whose session is closed (`◇`), folded into one row that counts them (`▸ 8
    closed`); `c`, or `enter` on that row, lists them, and `c` folds them again. A stopped watcher
    is always listed. They stay until `K` drops them from the queue or `^x` on the board cleans up
    their worktree, and the board drops one whose ticket is Done or whose PR is merged or closed,
@@ -386,7 +403,7 @@ the ticket its title or branch names; with no agent, to the board's dispatch for
 with no ticket, the browser), `f` type a reply that is sent to the agent's pane, `y` or `n` answer the prompt an agent waits on (see [Answering a
 prompt](#answering-a-prompt)), `v` open the screenshots and videos, `d` the worktree's diff in git's
 pager, `o` the ticket or PR in the browser, `p` a [port](#ports) its session listens on, `x` mark reviewed (the agent moves to idle or closed
-until it writes a new report; a PR goes until its status changes), `K` twice close the agent's Rex
+until it writes a new report; a PR moves to **waiting** until what it waits on changes), `K` twice close the agent's Rex
 session, or on a closed one drop it from the queue (its worktree and report stay), `c` list or fold
 the closed agents, `^u`/`^d` scroll, `^r` reload, `?` every key, `q` close the queue, leaving the board alone at full width (`^z` there brings the
 queue back beside it; `^c` quits foreman).
@@ -592,6 +609,8 @@ reports, evidence and the agent's Rex session go.
   "cloudId": "1eb9eb54-74a9-4d94-8eb1-a1a7696be552",
   "defaultProject": "FLD",
   "branchPrefix": "rf/",
+  "reviewCheck": "review-tier",
+  "ignoreChecks": ["post review-tier status"],
   "watchers": [{
     "name": "fld-pr-watch",
     "dir": "~/work/code/reports-app-watch",
@@ -604,7 +623,8 @@ reports, evidence and the agent's Rex session go.
 }
 ```
 
-`"watchers": []` turns them off. A watcher's `prs` is optional, and `on` and `batch` need them;
+`reviewCheck` and `ignoreChecks` say which of a PR's checks aren't CI; see [Reviews](#reviews).
+`"reviewCheck": ""` and `"ignoreChecks": []` turn that off. `"watchers": []` turns them off. A watcher's `prs` is optional, and `on` and `batch` need them;
 see [Waking a watcher](#waking-a-watcher). `at` is optional too, with `prs` or without; see
 [Waking a watcher by the clock](#waking-a-watcher-by-the-clock).
 

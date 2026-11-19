@@ -91,49 +91,152 @@ func TestBaseBranch(t *testing.T) {
 	}
 }
 
-func rollup(state string) prNode {
+// ownPr is one of my PRs as the search returns it: fields, a JSON object's members ending in a
+// comma, and the checks on its head commit.
+func ownPr(t *testing.T, fields string, checks ...prCheck) prNode {
+	t.Helper()
+	b, err := json.Marshal(checks)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var p prNode
-	if state != "" {
-		p.Commits.Nodes = make([]struct {
-			Commit struct {
-				StatusCheckRollup *struct {
-					State string `json:"state"`
-				} `json:"statusCheckRollup"`
-			} `json:"commit"`
-		}, 1)
-		p.Commits.Nodes[0].Commit.StatusCheckRollup = &struct {
-			State string `json:"state"`
-		}{state}
+	doc := "{" + fields + `"commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"nodes":` + string(b) + "}}}}]}}"
+	if err := json.Unmarshal([]byte(doc), &p); err != nil {
+		t.Fatalf("%s: %v", doc, err)
 	}
 	return p
 }
 
-func TestMyStatus(t *testing.T) {
-	approved := rollup("SUCCESS")
-	approved.ReviewDecision = "APPROVED"
-	approvedRunning := rollup("PENDING")
-	approvedRunning.ReviewDecision = "APPROVED"
-	conflict := rollup("SUCCESS")
-	conflict.Mergeable = "CONFLICTING"
-	changes := rollup("")
-	changes.ReviewDecision = "CHANGES_REQUESTED"
+// What my PR waits on decides its status on the board and where it sits in the queue. A review
+// check that fails means its reviews aren't in, not that CI failed.
+func TestMyPrWaitsOn(t *testing.T) {
+	oldCheck, oldIgnore := reviewCheck, ignoreChecks
+	reviewCheck, ignoreChecks = "review-tier", []string{"post review-tier status"}
+	t.Cleanup(func() { reviewCheck, ignoreChecks = oldCheck, oldIgnore })
+	pass := prCheck{Name: "test", Status: "COMPLETED", Conclusion: "SUCCESS"}
+	fail := prCheck{Name: "lint", Status: "COMPLETED", Conclusion: "FAILURE"}
+	run := prCheck{Name: "e2e", Status: "IN_PROGRESS"}
+	short := prCheck{Context: "review-tier", State: "FAILURE", Description: "High (db/migrations): needs 2 approvals on 0fab440, has 0"}
+	met := prCheck{Context: "review-tier", State: "SUCCESS", Description: "Low (docs only): 0 of 0 approvals"}
+	poster := prCheck{Name: "post review-tier status", Status: "COMPLETED", Conclusion: "CANCELLED"}
+	const asked = `"reviewRequests":{"nodes":[{"requestedReviewer":{"login":"ana"}},{"requestedReviewer":{"name":"FLD"}},{"requestedReviewer":null}]},`
+	const threads = `"reviewThreads":{"nodes":[
+		{"isResolved":false,"comments":{"nodes":[{"author":{"login":"ana"}}]}},
+		{"isResolved":false,"comments":{"nodes":[{"author":{"login":"Me"}}]}},
+		{"isResolved":true,"comments":{"nodes":[{"author":{"login":"ana"}}]}}]},`
 	for _, tc := range []struct {
 		name          string
 		draft         bool
 		node          prNode
 		status, categ string
+		group         group
+		wait          string
 	}{
-		{"approved, CI passed", false, approved, "approved ✓", "Done"},
-		{"approved, CI running", false, approvedRunning, "approved ●", "In Progress"},
-		{"CI failed", false, rollup("FAILURE"), "in review ✗", "Blocked"},
-		{"conflict", false, conflict, "conflict ✓", "Blocked"},
-		{"changes, no CI", false, changes, "changes", "Blocked"},
-		{"draft", true, rollup(""), "draft", "To Do"},
+		{"approved, CI passed", false, ownPr(t, `"reviewDecision":"APPROVED",`, pass), "approved ✓", "Done", toReview, "ready to merge"},
+		{"approved, CI running", false, ownPr(t, `"reviewDecision":"APPROVED",`, pass, run), "approved ●", "In Progress", waiting, "approved, CI running"},
+		{"CI failed", false, ownPr(t, asked, pass, fail, fail, prCheck{Context: "deploy", State: "ERROR"}), "in review ✗", "Blocked", needsYou, "✗ lint +1"},
+		{"conflict", false, ownPr(t, `"mergeable":"CONFLICTING","baseRefName":"develop",`, pass), "conflict ✓", "Blocked", needsYou, "conflicts with develop"},
+		{"changes, no CI", false, ownPr(t, `"reviewDecision":"CHANGES_REQUESTED",`), "changes", "Blocked", needsYou, "changes requested"},
+		{"draft", true, ownPr(t, ""), "draft", "To Do", waiting, "draft"},
+		{"a draft whose CI failed", true, ownPr(t, "", fail), "draft ✗", "Blocked", needsYou, "✗ lint"},
+		{"its reviews aren't in", false, ownPr(t, asked, pass, short, poster), "in review ✓", "To Do", waiting, "needs 2 approvals on 0fab440, has 0"},
+		{"its reviews are in", false, ownPr(t, asked, pass, met, poster), "approved ✓", "Done", toReview, "ready to merge"},
+		{"approved, the review check still short", false, ownPr(t, `"reviewDecision":"APPROVED",`, pass, short), "in review ✓", "To Do", waiting, "needs 2 approvals on 0fab440, has 0"},
+		{"a thread to answer", false, ownPr(t, threads+asked, pass), "threads ✓", "Blocked", needsYou, "1 thread to answer"},
+		{"reviewers asked", false, ownPr(t, asked, pass), "in review ✓", "To Do", waiting, "with ana +1"},
+		{"nobody asked", false, ownPr(t, "", pass), "in review ✓", "To Do", waiting, "no reviewer asked"},
 	} {
-		st, cat := myStatus(tc.draft, tc.node)
-		if st != tc.status || cat != tc.categ {
-			t.Errorf("%s: myStatus = %q, %q; want %q, %q", tc.name, st, cat, tc.status, tc.categ)
+		var p Pr
+		p.waitsOn(tc.draft, tc.node, "me")
+		st, cat := myStatus(p)
+		g, wait := prWait(p, nil)
+		if st != tc.status || cat != tc.categ || g != tc.group || wait != tc.wait {
+			t.Errorf("%s: %q, %q, %s, %q; want %q, %q, %s, %q", tc.name, st, cat, groupNames[g], wait, tc.status, tc.categ, groupNames[tc.group], tc.wait)
 		}
+	}
+	// The detail's checks say the same: the review check waits, the job that posts it isn't listed.
+	var v PrView
+	if err := json.Unmarshal([]byte(`{"statusCheckRollup":[{"name":"test","conclusion":"SUCCESS"},
+		{"context":"review-tier","state":"FAILURE"},{"name":"post review-tier status","conclusion":"CANCELLED"}]}`), &v); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(checks(v), "\n"); got != "## Checks\n\n- ○ review-tier waits for its reviews\n\n1/2 passed\n" {
+		t.Errorf("checks:\n%s", got)
+	}
+	// Approved on top of another open PR of mine, it isn't mine to merge yet.
+	if g, wait := prWait(Pr{Review: "approved", CI: "passed"}, &Pr{Number: 11}); g != waiting || wait != "approved, after #11" {
+		t.Errorf("stacked and approved: %s, %q", groupNames[g], wait)
+	}
+}
+
+// Every open PR of mine is in the queue, a ticket's together and a stack from its bottom up, each
+// row under the one it is stacked on saying what its title adds.
+func TestQueueListsMyPrsByStack(t *testing.T) {
+	tempState(t)
+	pr := func(n int, title, branch, base string) Pr {
+		return Pr{Key: fmt.Sprintf("app#%d", n), Number: n, Repo: "o/app", Summary: title, Branch: branch, Base: base, Mine: true, CI: "passed", Needs: "needs 1 approval, has 0"}
+	}
+	prs := []Pr{
+		pr(13, "feat: [FLD-2] Outbox as a state machine (3/3): drop the flags", "rf/fld-2-drop", "rf/fld-2-read"),
+		pr(12, "feat: [FLD-2] Outbox as a state machine (2/3): read it", "rf/fld-2-read", "rf/fld-2-write"),
+		pr(15, "docs: [FLD-1] The runbook", "rf/fld-1-docs", "rf/fld-1"),
+		pr(11, "feat: [FLD-2] Outbox as a state machine (1/3): write it", "rf/fld-2-write", "develop"),
+		pr(10, "fix: [FLD-1] The gate", "rf/fld-1", "develop"),
+		{Key: "app#14", Number: 14, Repo: "o/app", Summary: "Someone else's", Branch: "x", Base: "rf/fld-2-write"},
+	}
+	rows := func(items []queueItem) []string {
+		var out []string
+		for _, it := range items {
+			if it.Kind == prItem {
+				text := it.Title
+				if it.Under != "" {
+					text = "↳ " + it.Title[sharedLead(it.Under, it.Title):]
+				}
+				out = append(out, fmt.Sprintf("%s %s %s | %s", groupNames[it.Group], it.Key, it.Wait, text))
+			}
+		}
+		return out
+	}
+	s := loadState()
+	want := []string{
+		"waiting app#10 needs 1 approval, has 0 | fix: [FLD-1] The gate",
+		"waiting app#15 needs 1 approval, has 0 | ↳ docs: [FLD-1] The runbook",
+		"waiting app#11 needs 1 approval, has 0 | feat: [FLD-2] Outbox as a state machine (1/3): write it",
+		"waiting app#12 needs 1 approval, has 0 | ↳ (2/3): read it",
+		"waiting app#13 needs 1 approval, has 0 | ↳ (3/3): drop the flags",
+	}
+	if got := rows(queueItems(s, nil, prs)); !slices.Equal(got, want) {
+		t.Errorf("rows:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+
+	// The middle of the stack fails: it needs me, and the one on top of it keeps its whole title,
+	// its row no longer under the one it is stacked on.
+	prs[1].CI, prs[1].Failing = "failed", []string{"Tests (2/4)"}
+	items := queueItems(s, nil, prs)
+	want = []string{
+		"needs you app#12 ✗ Tests (2/4) | feat: [FLD-2] Outbox as a state machine (2/3): read it",
+		"waiting app#10 needs 1 approval, has 0 | fix: [FLD-1] The gate",
+		"waiting app#15 needs 1 approval, has 0 | ↳ docs: [FLD-1] The runbook",
+		"waiting app#11 needs 1 approval, has 0 | feat: [FLD-2] Outbox as a state machine (1/3): write it",
+		"waiting app#13 needs 1 approval, has 0 | feat: [FLD-2] Outbox as a state machine (3/3): drop the flags",
+	}
+	if got := rows(items); !slices.Equal(got, want) {
+		t.Errorf("rows with a failure:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	top := items[slices.IndexFunc(items, func(it queueItem) bool { return it.Key == "app#13" })]
+	if got := prWaitLines(top)[0]; got != "**Waits on:** needs 1 approval, has 0 · stacked on app#12" {
+		t.Errorf("detail: %s", got)
+	}
+
+	// Marked reviewed, the failing one waits with the rest until what it waits on changes.
+	failing := items[0]
+	s.Dismissed[failing.dismissKey()] = failing.Sig
+	if it := queueItems(s, nil, prs)[0]; it.Group != waiting {
+		t.Errorf("reviewed: still %s first, under %s", it.Key, groupNames[it.Group])
+	}
+	prs[1].Failing = []string{"Lint and build"}
+	if it := queueItems(s, nil, prs)[0]; it.Key != "app#12" || it.Group != needsYou {
+		t.Errorf("another check fails: %s first, under %s", it.Key, groupNames[it.Group])
 	}
 }
 
@@ -703,8 +806,8 @@ func TestQueueItems(t *testing.T) {
 	// FLD-2 asks, FLD-3 works, FLD-5 finished without a report, FLD-4's session is closed.
 	sessions := []rexSession{{ID: "s1", Label: "fld-1-a", State: "done"}, {ID: "s2", Label: "fld-2-b", State: "blocked"}, {ID: "s3", Label: "fld-3-c", State: "working"}, {ID: "s7", Label: "review-repo-7", State: "idle"}, {ID: "s5", Label: "fld-5-e", State: "done"}}
 	prs := []Pr{
-		{Key: "repo#9", Mine: true, Category: "Blocked", Status: "in review ✗"},
-		{Key: "repo#10", Mine: true, Category: "Done", Status: "approved ✓"},
+		{Key: "repo#9", Mine: true, CI: "failed", Failing: []string{"test"}},
+		{Key: "repo#10", Mine: true, Review: "approved", CI: "passed"},
 		{Key: "repo#11", Category: "Blocked"},
 	}
 	groups := func(items []queueItem) map[string]group {
@@ -744,18 +847,18 @@ func TestQueueItems(t *testing.T) {
 	if got := groups(queueItems(s, sessions, prs))["FLD-1"]; got != toReview {
 		t.Errorf("FLD-1 with a new report = %v, want review", got)
 	}
-	// A reviewed PR goes until its status changes.
-	s.Dismissed["pr:repo#9"] = "in review ✗"
-	if _, ok := groups(queueItems(s, sessions, prs))["repo#9"]; ok {
-		t.Error("reviewed repo#9 still listed")
+	// A reviewed PR waits with the rest until what it waits on changes.
+	pr := items[slices.IndexFunc(items, func(it queueItem) bool { return it.Kind == prItem && it.Key == "repo#9" })]
+	s.Dismissed[pr.dismissKey()] = pr.Sig
+	if got := groups(queueItems(s, sessions, prs))["repo#9"]; got != waiting {
+		t.Errorf("reviewed repo#9 = %v, want waiting", got)
 	}
 
 	// A review agent and its PR share a key; marking the PR reviewed leaves the agent's report.
 	s.Dispatched["repo#9"] = Dispatched{Dir: "/w/9"}
 	report("repo#9")
-	pr := queueItem{Kind: prItem, Key: "repo#9"}
-	s.Dismissed[pr.dismissKey()] = "in review ✗"
-	if got := groups(queueItems(s, sessions, prs))["repo#9"]; got != toReview {
+	agent := slices.IndexFunc(queueItems(s, sessions, prs), func(it queueItem) bool { return it.Kind == agentItem && it.Key == "repo#9" })
+	if got := queueItems(s, sessions, prs)[agent].Group; got != toReview {
 		t.Errorf("repo#9's agent = %v after its PR was marked reviewed, want review", got)
 	}
 
@@ -816,7 +919,7 @@ func TestQueueKeepsItsPlaceAcrossRebuilds(t *testing.T) {
 			Dispatched: map[string]Dispatched{"FLD-1": {Dir: "/w/1", Session: "s1"}, "FLD-2": {Dir: "/w/2", Session: "s2"}, "repo#9": {Dir: "/w/9", Session: "s9"}},
 		},
 		sessions: []rexSession{{ID: "s1", Label: "fld-1-a", State: "idle"}, {ID: "s2", Label: "fld-2-b", State: "idle"}, {ID: "s9", Label: "review-repo-9", State: "working"}},
-		prs:      []Pr{{Key: "repo#9", Mine: true, Category: "Blocked", Status: "changes"}},
+		prs:      []Pr{{Key: "repo#9", Mine: true, Review: "changes"}},
 	}
 	q.rebuild()
 	at := func(key string, kind itemKind) int {
@@ -1110,11 +1213,13 @@ func TestStaleDismissals(t *testing.T) {
 func TestLoadConfig(t *testing.T) {
 	oldFile, oldSite, oldPrefix, oldProject := configFile, site, branchPrefix, defaultProject
 	t.Cleanup(func() { configFile, site, branchPrefix, defaultProject = oldFile, oldSite, oldPrefix, oldProject })
+	oldCheck, oldIgnore := reviewCheck, ignoreChecks
+	t.Cleanup(func() { reviewCheck, ignoreChecks = oldCheck, oldIgnore })
 	configFile = filepath.Join(t.TempDir(), "config.json")
 	if err := loadConfig(); err != nil || site != oldSite {
 		t.Fatalf("no file: err %v, site %q", err, site)
 	}
-	if err := os.WriteFile(configFile, []byte(`{"site": "https://x.atlassian.net/", "branchPrefix": "me/"}`), 0o644); err != nil {
+	if err := os.WriteFile(configFile, []byte(`{"site": "https://x.atlassian.net/", "branchPrefix": "me/", "reviewCheck": "", "ignoreChecks": ["bot"]}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := loadConfig(); err != nil {
@@ -1122,6 +1227,9 @@ func TestLoadConfig(t *testing.T) {
 	}
 	if site != "https://x.atlassian.net" || branchPrefix != "me/" || defaultProject != oldProject {
 		t.Errorf("site %q, prefix %q, project %q", site, branchPrefix, defaultProject)
+	}
+	if reviewCheck != "" || !slices.Equal(ignoreChecks, []string{"bot"}) {
+		t.Errorf("reviewCheck %q, ignoreChecks %v", reviewCheck, ignoreChecks)
 	}
 	if err := os.WriteFile(configFile, []byte(`{"sit": "typo"}`), 0o644); err != nil {
 		t.Fatal(err)

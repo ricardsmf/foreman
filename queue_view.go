@@ -3,6 +3,7 @@ package main
 // The queue's screen: its rows, the detail under them and the keys.
 
 import (
+	"cmp"
 	"fmt"
 	"slices"
 	"strconv"
@@ -54,15 +55,19 @@ func age(t time.Time) string {
 	return fmt.Sprintf("%dd", int(d.Hours()/24))
 }
 
-var groupNames = map[group]string{needsYou: "needs you", toReview: "review", working: "working", idle: "idle", closed: "closed"}
+var groupNames = map[group]string{needsYou: "needs you", toReview: "review", working: "working", waiting: "waiting", idle: "idle", closed: "closed"}
 
 // itemLabel is the item's coloured mark and its state.
 func itemLabel(it queueItem) (string, string) {
 	if it.Kind == prItem {
-		if !it.urgent() {
-			return fg(cGreen, "✓"), fg(cGreen, it.Pr.Status)
+		what := cmp.Or(it.Wait, it.Pr.Status)
+		switch it.Group {
+		case needsYou:
+			return fg(cRed, "✗"), fg(cRed, what)
+		case toReview:
+			return fg(cGreen, "✓"), fg(cGreen, what)
 		}
-		return fg(cRed, "✗"), fg(cRed, it.Pr.Status)
+		return fg(cOverlay, "○"), fg(cOverlay, what)
 	}
 	what := "done"
 	if it.review() {
@@ -151,7 +156,7 @@ func (q *queueModel) render(width, h int) []string {
 	for _, g := range []struct {
 		g group
 		c Color
-	}{{working, cYellow}, {idle, cGreen}, {closed, cOverlay}} {
+	}{{working, cYellow}, {waiting, cOverlay}, {idle, cGreen}, {closed, cOverlay}} {
 		if n := q.count(g.g); n > 0 {
 			head += dot + fg(g.c, fmt.Sprintf("%d %s", n, groupNames[g.g]))
 		}
@@ -242,6 +247,9 @@ func (q *queueModel) render(width, h int) []string {
 		if it.Agent == "working" && it.Question == nil && it.Doing != "" {
 			what = fg(cYellow, ansi.Truncate(it.Doing, max(16, width/3), "…"))
 		}
+		if it.Kind == prItem {
+			what = ansi.Truncate(what, max(16, width/3), "…")
+		}
 		var ev []string
 		if len(it.Ports) > 0 {
 			ev = append(ev, portsMark(it.Ports))
@@ -259,12 +267,17 @@ func (q *queueModel) render(width, h int) []string {
 		if ageW > 0 {
 			meta += "  " + fg(cOverlay, fmt.Sprintf("%*s", ageW, age(it.When)))
 		}
-		keyColor, title := cOverlay, fg(cSubtext, it.Title)
+		// A PR under the one it is stacked on says what its title adds to that one's.
+		text := it.Title
+		if it.Under != "" {
+			text = "↳ " + it.Title[sharedLead(it.Under, it.Title):]
+		}
+		keyColor, title := cOverlay, fg(cSubtext, text)
 		if it.Group == closed {
-			title = fg(cOverlay, it.Title)
+			title = fg(cOverlay, text)
 		}
 		if sel {
-			keyColor, title = cText, bold(fg(cText, it.Title))
+			keyColor, title = cText, bold(fg(cText, text))
 		}
 		left := line + mark + " " + fg(keyColor, fit(it.Key, keyW)) + "  "
 		titleW := width - ansi.StringWidth(left) - ansi.StringWidth(meta) - 2

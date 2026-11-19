@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Only work checkouts: ~/projects holds third-party clones whose PRs are noise here.
@@ -29,6 +30,18 @@ type Pr struct {
 	Checkout  string
 	Requested bool
 	Mine      bool
+	Updated   time.Time
+
+	// What my PR waits on; others' PRs have none of it.
+	Base      string // the branch it merges into
+	Draft     bool
+	Conflict  bool     // it conflicts with its base
+	Review    string   // "approved", "changes", or "" while its reviews aren't in
+	CI        string   // "failed", "running", "passed", or "" without checks
+	Failing   []string // the checks that failed, once each
+	Needs     string   // what its failing or pending review check says it still needs
+	Reviewers []string // who its review is requested from, people and teams
+	Threads   int      // the open review threads whose last word isn't mine
 }
 
 type PrView struct {
@@ -108,8 +121,9 @@ func ghLogin() (string, error) {
 }
 
 // One GraphQL request carries every search, so review requests and my PRs ride on the first page of
-// all open PRs. Only mine ask for review, CI and merge state: on every PR those fields make the
-// search several times slower. Search pages hold 100, so each further 100 PRs is another request.
+// all open PRs. Only mine ask for what they wait on (review, threads, checks and merge state): on
+// every PR those fields make the search several times slower. Search pages hold 100, so each
+// further 100 PRs is another request.
 const prsQuery = `query($all: String!, $requested: String!, $mine: String!, $first: Boolean!, $after: String) {
   all: search(query: $all, type: ISSUE, first: 100, after: $after) {
     pageInfo { hasNextPage endCursor }
@@ -120,8 +134,12 @@ const prsQuery = `query($all: String!, $requested: String!, $mine: String!, $fir
   }
   mine: search(query: $mine, type: ISSUE, first: 100) @include(if: $first) {
     nodes { ... on PullRequest {
-      number reviewDecision mergeable repository { nameWithOwner }
-      commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
+      number reviewDecision mergeable baseRefName repository { nameWithOwner }
+      reviewRequests(first: 20) { nodes { requestedReviewer { ... on User { login } ... on Team { name } } } }
+      reviewThreads(first: 100) { nodes { isResolved comments(last: 1) { nodes { author { login } } } } }
+      commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
+        ... on CheckRun { name status conclusion } ... on StatusContext { context state description }
+      } } } } } }
     } }
   }
 }`
@@ -143,11 +161,30 @@ type prNode struct {
 	} `json:"author"`
 	ReviewDecision string `json:"reviewDecision"`
 	Mergeable      string `json:"mergeable"`
-	Commits        struct {
+	Base           string `json:"baseRefName"`
+	ReviewRequests struct {
+		Nodes []struct {
+			RequestedReviewer *struct {
+				Login string `json:"login"`
+				Name  string `json:"name"`
+			} `json:"requestedReviewer"`
+		} `json:"nodes"`
+	} `json:"reviewRequests"`
+	ReviewThreads struct {
+		Nodes []struct {
+			IsResolved bool `json:"isResolved"`
+			Comments   struct {
+				Nodes []ghComment `json:"nodes"`
+			} `json:"comments"`
+		} `json:"nodes"`
+	} `json:"reviewThreads"`
+	Commits struct {
 		Nodes []struct {
 			Commit struct {
 				StatusCheckRollup *struct {
-					State string `json:"state"`
+					Contexts struct {
+						Nodes []prCheck `json:"nodes"`
+					} `json:"contexts"`
 				} `json:"statusCheckRollup"`
 			} `json:"commit"`
 		} `json:"nodes"`
@@ -158,40 +195,91 @@ func (p prNode) id() string {
 	return strings.ToLower(fmt.Sprintf("%s#%d", p.Repository.NameWithOwner, p.Number))
 }
 
-// myStatus is my PR's status cell and colour category from its review, CI and merge state.
-func myStatus(isDraft bool, own prNode) (string, string) {
-	ci := ""
+// A check's state, whichever of a check run's conclusion and status or a commit status's state says it.
+var (
+	failedChecks  = []string{"FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED"}
+	runningChecks = []string{"", "PENDING", "QUEUED", "IN_PROGRESS", "EXPECTED", "WAITING"}
+)
+
+// waitsOn fills in what my PR waits on, from its review, threads, checks and merge state. The
+// review check stands for the reviews: failing or pending, they aren't in, whatever else GitHub
+// says; passed, they are. Neither it nor an ignored check counts as CI.
+func (p *Pr) waitsOn(isDraft bool, own prNode, me string) {
+	p.Base, p.Draft, p.Conflict = own.Base, isDraft, own.Mergeable == "CONFLICTING"
+	for _, r := range own.ReviewRequests.Nodes {
+		if who := r.RequestedReviewer; who != nil && cmp.Or(who.Login, who.Name) != "" {
+			p.Reviewers = append(p.Reviewers, cmp.Or(who.Login, who.Name))
+		}
+	}
+	for _, t := range own.ReviewThreads.Nodes {
+		if last := t.Comments.Nodes; !t.IsResolved && (len(last) == 0 || !strings.EqualFold(last[len(last)-1].login(), me)) {
+			p.Threads++
+		}
+	}
+	var checks []prCheck
 	if n := own.Commits.Nodes; len(n) > 0 && n[0].Commit.StatusCheckRollup != nil {
-		ci = n[0].Commit.StatusCheckRollup.State
+		checks = n[0].Commit.StatusCheckRollup.Contexts.Nodes
 	}
-	mark := ""
+	reviewed := own.ReviewDecision == "APPROVED"
+	running := false
+	for _, c := range checks {
+		name := cmp.Or(c.Name, c.Context)
+		state := strings.ToUpper(cmp.Or(c.Conclusion, c.State, c.Status))
+		failed, runs := slices.Contains(failedChecks, state), slices.Contains(runningChecks, state)
+		switch {
+		case slices.Contains(ignoreChecks, name):
+		case reviewCheck != "" && name == reviewCheck:
+			reviewed = !failed && !runs
+			if !reviewed {
+				p.Needs = cmp.Or(c.Description, name+" hasn't passed")
+			}
+		case failed:
+			if !slices.Contains(p.Failing, name) {
+				p.Failing = append(p.Failing, name)
+			}
+		case runs:
+			running = true
+		default:
+			p.CI = cmp.Or(p.CI, "passed")
+		}
+	}
 	switch {
-	case ci == "SUCCESS":
-		mark = " ✓"
-	case ci == "FAILURE" || ci == "ERROR":
-		mark = " ✗"
-	case ci != "":
-		mark = " ●"
+	case len(p.Failing) > 0:
+		p.CI = "failed"
+	case running:
+		p.CI = "running"
 	}
+	switch {
+	case own.ReviewDecision == "CHANGES_REQUESTED":
+		p.Review = "changes"
+	case reviewed:
+		p.Review = "approved"
+	}
+}
+
+// myStatus is my PR's status cell and colour category from what it waits on.
+func myStatus(p Pr) (string, string) {
+	mark := map[string]string{"passed": " ✓", "failed": " ✗", "running": " ●"}[p.CI]
 	review := "in review"
 	switch {
-	case isDraft:
+	case p.Draft:
 		review = "draft"
-	case own.Mergeable == "CONFLICTING":
+	case p.Conflict:
 		review = "conflict"
-	case own.ReviewDecision == "APPROVED":
+	case p.Review == "approved":
 		review = "approved"
-	case own.ReviewDecision == "CHANGES_REQUESTED":
+	case p.Review == "changes":
 		review = "changes"
+	case p.Threads > 0:
+		review = "threads"
 	}
-	failing := mark == " ✗" || review == "changes" || review == "conflict"
 	category := "To Do"
 	switch {
-	case failing:
+	case p.CI == "failed" || review == "conflict" || review == "changes" || review == "threads":
 		category = "Blocked"
-	case review == "approved" && mark != " ●":
+	case review == "approved" && p.CI != "running":
 		category = "Done"
-	case mark == " ●":
+	case p.CI == "running":
 		category = "In Progress"
 	}
 	return review + mark, category
@@ -203,7 +291,8 @@ const maxPrs = 500
 // openPrs lists open PRs in repos I have checked out: review requests, then mine with their status,
 // then other humans'. It loads up to maxPrs; truncated says GitHub had more.
 func openPrs() (prs []Pr, truncated bool, err error) {
-	if _, err := ghLogin(); err != nil {
+	me, err := ghLogin()
+	if err != nil {
 		return nil, false, err
 	}
 	repos := checkouts()
@@ -278,27 +367,15 @@ func openPrs() (prs []Pr, truncated bool, err error) {
 		}
 		own, isMine := status[p.id()]
 		isRequested := wanted[p.id()]
-		var st, cat string
-		switch {
-		case isMine:
-			st, cat = myStatus(p.IsDraft, own)
-		case isRequested:
-			st, cat = "requested", "In Progress"
-		case p.IsDraft:
-			st, cat = "draft", "To Do"
-		default:
-			st, cat = "open", "To Do"
-		}
 		author := ""
 		if p.Author != nil {
 			author = p.Author.Login
 		}
 		repo := p.Repository.NameWithOwner
-		rows = append(rows, row{Pr{
+		updated, _ := time.Parse(time.RFC3339, p.UpdatedAt)
+		pr := Pr{
 			Key:       fmt.Sprintf("%s#%d", p.Repository.Name, p.Number),
 			Summary:   p.Title,
-			Status:    st,
-			Category:  cat,
 			Assignee:  author,
 			Repo:      repo,
 			Number:    p.Number,
@@ -307,7 +384,20 @@ func openPrs() (prs []Pr, truncated bool, err error) {
 			Checkout:  repos[strings.ToLower(repo)],
 			Requested: isRequested,
 			Mine:      isMine,
-		}, p.UpdatedAt})
+			Updated:   updated,
+		}
+		switch {
+		case isMine:
+			pr.waitsOn(p.IsDraft, own, me)
+			pr.Status, pr.Category = myStatus(pr)
+		case isRequested:
+			pr.Status, pr.Category = "requested", "In Progress"
+		case p.IsDraft:
+			pr.Status, pr.Category = "draft", "To Do"
+		default:
+			pr.Status, pr.Category = "open", "To Do"
+		}
+		rows = append(rows, row{pr, p.UpdatedAt})
 	}
 	prRank := func(p Pr) int {
 		if p.Requested {
@@ -369,30 +459,37 @@ func prMarkdown(pr Pr, v PrView) string {
 	return strings.Join(lines, "\n")
 }
 
-// checks is a Checks section listing failing and running checks, or one line when all pass.
+// checks is a Checks section listing failing and running checks, or one line when all pass. A
+// review check that hasn't passed waits for reviews rather than fails, and ignored checks are left out.
 func checks(v PrView) []string {
 	if len(v.StatusCheckRollup) == 0 {
 		return nil
 	}
-	badStates := []string{"FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED"}
-	runningStates := []string{"", "PENDING", "QUEUED", "IN_PROGRESS", "EXPECTED", "WAITING"}
 	var bad, running []string
+	total := 0
 	for _, c := range v.StatusCheckRollup {
 		name := cmp.Or(c.Name, c.Context, "?")
 		state := strings.ToUpper(cmp.Or(c.Conclusion, c.State, c.Status))
-		if slices.Contains(badStates, state) {
+		failed, runs := slices.Contains(failedChecks, state), slices.Contains(runningChecks, state)
+		if slices.Contains(ignoreChecks, name) {
+			continue
+		}
+		total++
+		switch {
+		case reviewCheck != "" && name == reviewCheck && (failed || runs):
+			running = append(running, fmt.Sprintf("- ○ %s waits for its reviews", name))
+		case failed:
 			bad = append(bad, fmt.Sprintf("- ✗ **%s** %s", name, strings.ReplaceAll(strings.ToLower(state), "_", " ")))
-		} else if slices.Contains(runningStates, state) {
+		case runs:
 			running = append(running, fmt.Sprintf("- ● %s running", name))
 		}
 	}
 	lines := append(bad, running...)
-	ok := len(v.StatusCheckRollup) - len(lines)
 	out := append([]string{"## Checks", ""}, lines...)
 	if len(lines) > 0 {
 		out = append(out, "")
 	}
-	return append(out, fmt.Sprintf("%d/%d passed", ok, len(v.StatusCheckRollup)), "")
+	return append(out, fmt.Sprintf("%d/%d passed", total-len(lines), total), "")
 }
 
 var jiraKeyRe = regexp.MustCompile(`\b[A-Z][A-Z0-9]+-\d+\b`)

@@ -105,7 +105,7 @@ func TestAppRoutes(t *testing.T) {
 // One PR load serves both sides, and the queue asks the board for it instead of loading its own.
 func TestAppSharesPrs(t *testing.T) {
 	a := testApp(t, false)
-	mine := Pr{Key: "app#5", Summary: "Fix it", Mine: true, Category: "Blocked", Status: "changes"}
+	mine := Pr{Key: "app#5", Summary: "Fix it", Mine: true, Review: "changes", Category: "Blocked", Status: "changes"}
 	a.board.inFlight[prs] = true
 	a.Update(loadedMsg{which: prs, rows: []Row{prRow(mine), prRow(Pr{Key: "app#6", Summary: "Other"})}})
 	if len(a.board.prs) != 2 || len(a.queue.prs) != 2 {

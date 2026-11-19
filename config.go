@@ -19,6 +19,10 @@ var (
 	cloudID        = "1eb9eb54-74a9-4d94-8eb1-a1a7696be552" // bloqit.atlassian.net
 	defaultProject = "FLD"
 	branchPrefix   = "rf/"
+	// reviewCheck is the commit status that fails until a PR has the reviews its repo asks for, and
+	// ignoreChecks the checks that say nothing about the code, such as the job that posts it.
+	reviewCheck  = "review-tier"
+	ignoreChecks = []string{"post review-tier status"}
 )
 
 type config struct {
@@ -26,6 +30,10 @@ type config struct {
 	CloudID        *string `json:"cloudId"`
 	DefaultProject *string `json:"defaultProject"`
 	BranchPrefix   *string `json:"branchPrefix"`
+	// ReviewCheck names the commit status that says whether a PR's reviews are in; "" for none.
+	ReviewCheck *string `json:"reviewCheck"`
+	// IgnoreChecks replaces the checks left out of a PR's CI state.
+	IgnoreChecks *[]string `json:"ignoreChecks"`
 	// Watchers replaces the default list; an empty one turns them off.
 	Watchers *[]Watcher `json:"watchers"`
 }
@@ -55,6 +63,10 @@ func loadConfig() error {
 	set(&cloudID, c.CloudID)
 	set(&defaultProject, c.DefaultProject)
 	set(&branchPrefix, c.BranchPrefix)
+	set(&reviewCheck, c.ReviewCheck)
+	if c.IgnoreChecks != nil {
+		ignoreChecks = *c.IgnoreChecks
+	}
 	if c.Watchers != nil {
 		watchers = nil
 		for _, w := range *c.Watchers {

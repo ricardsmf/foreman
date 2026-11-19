@@ -51,7 +51,7 @@ watcher's name, in any case.`
 type agentInfo struct {
 	Key   string `json:"key"`
 	Kind  string `json:"kind"`  // ticket, review, fix, task, watcher, pr
-	Group string `json:"group"` // needs you, review, working, idle, closed
+	Group string `json:"group"` // needs you, review, working, waiting, idle, closed
 	// State is what the agent reports to Rex (working, blocked, error, done, idle, open), or
 	// closed when its session is.
 	State   string `json:"state"`
@@ -60,7 +60,8 @@ type agentInfo struct {
 	Session string `json:"session,omitempty"`
 	// Pane is the agent's pane in its session.
 	Pane string `json:"pane,omitempty"`
-	// WaitsFor is what a blocked agent says it waits for: permission, question or auth.
+	// WaitsFor is what a blocked agent says it waits for: permission, question or auth. A PR's is
+	// what it waits on, as its row in the queue says it.
 	WaitsFor string `json:"waitsFor,omitempty"`
 	// Ports are what the programs in the agent's session listen on, such as its dev server.
 	Ports       []agentPort `json:"ports,omitempty"`
@@ -110,7 +111,7 @@ func agentInfoOf(it queueItem, s State) agentInfo {
 		Screenshots: it.Shots, Videos: it.Videos, Question: it.Question,
 	}
 	if it.Kind == prItem {
-		a.State, a.Session, a.Pane, a.URL, a.Status = "", "", "", it.Pr.URL, it.Pr.Status
+		a.State, a.Session, a.Pane, a.URL, a.Status, a.WaitsFor = "", "", "", it.Pr.URL, it.Pr.Status, it.Wait
 		return a
 	}
 	for _, p := range it.Ports {

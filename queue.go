@@ -2,9 +2,11 @@ package main
 
 // foreman queue: what needs me, one item at a time. Agents that stopped to ask something or
 // finished (with their report and evidence), my PRs whose CI failed, got changes requested or
-// conflict, and my approved PRs, ready to merge. It is drawn beside the board, by the app, and shares the state file with it.
+// conflict, and my approved PRs, ready to merge; then the rest of my open PRs, by what they wait
+// on. It is drawn beside the board, by the app, and shares the state file with it.
 
 import (
+	"cmp"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -32,11 +35,12 @@ const (
 	needsYou group = iota // an agent that asks something or failed, a PR of mine that's blocked
 	toReview              // a finished agent's report I haven't marked reviewed, an approved PR of mine
 	working               // an agent still working
+	waiting               // a PR of mine that waits on someone else: reviewers, CI, the PR under it
 	idle                  // an agent with an open session and nothing new for me
 	closed                // an agent whose session is closed
 )
 
-// A queueItem is one dispatched agent, or one of my PRs that needs me.
+// A queueItem is one dispatched agent, or one of my open PRs.
 type queueItem struct {
 	Kind    itemKind
 	Group   group
@@ -55,6 +59,13 @@ type queueItem struct {
 	Shots   int // images and terminal captures
 	Videos  int
 	Pr      *Pr
+	// Wait is what a PR waits on, in a few words, and On the PR of mine it is stacked on, "" for
+	// none. Under marks a PR listed right under that one's stack, where its row drops what its
+	// title repeats of the title above. Order is its place among my PRs, stacks kept together.
+	Wait  string
+	On    string
+	Under string
+	Order int
 	// Watcher marks a watcher's session rather than a dispatched agent's.
 	Watcher bool
 	// Polled marks a watcher foreman watch wakes when its PRs change, rather than one that loops.
@@ -160,7 +171,7 @@ func (it queueItem) pending() bool { return it.Group == needsYou || it.Group == 
 // waits in foreman ask on a question handed to me.
 func (it queueItem) urgent() bool {
 	if it.Kind == prItem {
-		return it.Pr.Category == "Blocked"
+		return it.Group == needsYou
 	}
 	return it.Agent == "blocked" || it.Agent == "error" || it.Question != nil
 }
@@ -169,6 +180,127 @@ func (it queueItem) urgent() bool {
 // an approved PR whose CI isn't running under Done).
 func queuedPr(p Pr) bool {
 	return p.Mine && (p.Category == "Blocked" || p.Category == "Done")
+}
+
+// A stacked is one of my PRs' place among them: stacks together, each PR after the one it is
+// stacked on.
+type stacked struct {
+	order  int
+	parent *Pr // the PR of mine whose branch it merges into, nil when its base is no PR of mine
+}
+
+// stackOrder places my PRs: a ticket's together, a stack from its bottom up.
+func stackOrder(prs []Pr) map[string]stacked {
+	var mine []Pr
+	for _, p := range prs {
+		if p.Mine {
+			mine = append(mine, p)
+		}
+	}
+	slices.SortFunc(mine, func(a, b Pr) int {
+		return cmp.Or(strings.Compare(jiraKey(a, nil), jiraKey(b, nil)), a.Number-b.Number, strings.Compare(a.Key, b.Key))
+	})
+	parents := map[string]*Pr{}
+	for n, p := range mine {
+		for m, o := range mine {
+			if n != m && p.Base != "" && o.Branch == p.Base && o.Repo == p.Repo {
+				parents[p.Key] = &mine[m]
+				break
+			}
+		}
+	}
+	out := map[string]stacked{}
+	var place func(p Pr)
+	place = func(p Pr) {
+		if _, done := out[p.Key]; done {
+			return
+		}
+		out[p.Key] = stacked{len(out), parents[p.Key]}
+		for _, c := range mine {
+			if on := parents[c.Key]; on != nil && on.Key == p.Key {
+				place(c)
+			}
+		}
+	}
+	for _, p := range mine {
+		if parents[p.Key] == nil {
+			place(p)
+		}
+	}
+	// Branches that merge into each other have no bottom: listed as they come.
+	for _, p := range mine {
+		place(p)
+	}
+	return out
+}
+
+// prWait is where my PR sits in the queue and what it waits on, in the few words its row has:
+// me, under needs you or review, or someone else, under waiting. on is the PR it is stacked on.
+func prWait(p Pr, on *Pr) (group, string) {
+	switch {
+	case p.CI == "failed":
+		return needsYou, "✗ " + listed(p.Failing, 1)
+	case p.Draft:
+		return waiting, "draft"
+	case p.Conflict:
+		return needsYou, "conflicts with " + p.Base
+	case p.Review == "changes":
+		return needsYou, "changes requested"
+	case p.Review == "approved" && p.CI == "running":
+		return waiting, "approved, CI running"
+	case p.Review == "approved" && on != nil:
+		return waiting, fmt.Sprintf("approved, after #%d", on.Number)
+	case p.Review == "approved":
+		return toReview, "ready to merge"
+	case p.Threads == 1:
+		return needsYou, "1 thread to answer"
+	case p.Threads > 1:
+		return needsYou, fmt.Sprintf("%d threads to answer", p.Threads)
+	case p.CI == "running":
+		return waiting, "CI running"
+	case p.Needs != "":
+		// A status says which rule asks for the reviews, then what is missing: the row has room for that.
+		_, needs, ok := cutLast(p.Needs, ": ")
+		if !ok {
+			needs = p.Needs
+		}
+		return waiting, needs
+	case len(p.Reviewers) == 0:
+		return waiting, "no reviewer asked"
+	}
+	return waiting, "with " + listed(p.Reviewers, 1)
+}
+
+// cutLast cuts s around the last sep.
+func cutLast(s, sep string) (before, after string, found bool) {
+	if i := strings.LastIndex(s, sep); i >= 0 {
+		return s[:i], s[i+len(sep):], true
+	}
+	return s, "", false
+}
+
+// listed is the first n of names, and how many more there are.
+func listed(names []string, n int) string {
+	if len(names) <= n {
+		return strings.Join(names, ", ")
+	}
+	return fmt.Sprintf("%s +%d", strings.Join(names[:n], ", "), len(names)-n)
+}
+
+// sharedLead is how much of title repeats above's start, cut back to a word's start: a stack's
+// titles differ in their ends. Under 12 bytes isn't worth dropping.
+func sharedLead(above, title string) int {
+	n := 0
+	for n < len(above) && n < len(title) && above[n] == title[n] {
+		n++
+	}
+	for n > 0 && n < len(title) && (!utf8.RuneStart(title[n]) || title[n-1] != ' ') {
+		n--
+	}
+	if n < 12 || n >= len(title) {
+		return 0
+	}
+	return n
 }
 
 var (
@@ -193,8 +325,8 @@ func evidence(dir string) (media, captures []string) {
 }
 
 // queueItems builds the list from the state file, the open Rex sessions and my PRs: every
-// dispatched agent, whatever its state, and my PRs blocked on me. Within a group, by repo, then
-// newest report first.
+// dispatched agent, whatever its state, and every open PR of mine, by what it waits on. Within a
+// group, by repo, then newest report first, and my PRs by ticket and stack.
 func queueItems(s State, sessions []rexSession, prs []Pr) []queueItem {
 	var items []queueItem
 	for key, d := range s.Dispatched {
@@ -245,15 +377,23 @@ func queueItems(s State, sessions []rexSession, prs []Pr) []queueItem {
 	if it, ok := orchestratorItem(sessions, s.Orchestrator); ok {
 		items = append(items, it)
 	}
+	stacks := stackOrder(prs)
 	for _, p := range prs {
-		// A PR has no session to keep listing: marked reviewed, it goes until its status changes.
-		if queuedPr(p) && s.Dismissed[prDismissKey(p.Key)] != p.Status {
-			it := queueItem{Kind: prItem, Group: toReview, Key: p.Key, Title: p.Summary, Pr: &p, Sig: p.Status}
-			if it.urgent() {
-				it.Group = needsYou
-			}
-			items = append(items, it)
+		if !p.Mine {
+			continue
 		}
+		st := stacks[p.Key]
+		it := queueItem{Kind: prItem, Key: p.Key, Title: p.Summary, Pr: &p, When: p.Updated, Order: st.order}
+		it.Group, it.Wait = prWait(p, st.parent)
+		if st.parent != nil {
+			it.On = st.parent.Key
+		}
+		it.Sig = p.Status + " " + it.Wait
+		// Marked reviewed, it waits with the rest until what it waits on changes.
+		if it.pending() && s.Dismissed[prDismissKey(p.Key)] == it.Sig {
+			it.Group = waiting
+		}
+		items = append(items, it)
 	}
 	// Within a group, a repo's items together, the repo with the newest item first.
 	type run struct {
@@ -282,11 +422,27 @@ func queueItems(s State, sessions []rexSession, prs []Pr) []queueItem {
 		if d := int(a.Kind) - int(b.Kind); d != 0 {
 			return d
 		}
+		if d := a.Order - b.Order; d != 0 {
+			return d
+		}
 		if d := b.When.Compare(a.When); d != 0 {
 			return d
 		}
 		return strings.Compare(a.Key, b.Key)
 	})
+	// A PR right under its stack's rows says only what its title adds to the one it is stacked on.
+	for n := range items {
+		it := &items[n]
+		if it.On == "" || n == 0 {
+			continue
+		}
+		for m := n - 1; m >= 0 && items[m].Kind == prItem && items[m].Group == it.Group && items[m].Repo == it.Repo; m-- {
+			if items[m].Key == it.On {
+				it.Under = items[m].Title
+				break
+			}
+		}
+	}
 	return items
 }
 
@@ -531,6 +687,23 @@ func (q *queueModel) loadDetail() tea.Cmd {
 	}
 }
 
+// prWaitLines start a PR's detail with what it waits on in full: what its row says, the review
+// check's own words, who is asked to review, and the PR it is stacked on.
+func prWaitLines(it queueItem) []string {
+	p := it.Pr
+	parts := []string{it.Wait}
+	if p.Needs != "" && it.Group == waiting && !p.Draft {
+		parts = []string{p.Needs}
+	}
+	if len(p.Reviewers) > 0 {
+		parts = append(parts, "review asked of "+strings.Join(p.Reviewers, ", "))
+	}
+	if it.On != "" {
+		parts = append(parts, "stacked on "+it.On)
+	}
+	return []string{"**Waits on:** " + strings.Join(parts, " · "), ""}
+}
+
 // itemDetail is the item's report, its evidence and terminal captures, or for an agent that wrote
 // no report, the end of its screen, where its question is.
 func itemDetail(it queueItem) []string {
@@ -539,7 +712,7 @@ func itemDetail(it queueItem) []string {
 		if err != nil {
 			return []string{fg(cRed, "Failed to load the PR: "+err.Error())}
 		}
-		return strings.Split(prMarkdown(*it.Pr, v), "\n")
+		return append(prWaitLines(it), strings.Split(prMarkdown(*it.Pr, v), "\n")...)
 	}
 	var out []string
 	if q := it.Question; q != nil {
