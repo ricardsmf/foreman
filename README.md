@@ -471,8 +471,10 @@ mine.
 
 A watcher with `prs` (GitHub searches) costs no model turn while nothing happens: [`foreman
 watch`](#foreman-watch) polls its PRs and types its prompt into its pane, once, only when one of them changed. It types `/clear`
-first, so each pass starts on an empty conversation: what you asked the watcher after its last
-pass is gone at the next wake, and it reads a PR's state from GitHub again when you ask.
+first, so each pass starts on an empty conversation. A wake waits while you talk to the watcher:
+until 30 minutes after the last thing you typed into it since its pass began. Then what you asked
+it is gone (`/resume` in its pane brings it back), and it reads a PR's state from GitHub again
+when you ask.
 
 - It polls when it starts and then every 2 minutes, with one `gh api graphql` request per
   search, scoped to the repo the checkout's `origin` points at. `fld-pr-watch`'s are the two
@@ -486,7 +488,9 @@ pass is gone at the next wake, and it reads a PR's state from GitHub again when 
   log says which PRs woke it.
 - A watcher that is working or waits on a permission prompt isn't typed into: the next poll tries
   again, and still sees the change, since signatures are only recorded on a wake. Nor is one whose
-  program reports no state (still starting, or no longer Claude Code). A closed one is started
+  program reports no state (still starting, or no longer Claude Code), or one you typed into in the
+  last 30 minutes since its pass began. That is read from its newest Claude Code conversation in
+  the checkout, where a pass's prompt is the one carrying the allowlist rules. A closed one is started
   first, unless you stopped it.
 - Starting a watcher records its PRs' signatures first, so the pass its prompt runs isn't followed
   by a wake for the same PRs.
@@ -524,8 +528,8 @@ A watcher with `at` runs its prompt at a time of day: `"17:45"` every day, or da
   starts at its prompt, without a pass.
 - The latest time dealt with is in `state.json` under `watcherRan`, recorded once the prompt is
   typed: a wake that fails is tried again at the next poll.
-- A watcher that is working, waits on a prompt or isn't running is left for the next poll, and
-  gets its pass once it rests.
+- A watcher that is working, waits on a prompt, was typed into in the last 30 minutes or isn't
+  running is left for the next poll, and gets its pass once it rests.
 - A time that passed while `foreman watch` wasn't running, or while the watcher was busy, still runs the
   same day. On a later day it is skipped: a pass about a day reports on the wrong one a day late.
 - A watcher new to the config starts from its next time, not the one before.

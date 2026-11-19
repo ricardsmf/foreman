@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"cmp"
 	"encoding/json"
 	"fmt"
 	"maps"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -275,11 +278,12 @@ func pollOne(w Watcher, sessions []rexSession, recorded string) (string, error) 
 }
 
 // pollSchedule starts the watcher's pass when its time has come, and returns that time. A watcher
-// that isn't running or is busy is left for the next poll, as pollWatcher leaves it: the time is
-// only recorded on a wake, so the pass starts once the watcher rests, if that is the same day.
+// that isn't running, is busy or that I'm talking to is left for the next poll, as pollWatcher
+// leaves it: the time is only recorded on a wake, so the pass starts once the watcher rests, if
+// that is the same day.
 func pollSchedule(w Watcher, sessions []rexSession, recorded string, now time.Time) (time.Time, error) {
 	s, ok := findWatcher(sessions, w, recorded)
-	if !ok || !wakeable(s.State) {
+	if !ok || !wakeable(s.State) || heldByMe(w, now) {
 		return time.Time{}, nil
 	}
 	sc, err := parseAt(w.At)
@@ -290,11 +294,12 @@ func pollSchedule(w Watcher, sessions []rexSession, recorded string, now time.Ti
 }
 
 // pollWatcher wakes the watcher when one of its PRs changed since its last wake, and returns those
-// PRs. A watcher that isn't running is left so: the poll doesn't restart one I stopped. A busy one
-// is left for the next poll, which still sees the change: signatures are only recorded on a wake.
+// PRs. A watcher that isn't running is left so: the poll doesn't restart one I stopped. A busy one,
+// or one I'm talking to, is left for the next poll, which still sees the change: signatures are
+// only recorded on a wake.
 func pollWatcher(w Watcher, sessions []rexSession, recorded string) ([]string, error) {
 	s, ok := findWatcher(sessions, w, recorded)
-	if !ok || !wakeable(s.State) {
+	if !ok || !wakeable(s.State) || heldByMe(w, time.Now()) {
 		return nil, nil
 	}
 	now, err := prSignatures(w)
@@ -320,6 +325,85 @@ func wakeWatcher(s rexSession, prompt string) error {
 // still be starting, or not be Claude Code any more.
 func wakeable(state string) bool {
 	return state == "idle" || state == "done" || state == "error"
+}
+
+// talkHold is how long a wake waits after I last typed into the watcher: the wake's /clear would
+// take the conversation I'm having with it about its last pass.
+const talkHold = 30 * time.Minute
+
+// heldByMe is whether I typed into the watcher within talkHold, since its last pass started.
+func heldByMe(w Watcher, now time.Time) bool {
+	t := lastTyped(w.Dir)
+	return !t.IsZero() && now.Sub(t) < talkHold
+}
+
+// lastTyped is when I last typed into the watcher's conversation since its last pass started, or
+// zero when I haven't. The conversation is Claude Code's newest in the checkout: /clear starts a
+// new one. A pass's prompt is told from what I type by the watcherRules it carries; the /clear
+// before it and Claude Code's notes on a local command aren't mine either.
+func lastTyped(dir string) time.Time {
+	files, _ := filepath.Glob(filepath.Join(claudeProjectDir(dir), "*.jsonl"))
+	newest, newestMod := "", time.Time{}
+	for _, f := range files {
+		if fi, err := os.Stat(f); err == nil && fi.ModTime().After(newestMod) {
+			newest, newestMod = f, fi.ModTime()
+		}
+	}
+	if newest == "" {
+		return time.Time{}
+	}
+	f, err := os.Open(newest)
+	if err != nil {
+		return time.Time{}
+	}
+	defer f.Close()
+	var last time.Time
+	// ReadBytes, not a Scanner: a line can hold a whole API request, past any buffer worth fixing.
+	r := bufio.NewReader(f)
+	for {
+		line, err := r.ReadBytes('\n')
+		if bytes.Contains(line, []byte(`"user"`)) {
+			var e struct {
+				Type        string    `json:"type"`
+				IsMeta      bool      `json:"isMeta"`
+				IsSidechain bool      `json:"isSidechain"`
+				Timestamp   time.Time `json:"timestamp"`
+				Message     struct {
+					Content json.RawMessage `json:"content"`
+				} `json:"message"`
+			}
+			if json.Unmarshal(line, &e) == nil && e.Type == "user" && !e.IsMeta && !e.IsSidechain {
+				switch text := typedText(e.Message.Content); {
+				case text == "", strings.HasPrefix(text, "<local-command-"), strings.HasPrefix(text, "<command-name>/clear</command-name>"):
+				case strings.Contains(text, watcherRules):
+					last = time.Time{}
+				default:
+					last = e.Timestamp
+				}
+			}
+		}
+		if err != nil {
+			return last
+		}
+	}
+}
+
+// typedText is a user entry's text: its content when that is a string, else its text blocks. A
+// tool's result has none: the model got it, nobody typed it.
+func typedText(content json.RawMessage) string {
+	var s string
+	if json.Unmarshal(content, &s) == nil {
+		return s
+	}
+	var blocks []struct{ Type, Text string }
+	_ = json.Unmarshal(content, &blocks)
+	var parts []string
+	for _, b := range blocks {
+		if b.Type == "text" {
+			parts = append(parts, b.Text)
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 // wakeIfChanged calls wake when a PR changed since the last wake, and then records the signatures:

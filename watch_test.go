@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A PR as the watch query returns it: head abc, two checks, mergeable, my review and a comment.
@@ -371,5 +372,113 @@ func TestWatcherWakeConfig(t *testing.T) {
 		if err := write(c[0]); err == nil || !strings.Contains(err.Error(), c[1]) {
 			t.Errorf("%s: %v", what, err)
 		}
+	}
+}
+
+// writeConversation writes a Claude Code conversation for the watcher in dir, modified at mod, from
+// its user entries: what each says, when, and whether Claude Code marks it meta or a subagent's.
+func writeConversation(t *testing.T, dir, name string, mod time.Time, entries ...map[string]any) {
+	t.Helper()
+	conv := claudeProjectDir(dir)
+	if err := os.MkdirAll(conv, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	for _, e := range entries {
+		b, err := json.Marshal(e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines = append(lines, string(b), `{"type":"assistant","message":{"content":[{"type":"text","text":"ok"}]}}`)
+	}
+	file := filepath.Join(conv, name+".jsonl")
+	if err := os.WriteFile(file, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(file, mod, mod); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func userEntry(at time.Time, content any) map[string]any {
+	return map[string]any{"type": "user", "timestamp": at.Format(time.RFC3339Nano), "message": map[string]any{"role": "user", "content": content}}
+}
+
+// What I type into a watcher counts from its last pass's prompt on, in its newest conversation; the
+// pass's own prompt, /clear, a tool's result and what Claude Code or a subagent writes don't.
+func TestLastTyped(t *testing.T) {
+	oldHome := home
+	home = t.TempDir()
+	t.Cleanup(func() { home = oldHome })
+	dir := "/r/watch"
+	if got := lastTyped(dir); !got.IsZero() {
+		t.Errorf("no conversation: %v", got)
+	}
+	t0 := time.Date(2026, 11, 19, 11, 0, 0, 0, time.UTC)
+	at := func(m int) time.Time { return t0.Add(time.Duration(m) * time.Minute) }
+	clear := userEntry(at(0), "<command-name>/clear</command-name>\n            <command-message>clear</command-message>\n            <command-args></command-args>")
+	caveat := userEntry(at(0), "<local-command-caveat>The command below was run directly in Claude Code.</local-command-caveat>")
+	caveat["isMeta"] = true
+	pass := func(m int) map[string]any {
+		return userEntry(at(m), "<command-message>fld-watch</command-message>\n<command-name>/fld-watch</command-name>\n<command-args>--once "+watcherRules+"</command-args>")
+	}
+	skill := userEntry(at(1), "Base directory for this skill: /r/watch/.claude/skills/fld-watch")
+	skill["isMeta"] = true
+	toolResult := userEntry(at(2), []map[string]any{{"type": "tool_result", "tool_use_id": "t1", "content": "done"}})
+	sidechain := userEntry(at(20), "Review PR 12.")
+	sidechain["isSidechain"] = true
+
+	writeConversation(t, dir, "a", at(5), clear, caveat, pass(1), skill, toolResult)
+	if got := lastTyped(dir); !got.IsZero() {
+		t.Errorf("only the pass: %v", got)
+	}
+	writeConversation(t, dir, "b", at(30), clear, pass(1), skill, toolResult,
+		userEntry(at(10), "draft the three nits as a pending review on 1379"),
+		userEntry(at(15), []map[string]any{{"type": "text", "text": "show me the draft"}}),
+		sidechain)
+	if got := lastTyped(dir); !got.Equal(at(15)) {
+		t.Errorf("typed after the pass: %v, want %v", got, at(15))
+	}
+	writeConversation(t, dir, "c", at(40), userEntry(at(31), "run another watcher pass"), pass(32), toolResult)
+	if got := lastTyped(dir); !got.IsZero() {
+		t.Errorf("a pass after what I typed: %v", got)
+	}
+	writeConversation(t, dir, "b", at(50), userEntry(at(45), "what about 1380?"))
+	if got := lastTyped(dir); !got.Equal(at(45)) {
+		t.Errorf("a watcher started by hand, or resumed: %v", got)
+	}
+}
+
+// A wake waits talkHold after I last typed into the watcher, by the clock or for a PR: its /clear
+// would take that conversation. pollWatcher returns before it reads GitHub.
+func TestWakeWaitsWhileITalk(t *testing.T) {
+	f := useFakeRex(t)
+	oldHome := home
+	home = t.TempDir()
+	t.Cleanup(func() { home = oldHome })
+	w := Watcher{Name: "eod", Dir: "/r/eod", Prompt: "Write my update.", At: "11:59", PRs: []string{"is:open"}}
+	sessions := []rexSession{{ID: "s1", Label: "eod", State: "idle", Block: "b1"}}
+	typed := time.Date(2026, 11, 19, 12, 0, 0, 0, time.Local)
+	writeConversation(t, w.Dir, "a", typed, userEntry(typed, "post the update, but drop the second line"))
+	if _, err := updateState(func(s *State) { s.WatcherRan["eod"] = typed.Add(-48 * time.Hour).Format(time.RFC3339) }); err != nil {
+		t.Fatal(err)
+	}
+	if at, err := pollSchedule(w, sessions, "s1", typed.Add(talkHold-time.Minute)); !at.IsZero() || err != nil {
+		t.Errorf("by the clock, while I talk: %v %v", at, err)
+	}
+	now := time.Now()
+	writeConversation(t, w.Dir, "b", now, userEntry(now.Add(-10*time.Minute), "is 1380 ready?"))
+	if changed, err := pollWatcher(w, sessions, "s1"); changed != nil || err != nil {
+		t.Errorf("for a PR, while I talk: %v %v", changed, err)
+	}
+	if len(f.calls) != 0 {
+		t.Fatalf("woke a watcher I'm talking to: %q", f.calls)
+	}
+	writeConversation(t, w.Dir, "c", now.Add(time.Second), userEntry(typed, "post the update, but drop the second line"))
+	if at, err := pollSchedule(w, sessions, "s1", typed.Add(talkHold+time.Minute)); at.IsZero() || err != nil {
+		t.Errorf("by the clock, once I stopped: %v %v", at, err)
+	}
+	if len(f.calls) == 0 || f.calls[0] != "send s1 b1 /clear" {
+		t.Errorf("calls %q", f.calls)
 	}
 }
