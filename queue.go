@@ -439,9 +439,9 @@ func queueItems(s State, sessions []rexSession, prs []Pr) []queueItem {
 		if q, ok := s.Questions[key]; ok && q.Answer == "" {
 			it.Question = &q
 			it.Sig += fmt.Sprintf(" q%d", q.At.Unix())
-			// Nothing waits on a question whose session closed or whose foreman ask is gone: it
-			// stays mine to answer, and the answer goes to the agent as a message.
-			if it.Left = it.Agent == "" || (q.Pid != 0 && !askRuns(q.Pid)); it.Left {
+			// Nothing waits on a question whose session closed, or whose foreman ask gave up or
+			// is gone: it stays mine to answer, and the answer goes to the agent as a message.
+			if it.Left = it.Agent == "" || q.GaveUp || (q.Pid != 0 && !askRuns(q.Pid)); it.Left {
 				it.Sig += " left"
 			}
 		}
@@ -1233,9 +1233,16 @@ func (q *queueModel) choose(it queueItem, key string) tea.Cmd {
 
 // markReviewed takes the item out of what waits on me until it has something new: a report, or
 // for a PR, something else to wait on or something someone wrote on it. What an agent went on
-// with is confirmed.
+// with is confirmed, and a question nothing waits on is set aside: answered in its session, or
+// not worth an answer.
 func (q *queueModel) markReviewed(it queueItem) tea.Cmd {
 	key, dkey, sig := it.Key, it.dismissKey(), it.Sig
+	if it.Kind == agentItem && it.Question != nil && it.Left {
+		q.state, _ = updateState(func(s *State) { settle(s, key, it.Question.At) })
+		_ = appendLog(key, logEntry{By: byMe, Kind: "aside"})
+		q.say("Set "+key+"'s question aside", cOverlay)
+		return q.rebuild()
+	}
 	q.state, _ = updateState(func(s *State) { s.Dismissed[dkey] = sig })
 	if it.Kind == agentItem && len(it.Decisions) > 0 {
 		if s, err := confirm(key, it.Decisions, byMe); err == nil {

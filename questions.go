@@ -34,6 +34,9 @@ type Question struct {
 	// Pid is the foreman ask that waits on the answer. 0 for a question from before it was kept,
 	// and for one the agent went on without.
 	Pid int `json:"pid,omitempty"`
+	// GaveUp is whether that foreman ask stopped waiting: the question is still mine to answer,
+	// and the answer goes to the agent as a message.
+	GaveUp bool `json:"gaveUp,omitempty"`
 }
 
 // maxOptions is how many choices a question takes: the queue answers with a digit.
@@ -124,7 +127,7 @@ func role() string {
 type logEntry struct {
 	At   time.Time `json:"at"`
 	By   string    `json:"by"`   // agent, orchestrator, me
-	Kind string    `json:"kind"` // question, decision, answer, confirm, reply, expired
+	Kind string    `json:"kind"` // question, decision, answer, confirm, aside, reply, expired
 	Text string    `json:"text"`
 }
 
@@ -327,7 +330,24 @@ func ask(key string, q Question, wait, poll time.Duration, sleep func(time.Durat
 			return "I answered in your session instead of the queue:\n\n" + said + "\n\nThe same message reaches you after this command: it is one answer, not two.", nil
 		}
 	}
-	_, _ = updateState(func(s *State) { clearQuestion(s, key, q.At) })
+	// The question stays in the queue, marked as one nothing waits on. An answer that came since
+	// the last look is taken here, in the same write: after it, none is left where nothing reads it.
+	answer := ""
+	_, _ = updateState(func(s *State) {
+		got, ok := s.Questions[key]
+		switch {
+		case !ok || !got.At.Equal(q.At):
+		case got.Answer != "":
+			answer = got.Answer
+			delete(s.Questions, key)
+		default:
+			got.GaveUp = true
+			s.Questions[key] = got
+		}
+	})
+	if answer != "" {
+		return answer, nil
+	}
 	_ = appendLog(key, logEntry{By: byAgent, Kind: "expired", Text: "no answer in " + wait.String()})
 	return "", fmt.Errorf("no answer in %s. Put the question in your report and stop to ask me; my answer will come as a message", wait)
 }
@@ -440,7 +460,11 @@ func questionLines(it queueItem) []string {
 			out = append(out, "# Left a question", "", "It no longer waits in `foreman ask`: an answer is typed into its pane.", "")
 		}
 		out = append(append(out, q.Text, ""), choiceLines(*q, false)...)
-		out = append(out, answerHint(*q, false), "")
+		hint := answerHint(*q, false)
+		if it.Left {
+			hint += " `x` sets it aside, answered elsewhere."
+		}
+		out = append(out, hint, "")
 	}
 	for n, q := range it.Decisions {
 		out = append(append(out, "# Went on without an answer", "", q.Text, ""), choiceLines(q, true)...)
@@ -499,15 +523,19 @@ func answerHint(q Question, decision bool) string {
 	return "`f` answers it."
 }
 
-// answerQuestion answers the dispatch's pending question.
+// answerQuestion answers the question the dispatch waits on in foreman ask, which reads the
+// answer from the state file.
 func answerQuestion(key, text, by string) error {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return errors.New("nothing to answer with")
 	}
-	found := false
+	found, gaveUp := false, false
 	if _, err := updateState(func(s *State) {
 		q, ok := s.Questions[key]
+		if gaveUp = ok && q.GaveUp; gaveUp {
+			return
+		}
 		if !ok || q.Answer != "" {
 			return
 		}
@@ -516,6 +544,9 @@ func answerQuestion(key, text, by string) error {
 		s.Questions[key] = q
 	}); err != nil {
 		return err
+	}
+	if gaveUp {
+		return fmt.Errorf("%s stopped waiting for the answer just now; answer again, and it goes to the agent as a message", key)
 	}
 	if !found {
 		return fmt.Errorf("%s has no question waiting", key)
@@ -556,7 +587,7 @@ func logLines(entries []logEntry) []string {
 	if len(entries) == 0 {
 		return nil
 	}
-	verbs := map[string]string{"question": "asks", "decision": "asks, and goes on", "answer": "answers", "confirm": "confirms", "reply": "sends", "expired": "gave up"}
+	verbs := map[string]string{"question": "asks", "decision": "asks, and goes on", "answer": "answers", "confirm": "confirms", "reply": "sends", "expired": "gave up", "aside": "sets the question aside"}
 	out := []string{"## Questions", ""}
 	for _, e := range entries {
 		line := fmt.Sprintf("- %s **%s %s**", e.At.Local().Format("15:04"), e.By, verbs[e.Kind])

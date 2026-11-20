@@ -347,6 +347,88 @@ func TestQueueAnswerKeys(t *testing.T) {
 	}
 }
 
+// A question foreman ask gave up on stays under needs you. Its answer is typed into the agent's
+// pane; x sets it aside instead.
+func TestExpiredQuestionStaysToAnswer(t *testing.T) {
+	f := useFakeRex(t, rexSession{ID: "s1", Label: "fld-1-x", Panes: []rexPane{pane("block:1", true, rexRecord{State: "idle"})}})
+	oldEvidence := evidenceRoot
+	evidenceRoot = t.TempDir()
+	t.Cleanup(func() { evidenceRoot = oldEvidence })
+	if _, err := updateState(func(s *State) {
+		s.Dispatched["FLD-1"], s.Panes["s1"] = Dispatched{Dir: "/w", Session: "s1"}, "block:1"
+	}); err != nil {
+		t.Fatal(err)
+	}
+	expire := func() queueItem {
+		t.Helper()
+		asked := Question{Text: "Which store?", Options: []string{"Redis", "Postgres"}}
+		if _, err := ask("FLD-1", asked, time.Second, time.Second, func(time.Duration) {}, nobodyTyped); err == nil {
+			t.Fatal("an unanswered ask returned an answer")
+		}
+		sessions, err := agentSessions()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return queueItems(loadState(), sessions, nil)[0]
+	}
+	it := expire()
+	// This test's own process is the foreman ask, and still runs: gave up is what marks it.
+	if _, label := itemLabel(it); !it.Left || it.Group != needsYou || !strings.Contains(label, "left a question") {
+		t.Fatalf("expired: left %t, group %d, label %q", it.Left, it.Group, label)
+	}
+	if detail := strings.Join(itemDetail(it), "\n"); !strings.Contains(detail, "2. Postgres") || !strings.Contains(detail, "`x` sets it aside") {
+		t.Errorf("its detail:\n%s", detail)
+	}
+	if said, err := answerItem(loadState(), it, "Postgres", byMe); err != nil || !strings.Contains(said, "in its pane") {
+		t.Fatalf("answerItem = %q, %v", said, err)
+	}
+	if want := "send s1 block:1 You asked me “Which store?”. My answer: Postgres"; !slices.Contains(f.calls, want) {
+		t.Errorf("calls = %q", f.calls)
+	}
+	if _, waits := loadState().Questions["FLD-1"]; waits {
+		t.Error("the answered question still waits")
+	}
+
+	it = expire()
+	f.calls = nil
+	q := &queueModel{state: loadState(), details: map[string][]string{}, items: []queueItem{it}, all: []queueItem{it}}
+	q.input(tea.KeyPressMsg{Code: 'x', Text: "x"})
+	if _, waits := loadState().Questions["FLD-1"]; waits || len(f.calls) != 0 || !strings.Contains(q.status, "aside") {
+		t.Errorf("x on it: still waits %t, calls %q, status %q", waits, f.calls, q.status)
+	}
+	if log := readLog("FLD-1"); log[len(log)-1].Kind != "aside" {
+		t.Errorf("log = %+v", log)
+	}
+}
+
+// An answer that lands after foreman ask's last look, before it gives up, is still the answer.
+func TestAskTakesALateAnswer(t *testing.T) {
+	tempState(t)
+	dispatched(t, "FLD-1", "/w/app-fld-1")
+	late := func() (string, bool) {
+		if err := answerQuestion("FLD-1", "v2", byMe); err != nil {
+			t.Error(err)
+		}
+		return "", false
+	}
+	answer, err := ask("FLD-1", Question{Text: "Which endpoint?"}, time.Second, time.Second, func(time.Duration) {}, late)
+	if err != nil || answer != "v2" {
+		t.Fatalf("ask = %q, %v", answer, err)
+	}
+	if _, waits := loadState().Questions["FLD-1"]; waits {
+		t.Error("the answered question still waits")
+	}
+}
+
+// The orchestrator's guide names the two states only its agents listing shows.
+func TestOrchestratorGuideNamesQuestionStates(t *testing.T) {
+	for _, want := range []string{"`decisions`", "`left`", "`recommended`"} {
+		if !strings.Contains(orchestratorGuide, want) {
+			t.Errorf("the guide lacks %s", want)
+		}
+	}
+}
+
 // An agent's prompt says how to give choices and how to go on without me.
 func TestAskSectionTeachesOptions(t *testing.T) {
 	section := strings.Join(askSection(), "\n")

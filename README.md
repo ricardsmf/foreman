@@ -300,7 +300,9 @@ typed into a working agent. Claude agents run it without a permission prompt.
   message reaches the agent after the command, as the same answer. pi keeps no such note: a pi
   agent is answered from the queue.
 - Unanswered after 8 minutes, `ask` tells the agent to put the question in its report and stop to
-  ask me; a later reply is typed into its pane as usual. Dispatching the agent again withdraws it.
+  ask me. The question stays under **needs you**, as one it
+  [left](#a-question-that-outlives-its-asker): an answer there, by a digit as well, is typed into
+  its pane. Dispatching the agent again withdraws it.
 - `foreman wait` returns when the agent asks, so an orchestrator waiting on it sees the question
   too; it passes on the answer you give it with `foreman answer`.
 - Every question and answer, and every message the orchestrator sends the agent, goes to
@@ -335,9 +337,9 @@ is cheap to undo.
 
 ### A question that outlives its asker
 
-A question stays mine to answer when nothing waits on it any more: its session closed, or its
-`foreman ask` is gone, as when I interrupt the agent's turn. Its row stays under **needs you**,
-`left a question`.
+A question stays mine to answer when nothing waits on it any more: its `foreman ask` gave up
+after 8 minutes, its session closed, or its `foreman ask` is gone, as when I interrupt the agent's
+turn. Its row stays under **needs you**, `left a question`.
 
 - Each question records the `foreman ask` process that waits on it, and the queue looks for that
   process. One from before that was recorded counts as waiting while its session is open.
@@ -346,7 +348,8 @@ A question stays mine to answer when nothing waits on it any more: its session c
 - With the session closed, it resumes the agent, as `enter` on a closed row does, in a
   background session whose first turn is that message. Only I do that: `foreman answer` from the
   orchestrator is refused.
-- `x` marks it reviewed without answering.
+- `x` sets it aside, for one I answered in the agent's session or that needs no answer: it leaves
+  the queue. A new question from the agent replaces it too.
 
 ## Reviews
 
@@ -464,7 +467,7 @@ with no ticket, the browser), `f` type a reply that is sent to the agent's pane,
 prompt](#answering-a-prompt)), `v` show its videos, screenshots and captures in a browser beside the board (see [Reports and
 evidence](#reports-and-evidence)), `d` the worktree's diff in git's
 pager, `o` the ticket or PR in a browser [beside the board](#pages-beside-the-board), `O` in the system browser (either way a PR's news is then read), `p` a [port](#ports) its session listens on, `x` mark reviewed (the agent moves to idle or closed
-until it writes a new report, and what it went on with is confirmed; a PR moves to **waiting** until what it waits on changes or someone writes on it), `K` twice close the agent's Rex
+until it writes a new report, what it went on with is confirmed, and a question it left is set aside; a PR moves to **waiting** until what it waits on changes or someone writes on it), `K` twice close the agent's Rex
 session, or on a closed one drop it from the queue (its worktree and report stay), `c` list or fold
 the closed agents, `^u`/`^d` scroll, `^r` reload, `?` every key, `q` close the queue, leaving the board alone at full width (`^z` there brings the
 queue back beside it; `^c` quits foreman).

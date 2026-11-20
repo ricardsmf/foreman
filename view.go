@@ -313,7 +313,7 @@ var queueHelp = []helpKey{
 	{"f", "type a reply into the agent's pane, or answer its question: one it left resumes a closed agent"},
 	{"y  n", "on an agent that waits on a prompt: press enter, or esc, in its pane"},
 	{"1-9  a", "on a question with choices: answer with one, or with the recommended one; confirm what the agent went on with"},
-	{"x", "mark reviewed, confirming what the agent went on with"},
+	{"x", "mark reviewed, confirming what the agent went on with; set aside a question it left"},
 	{"d", "the worktree's diff"},
 	{"v", "show the evidence in a browser beside the board"},
 	{"p", "open a port the agent's session listens on in a browser beside the board; again for the next"},

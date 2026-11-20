@@ -43,6 +43,8 @@ The agent starts from your text alone, plus the ticket or PR when there is one. 
 
 - **Done**: summarise §foreman report KEY§, outcome first, then what's left open. For several, add where they touch the same files or depend on each other's choices.
 - **Blocked or asked**: the agent waits on me, and I answer on its row in the queue. Tell me in a line which agent and what it wants, with what the command would change when its text doesn't say, then wait on it again.
+- **Went on without me**: when an agent is done, read its entry in §foreman agents --json§. Its §decisions§ are questions it answered for itself: tell me each one with the §recommended§ answer it went on with. I confirm it in the queue, or give you another answer to pass on with §foreman answer KEY§.
+- **Left a question**: a §question§ marked §left§ in that entry is one the agent stopped waiting on. Tell me the question. §foreman answer KEY§ types my answer into its pane while its §state§ isn't §closed§; a closed agent is mine to resume, with §f§ on its row.
 - What I tell you to pass on goes with §foreman answer KEY§ to an agent that asked, with §foreman reply KEY§ to any other. Write it to stand alone: my words, with what "yes" or "the second option" refers to spelled out.
 - A reply to something you read on an agent's pane passes the token §foreman screen§ or §foreman wait§ printed under it: §foreman reply --seen TOKEN KEY "…"§. foreman refuses it when the pane has changed since; then read the pane again and check with me whether the answer still fits.
 

@@ -2561,8 +2561,13 @@ func TestAskUnanswered(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "stop to ask me") || !pending {
 		t.Fatalf("err %v, pending while it waited %t", err, pending)
 	}
-	if _, ok := loadState().Questions["FLD-1"]; ok {
-		t.Error("an expired question is still pending: later replies would answer nobody")
+	// It stays mine to answer, marked as one nothing waits on, so no answer is left in the state
+	// file where nobody reads it.
+	if q, ok := loadState().Questions["FLD-1"]; !ok || !q.GaveUp {
+		t.Errorf("the expired question: %+v, kept %t", q, ok)
+	}
+	if err := answerQuestion("FLD-1", "v2", byMe); err == nil || !strings.Contains(err.Error(), "stopped waiting") {
+		t.Errorf("an answer left for a foreman ask that gave up: %v", err)
 	}
 	if log := readLog("FLD-1"); len(log) != 2 || log[1].Kind != "expired" {
 		t.Errorf("log = %+v", log)
