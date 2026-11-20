@@ -68,10 +68,12 @@ func TestPictureAppliesPorts(t *testing.T) {
 	}
 }
 
-// An agent's row and detail say what its session listens on, and p opens it, one port a press.
+// An agent's row and detail say what its session listens on, and p opens it, one port a press:
+// outside Rex, in the system browser.
 func TestQueueOpensPorts(t *testing.T) {
 	tempState(t)
 	t.Setenv("REX_SESSION", "")
+	t.Setenv("REX_BLOCK", "")
 	var opened []string
 	oldOpen := openURL
 	openURL = func(u string) { opened = append(opened, u) }
@@ -92,19 +94,23 @@ func TestQueueOpensPorts(t *testing.T) {
 			t.Errorf("the queue lacks %q:\n%s", want, rows)
 		}
 	}
-	p := tea.KeyPressMsg{Code: 'p', Text: "p"}
-	q.input(p)
+	p := func() {
+		if cmd := q.input(tea.KeyPressMsg{Code: 'p', Text: "p"}); cmd != nil {
+			cmd()
+		}
+	}
+	p()
 	if !strings.Contains(q.status, "p again opens :5173") {
 		t.Errorf("status after the first p: %q", q.status)
 	}
-	q.input(p)
-	q.input(p)
+	p()
+	p()
 	if want := []string{"http://localhost:3000", "http://localhost:5173", "http://localhost:3000"}; !slices.Equal(opened, want) {
 		t.Errorf("opened %v; want %v", opened, want)
 	}
 
 	q.input(tea.KeyPressMsg{Code: tea.KeyDown})
-	q.input(p)
+	p()
 	if it, _ := q.current(); it.Key != "FLD-2" || len(opened) != 3 || !strings.Contains(q.status, "listens on a port") {
 		t.Errorf("an agent with no port: on %s, opened %v, status %q", it.Key, opened, q.status)
 	}

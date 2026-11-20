@@ -45,7 +45,7 @@ write takes at most 4 KB. The OAuth callback listens on `localhost:3127`.
 Board: type or paste to filter (every word must match), `↑↓` pick, `enter` dispatch, `tab`
 tickets/PRs, `^o` mine (on PRs: cycles review requested, mine, everyone), `^a` cycle assignee (on
 PRs: author), `^w` set the ticket's status, `^y` set its assignee (see [Changing a
-ticket](#changing-a-ticket)), `^u`/`^d` scroll the description, `^b` open in browser, `^s` go to the agent's Rex
+ticket](#changing-a-ticket)), `^u`/`^d` scroll the description, `^b` open in a browser [beside the board](#pages-beside-the-board), `^s` go to the agent's Rex
 session, `^t` a [task](#tasks), `^g` the [orchestrator](#orchestrator), `^x` clean up worktrees, `^r` refresh, `esc` quit.
 The footer names the keys of every moment; `?`, while the filter is empty, lists them all, and
 `↑↓` scroll that list in a short pane.
@@ -413,7 +413,7 @@ the ticket its title or branch names; with no agent, to the board's dispatch for
 with no ticket, the browser), `f` type a reply that is sent to the agent's pane, `y` or `n` answer the prompt an agent waits on (see [Answering a
 prompt](#answering-a-prompt)), `v` show its videos, screenshots and captures in a browser beside the board (see [Reports and
 evidence](#reports-and-evidence)), `d` the worktree's diff in git's
-pager, `o` the ticket or PR in the browser (a PR's news is then read), `p` a [port](#ports) its session listens on, `x` mark reviewed (the agent moves to idle or closed
+pager, `o` the ticket or PR in a browser [beside the board](#pages-beside-the-board), `O` in the system browser (either way a PR's news is then read), `p` a [port](#ports) its session listens on, `x` mark reviewed (the agent moves to idle or closed
 until it writes a new report; a PR moves to **waiting** until what it waits on changes or someone writes on it), `K` twice close the agent's Rex
 session, or on a closed one drop it from the queue (its worktree and report stay), `c` list or fold
 the closed agents, `^u`/`^d` scroll, `^r` reload, `?` every key, `q` close the queue, leaving the board alone at full width (`^z` there brings the
@@ -428,7 +428,7 @@ in a shell split beside it. So what the agent built can be opened as it runs in 
 - The detail starts with where each port is opened and the program that holds it
   (`http://localhost:5173 (vite)`); for an agent that waits on a prompt or asks a question, it
   comes after that.
-- `p` opens it in the browser. With several, each `p` opens the next, lowest first, and the
+- `p` opens it in a browser [beside the board](#pages-beside-the-board). With several, each `p` opens the next, lowest first, and the
   status line says which comes after.
 - They are every pane's in the session, one entry a port number: a server on both `127.0.0.1`
   and `::1` is one. One bound to a single other address is opened there instead of `localhost`.
@@ -469,14 +469,28 @@ column that fits the pane. Each press writes the page again, to `.evidence.html`
 directory; the hidden name keeps it out of the evidence counts and away from what the agent
 writes. With nothing to show, `v` says so and writes nothing.
 
-- The page opens in `terminal-browser`: in a new tab of the
-  browser already open in the board's Rex tab, or else in one split right of the board's pane.
-- Outside Rex, or without `terminal-browser` on `PATH`, `v` opens the screenshots and videos in
-  their default apps (Preview, the video player) instead; captures alone have nothing to open.
+The page opens [beside the board](#pages-beside-the-board). Outside Rex, or without
+`terminal-browser` on `PATH`, `v` opens the screenshots and videos in their default apps (Preview,
+the video player) instead; captures alone have nothing to open.
+
+### Pages beside the board
+
+What foreman opens, it opens in `terminal-browser`, in the Rex tab the board is in: the ticket or
+PR of the board's `^b` and the queue's `o`, the PR of the queue's `enter` when it names no ticket,
+the port of `p` and the evidence page of `v`.
+
+- The page opens in a new tab of the browser already open in the board's Rex tab, or else in one
+  split right of the board's pane.
+- Outside Rex, or without `terminal-browser` on `PATH`, a ticket, a PR or a port opens in the
+  system browser.
+- `O` in the queue opens the ticket or PR in the system browser wherever the board runs.
+- `terminal-browser` keeps its own sign-ins, apart from the system browser's: GitHub and Jira
+  each ask once there.
+- The sign-in of [Jira access](#jira-access) opens in the system browser.
 - foreman makes the split itself and starts the browser in it only once Rex has sized the pane.
   Rex creates a pane at a placeholder 80x24 and sizes it seconds later; a browser started at
   once takes the jump in cell height for a font change and zooms the page by the ratio, a zoom
-  Chromium then keeps for the file. The wait has no limit, since a pane still at the placeholder
+  Chromium then keeps for the page. The wait has no limit, since a pane still at the placeholder
   is one no Rex app shows: the browser starts when one does. A pane whose real size is exactly
   80x24 never starts it. A page that already kept a wrong zoom keeps it until `ctrl+0` in the
   browser.

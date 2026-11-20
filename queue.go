@@ -1044,30 +1044,41 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 			q.portNext = map[string]int{}
 		}
 		q.portNext[it.Key] = n + 1
-		openURL(it.Ports[n].url())
 		said := "Opened " + it.Ports[n].url()
 		if len(it.Ports) > 1 {
 			said += fmt.Sprintf("; p again opens :%d", it.Ports[(n+1)%len(it.Ports)].Port)
 		}
 		q.say(said, cOverlay)
-	case "o":
+		return q.browse(it.Ports[n].url())
+	case "o", "O":
+		url := ""
 		switch {
 		case it.Watcher, it.Orchestrator:
 		case isTask(it.Key):
 			q.say("A task has no ticket or PR to open", cOverlay)
 		case it.Pr != nil:
-			openURL(it.Pr.URL)
-			// Opened, what someone did on it is read.
-			if it.News != "" {
-				return q.markReviewed(it)
-			}
+			url = it.Pr.URL
 		case it.review(), isFix(it.Key):
 			if n := slices.IndexFunc(q.prs, func(p Pr) bool { return p.Key == strings.TrimPrefix(it.Key, fixPrefix) }); n >= 0 {
-				openURL(q.prs[n].URL)
+				url = q.prs[n].URL
 			}
 		default:
-			openURL(site + "/browse/" + it.Key)
+			url = site + "/browse/" + it.Key
 		}
+		if url == "" {
+			return nil
+		}
+		var show tea.Cmd
+		if msg.String() == "O" {
+			openURL(url)
+		} else {
+			show = q.browse(url)
+		}
+		// Opened, what someone did on it is read.
+		if it.Pr != nil && it.News != "" {
+			return tea.Batch(show, q.markReviewed(it))
+		}
+		return show
 	case "f":
 		if it.Kind == prItem || it.Agent == "" {
 			q.say("No open agent session to reply to", cOverlay)
@@ -1140,10 +1151,19 @@ func (q *queueModel) prAgent(p Pr) (queueItem, bool) {
 func (q *queueModel) requestForm(p Pr) tea.Cmd {
 	key := jiraKey(p, nil)
 	if key == "" {
-		openURL(p.URL)
-		return nil
+		return q.browse(p.URL)
 	}
 	return func() tea.Msg { return openFormMsg{key} }
+}
+
+// browse opens the URL beside the board, and says so when it can't.
+func (q *queueModel) browse(url string) tea.Cmd {
+	return func() tea.Msg {
+		if err := browse(url); err != nil {
+			return queueStatusMsg{text: "Opening " + url + ": " + firstLine(err.Error()), color: cRed}
+		}
+		return nil
+	}
 }
 
 // markReviewed takes the item out of what waits on me until it has something new: a report, or

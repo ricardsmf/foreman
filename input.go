@@ -62,10 +62,15 @@ func (m *model) boardInput(msg tea.KeyPressMsg) tea.Cmd {
 		move(0)
 	case k == "ctrl+b":
 		if ok {
+			url := site + "/browse/" + current.Key
 			if current.Pr != nil {
-				openURL(current.Pr.URL)
-			} else {
-				openURL(site + "/browse/" + current.Key)
+				url = current.Pr.URL
+			}
+			return func() tea.Msg {
+				if err := browse(url); err != nil {
+					return statusMsg{"Opening " + url + ": " + firstLine(err.Error()), cRed, false}
+				}
+				return nil
 			}
 		}
 	case k == "ctrl+r":
