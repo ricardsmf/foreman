@@ -1992,6 +1992,22 @@ func TestTaskPrompt(t *testing.T) {
 	}
 }
 
+// A task and a ticket name their oracle before the change, and verify by it after.
+func TestPromptsNameTheOracleFirst(t *testing.T) {
+	tempState(t)
+	task := taskPrompt("task:foreman-1", "Add a flag", "Add a flag", agentPi, "/w/foreman-task-1", "rf/add-a-flag", true, "")
+	ticket := ticketPrompt(Dispatch{Issue: Issue{Key: "FLD-1", Summary: "Thing"}}, "/r/one", "rf/fld-1-thing", "the ticket", "")
+	for name, c := range map[string]struct{ p, change, green string }{
+		"task":   {task, "**Do the task**", "run the oracle until it is green"},
+		"ticket": {ticket, "**Implement**", "run every oracle until it is green"},
+	} {
+		oracle, change, verify := strings.Index(c.p, "see it red"), strings.Index(c.p, c.change), strings.Index(c.p, c.green)
+		if oracle < 0 || change < oracle || verify < change {
+			t.Errorf("%s: the oracle at %d, the change at %d, the verify at %d:\n%s", name, oracle, change, verify, c.p)
+		}
+	}
+}
+
 func TestTaskSession(t *testing.T) {
 	label := sessionLabel("task:my-long-repo-name-here-1", "Add a flag to it")
 	if label != "task-my-long-repo-name-here-1-add-a-flag" {

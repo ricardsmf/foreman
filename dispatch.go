@@ -604,16 +604,21 @@ func taskPrompt(key, title, task, agent, cwd, branch string, worktree bool, skil
 		"## Workflow",
 		"",
 		"1. **Understand.** Read the relevant code and the repo's AGENTS.md / CLAUDE.md before changing anything. If the task is ambiguous, ask instead of guessing, as below.",
-		"2. **Do the task**, and only it. If it asks a question or an investigation rather than a change, answer it in the report and leave the code as it is.",
-		"3. **Verify** a change: build, and run the tests and linters that cover what you touched.",
-		"4. **Show it working.** Capture evidence that the change does what the task asks, as described below.",
-		"5. **Commit** a change on this branch. Do not push, open a PR, or post to GitHub or Jira.",
-		"6. **Report**: write the report below, then finish with the same summary in your final message.",
+		"2. **Set the target and its oracle**, for a change. State the result that means done as something you can observe (a behaviour, an output, a number), and name the oracle that checks it: a test, a command, or a comparison against a reference that is already right. "+oracleRule,
+		"3. **Do the task**, and only it. If it asks a question or an investigation rather than a change, answer it in the report and leave the code as it is.",
+		"4. **Verify** a change: build, run the tests and linters that cover what you touched, and run the oracle until it is green.",
+		"5. **Show it working.** Capture evidence that the change does what the task asks, as described below.",
+		"6. **Commit** a change on this branch. Do not push, open a PR, or post to GitHub or Jira.",
+		"7. **Report**: write the report below (for a change, with the oracle's result before and after), then finish with the same summary in your final message.",
 	)
 	lines = append(lines, askSection()...)
 	lines = append(lines, reportSection(key, true)...)
 	return strings.Join(lines, "\n")
 }
+
+// oracleRule is what a task's and a ticket's oracle step share: the check runs before the change,
+// so it can't be written to fit it.
+const oracleRule = "Run it before you change code and see it red: an oracle that is already green checks nothing. Where nothing can be red first (a refactor, a copy change), the oracle is the check that must stay green."
 
 // methodSection points the agent at the poteto-mode skill, under the workflow that follows it.
 func methodSection(skill, what string) []string {
@@ -678,11 +683,12 @@ func ticketPrompt(d Dispatch, cwd, branch, ticket, skill string) string {
 		"## Workflow",
 		"",
 		"1. **Understand.** Read the relevant code and the repo's AGENTS.md / CLAUDE.md before changing anything. If the ticket is ambiguous, ask instead of guessing, as below.",
-		"2. **Implement** to the ticket's acceptance criteria. Keep scope to the ticket; respect its constraints and out-of-scope notes.",
-		"3. **Verify.** Build, and run the tests and linters that cover what you touched.",
-		"4. **Show it working.** Capture evidence that the change does what the ticket asks, as described below.",
-		"5. **Commit** on this branch. Do not push, open a PR, or change the Jira ticket.",
-		"6. **Report**: write the report below, then finish with the same summary in your final message.",
+		"2. **Name the oracle.** For each acceptance criterion, name the check that shows it met: a test, a command's output, or a comparison against a reference that is already right. "+oracleRule,
+		"3. **Implement** to the ticket's acceptance criteria. Keep scope to the ticket; respect its constraints and out-of-scope notes.",
+		"4. **Verify.** Build, run the tests and linters that cover what you touched, and run every oracle until it is green.",
+		"5. **Show it working.** Capture evidence that the change does what the ticket asks, as described below.",
+		"6. **Commit** on this branch. Do not push, open a PR, or change the Jira ticket.",
+		"7. **Report**: write the report below, with each oracle's result before and after the change, then finish with the same summary in your final message.",
 	)
 	lines = append(lines, askSection()...)
 	lines = append(lines, reportSection(issue.Key, true)...)

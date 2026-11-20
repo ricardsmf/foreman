@@ -135,8 +135,9 @@ detail pane's place. Type to filter, `↑↓` pick, `enter` set, `esc` back.
   agent would work in the first one's worktree, and the board would track only the new session.
 - `◆` marks a dispatched row, coloured by what its agent reports to Rex: yellow working, red
   waiting for you or failed, green idle or done. `◇` means its session is closed.
-- The agent gets the ticket as markdown, your extra context, and a workflow: understand, implement,
-  verify, commit. It is told not to push, open a PR or touch the ticket.
+- The agent gets the ticket as markdown, your extra context, and a workflow: understand, name an
+  oracle for each acceptance criterion and see it red, implement, verify until every oracle is
+  green, commit. It is told not to push, open a PR or touch the ticket.
 - With poteto-mode on, the prompt also tells the agent to read pstack's poteto-mode skill and
   follow it. The workflow still wins: no push, no PR. The skill's path comes from
   `~/.claude/plugins/installed_plugins.json`, so the dispatch fails if pstack isn't installed
@@ -155,8 +156,9 @@ A task is work with no ticket or PR behind it: `^t` on the board opens the dispa
   branch; a name already taken locally or on origin gets `-2`, `-3`…
 - The title is the task's first line. It names the Rex session (`task-foreman-3-add-a-verbose`)
   and the queue row.
-- The agent gets the task and the same workflow as a ticket, plus: a question or an investigation
-  is answered in the report, with the code left as it is.
+- The agent gets the task and the same workflow as a ticket, with a target it states itself in
+  place of the acceptance criteria, plus: a question or an investigation is answered in the
+  report, with the code left as it is.
 - Picking the agent remembers it for the repo; a task doesn't change the repo a Jira project
   starts on.
 
