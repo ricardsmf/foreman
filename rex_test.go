@@ -84,6 +84,11 @@ func (f *fakeRex) press(s, block, key string) error {
 	return nil
 }
 
+func (f *fakeRex) split(block string, cmd []string) error {
+	f.note("split %s %s", block, strings.Join(cmd, "\x00"))
+	return nil
+}
+
 func (f *fakeRex) events(ctx context.Context, each func(rexEvent)) error {
 	for {
 		select {

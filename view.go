@@ -314,7 +314,7 @@ var queueHelp = []helpKey{
 	{"y  n", "on an agent that waits on a prompt: press enter, or esc, in its pane"},
 	{"x", "mark reviewed"},
 	{"d", "the worktree's diff"},
-	{"v", "open the screenshots and videos"},
+	{"v", "show the evidence in a browser beside the board"},
 	{"p", "open a port the agent's session listens on in the browser; again for the next"},
 	{"o", "open the ticket or PR in the browser"},
 	{"K K", "close the agent's session, or drop a closed agent from the queue"},

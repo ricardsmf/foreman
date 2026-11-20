@@ -233,6 +233,8 @@ type rexAPI interface {
 	// send types text into the pane; press presses a key there.
 	send(session, block, text string) error
 	press(session, block, key string) error
+	// split starts cmd in a new pane right of block.
+	split(block string, cmd []string) error
 	// events calls each for every event until the stream ends or ctx does.
 	events(ctx context.Context, each func(rexEvent)) error
 }

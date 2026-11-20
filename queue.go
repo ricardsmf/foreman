@@ -1022,14 +1022,13 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 		if it.Kind == prItem {
 			return nil
 		}
-		dir := evidenceDir(it.Key)
-		media, _ := evidence(dir)
-		if len(media) == 0 {
+		media, captures := evidence(evidenceDir(it.Key))
+		if len(media) == 0 && len(captures) == 0 {
 			q.say("No screenshots or video for "+it.Key, cOverlay)
 			return nil
 		}
-		// Images open together in one Preview window; videos in the default player.
-		_ = exec.Command("open", media...).Start()
+		key, title := it.Key, it.Title
+		return func() tea.Msg { return showEvidence(key, title, media) }
 	case "d":
 		if it.Kind == agentItem {
 			return q.openDiff(it)

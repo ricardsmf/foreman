@@ -411,7 +411,8 @@ queue clears them all.
 Keys: `↑↓` pick, `enter` go to the agent's session, resuming a closed one (a PR goes to the agent of
 the ticket its title or branch names; with no agent, to the board's dispatch form on that ticket, which takes the focus;
 with no ticket, the browser), `f` type a reply that is sent to the agent's pane, `y` or `n` answer the prompt an agent waits on (see [Answering a
-prompt](#answering-a-prompt)), `v` open the screenshots and videos, `d` the worktree's diff in git's
+prompt](#answering-a-prompt)), `v` show its videos, screenshots and captures in a browser beside the board (see [Reports and
+evidence](#reports-and-evidence)), `d` the worktree's diff in git's
 pager, `o` the ticket or PR in the browser (a PR's news is then read), `p` a [port](#ports) its session listens on, `x` mark reviewed (the agent moves to idle or closed
 until it writes a new report; a PR moves to **waiting** until what it waits on changes or someone writes on it), `K` twice close the agent's Rex
 session, or on a closed one drop it from the queue (its worktree and report stay), `c` list or fold
@@ -461,6 +462,24 @@ Each dispatch tells the agent to write `report.md` and its evidence to
 and a short video of a flow (agent-browser) for web UI, `rex capture` dumps for terminal UI, the
 commands and their output otherwise. They are for you only; the agent is told never to commit,
 attach or link them. A new dispatch empties the directory, and cleaning up a worktree removes it.
+
+`v` in the queue shows them on one page: the videos (with controls, paused), then the screenshots
+(each links to the full file), then the `.txt` captures inlined, each under its file name, in one
+column that fits the pane. Each press writes the page again, to `.evidence.html` in the same
+directory; the hidden name keeps it out of the evidence counts and away from what the agent
+writes. With nothing to show, `v` says so and writes nothing.
+
+- The page opens in `terminal-browser`: in a new tab of the
+  browser already open in the board's Rex tab, or else in one split right of the board's pane.
+- Outside Rex, or without `terminal-browser` on `PATH`, `v` opens the screenshots and videos in
+  their default apps (Preview, the video player) instead; captures alone have nothing to open.
+- foreman makes the split itself and starts the browser in it only once Rex has sized the pane.
+  Rex creates a pane at a placeholder 80x24 and sizes it seconds later; a browser started at
+  once takes the jump in cell height for a font change and zooms the page by the ratio, a zoom
+  Chromium then keeps for the file. The wait has no limit, since a pane still at the placeholder
+  is one no Rex app shows: the browser starts when one does. A pane whose real size is exactly
+  80x24 never starts it. A page that already kept a wrong zoom keeps it until `ctrl+0` in the
+  browser.
 
 ## Watchers
 

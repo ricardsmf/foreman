@@ -285,6 +285,11 @@ func (rexCLI) press(session, block, key string) error {
 	return err
 }
 
+func (rexCLI) split(block string, cmd []string) error {
+	_, err := sh("", "rex", append([]string{"split", "-b", block, "--split", "right", "--"}, cmd...)...)
+	return err
+}
+
 // eventsScript prints a line of JSON for each thing an agent's row shows that changed, in any
 // session: a status with the record itself and a pane's ports with the list, so they need no
 // reading back, and what closed or was renamed. What only a listing can show (a new session or
