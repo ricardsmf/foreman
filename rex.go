@@ -65,11 +65,15 @@ func (p rexPort) url() string {
 }
 
 // sessionPorts are the ports the programs in the panes listen on, lowest first, one entry a port
-// number: a server on both 127.0.0.1 and ::1 is one thing to open.
+// number: a server on both 127.0.0.1 and ::1 is one thing to open. Claude Code's own aren't among
+// them: every one listens on a loopback port that answers a browser 404.
 func sessionPorts(panes []rexPane) []rexPort {
 	var out []rexPort
 	for _, p := range panes {
 		for _, port := range p.Ports {
+			if port.Proc == "claude" {
+				continue
+			}
 			n := slices.IndexFunc(out, func(o rexPort) bool { return o.Port == port.Port })
 			switch {
 			case n < 0:

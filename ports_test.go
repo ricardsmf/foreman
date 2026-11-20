@@ -19,9 +19,11 @@ func TestSessionPorts(t *testing.T) {
 			{"port":3000,"address":"192.168.1.20","process":"node"},{"port":8080,"address":"0.0.0.0","process":""},
 			{"port":9000,"address":"fd00::1","process":"python3"}]},
 		{"id":"b3","label":"shell","placed":true,"records":{},"ports":{}},
-		{"id":"b4","label":"shell","placed":true,"records":{}}]}]`
+		{"id":"b4","label":"shell","placed":true,"records":{}},
+		{"id":"b5","label":"claude","placed":true,"records":{},"ports":[
+			{"port":63886,"address":"127.0.0.1","process":"claude"}]}]}]`
 	sessions, err := decodeSessions(out)
-	if err != nil || len(sessions) != 1 || len(sessions[0].Panes) != 4 {
+	if err != nil || len(sessions) != 1 || len(sessions[0].Panes) != 5 {
 		t.Fatalf("decodeSessions = %+v, %v", sessions, err)
 	}
 	if p := sessions[0].Panes; len(p[0].Ports) != 2 || len(p[2].Ports) != 0 || len(p[3].Ports) != 0 {
@@ -31,6 +33,7 @@ func TestSessionPorts(t *testing.T) {
 	for _, p := range resolveAgents(sessions, nil)[0].Ports {
 		urls = append(urls, p.url())
 	}
+	// Claude Code's own port is no server to open.
 	want := []string{"http://192.168.1.20:3000", "http://localhost:5173", "http://localhost:8080", "http://[fd00::1]:9000"}
 	if !slices.Equal(urls, want) {
 		t.Errorf("urls = %v; want %v", urls, want)

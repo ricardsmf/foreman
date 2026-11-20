@@ -432,6 +432,7 @@ in a shell split beside it. So what the agent built can be opened as it runs in 
   status line says which comes after.
 - They are every pane's in the session, one entry a port number: a server on both `127.0.0.1`
   and `::1` is one. One bound to a single other address is opened there instead of `localhost`.
+- The port Claude Code itself listens on isn't one of them: it answers a browser `not found`.
 - Every port is opened as `http`, whatever speaks on it; the program's name is there to tell a
   dev server from a debugger's port.
 - Rex lists the ports of programs still attached to the terminal, so a server that detached as a
