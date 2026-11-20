@@ -142,7 +142,8 @@ detail pane's place. Type to filter, `↑↓` pick, `enter` set, `esc` back.
   `~/.claude/plugins/installed_plugins.json`, so the dispatch fails if pstack isn't installed
   there. It is off each time the form opens.
 - The agent's prompt is written to `prompt.md` in its evidence directory and read by a shell in
-  the new session, since Rex caps a request at 64 KB.
+  the new session, so its size doesn't depend on the request Rex takes: 64 KB before server
+  0.1.0-preview.22, 1 MiB since.
 
 ## Tasks
 

@@ -1331,8 +1331,8 @@ func TestLoadConfig(t *testing.T) {
 	}
 }
 
-// The prompt reaches the agent as one argument, whatever it holds, from a file larger than Rex's
-// 64 KB request limit.
+// The prompt reaches the agent as one argument, whatever it holds, from a file larger than the
+// 64 KB an older Rex server takes in a request.
 func TestAgentCommandPassesThePrompt(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "prompt.md")
 	prompt := "# FLD-1: \"x\" $HOME `y`\n\n" + strings.Repeat("a", 200_000)

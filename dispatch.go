@@ -930,9 +930,10 @@ func fixPrompt(d PrDispatch, v PrView, discussion, ticketKey, ticket, cwd string
 // a cleanup remove it with the rest.
 func promptFile(key string) string { return filepath.Join(evidenceDir(key), "prompt.md") }
 
-// agentCommand runs the agent with the prompt read from file as its last argument. Rex caps a
-// request at 64 KB, so a ticket with a long description or a PR with many files can't travel
-// inside `rex new`; the shell reads it on the far side, where only ARG_MAX (1 MB) applies.
+// agentCommand runs the agent with the prompt read from file as its last argument. Inside
+// `rex new` it could be no larger than a request Rex takes: 64 KB before server 0.1.0-preview.22,
+// which a ticket with a long description or a PR with many files passes, and 1 MiB since. The
+// shell reads it on the far side, where only ARG_MAX (1 MB) applies.
 func agentCommand(agent, file string) []string {
 	// Absolute paths: the fish `claude` function would otherwise add a second --mcp-config.
 	cmd := agentArgs(agent)
