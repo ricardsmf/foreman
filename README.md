@@ -525,8 +525,12 @@ mine.
   `state.json`). One that `foreman watch` would wake reads `nothing wakes it: foreman watch isn't
   running`, in red, while none runs.
 - Its checkout is a worktree nobody works in, detached at `origin/develop`. The skills run from
-  it, so move it forward when they change: `git -C <dir> fetch origin develop && git -C <dir>
-  checkout --detach origin/develop`.
+  it, so foreman moves it forward before every pass, a start's included: it fetches the branch
+  (origin's default when it has no `develop`) and checks it out detached. A failed fetch moves
+  it to the tip last fetched. Untracked files stay, and so do changes git can carry over; a change
+  the move would overwrite fails it, and the pass waits, with the error in `foreman watch`'s log,
+  until the checkout can move. One you put on a branch is yours and stays where it is. A skill
+  that moved on may change the searches it runs: `prs` in the config doesn't follow them.
 
 ### Waking a watcher
 
@@ -615,10 +619,6 @@ your key.
 - A watcher that stops at a permission prompt or a question, or fails, raises a macOS
   notification, once per thing it waits on: its pass stalls until you answer, and with the board
   closed only Rex's session list would show it. Nothing it wasn't allowed runs meanwhile.
-- A watcher whose checkout is behind its repo in `.claude` raises one too, once per upstream
-  commit: `fld-pr-watch runs old skills: 3 commits on origin/develop changed .claude`. It looks
-  once an hour, fetching the branch first. It only says so: a skill that moved on may change the
-  searches to poll, so moving the checkout forward stays yours to do.
 - It waits for Rex, looking every 15 seconds, and prints each start, wake, notification and
   failure with its time.
 - One runs at a time: it holds `state.json.watch.lock` for its life, and a second `foreman

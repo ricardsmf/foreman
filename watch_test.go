@@ -175,14 +175,15 @@ func TestWakeIfChanged(t *testing.T) {
 // A wake clears the watcher's conversation, then types its prompt.
 func TestWakeWatcherClearsFirst(t *testing.T) {
 	f := useFakeRex(t)
-	if err := wakeWatcher(rexSession{ID: "s1", Block: "b1"}, "/fld-watch"); err != nil {
+	w := Watcher{Name: "w", Dir: t.TempDir(), Prompt: "/fld-watch"}
+	if err := wakeWatcher(w, rexSession{ID: "s1", Block: "b1"}); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"send s1 b1 /clear", "press s1 b1 enter", "send s1 b1 /fld-watch", "press s1 b1 enter"}
+	want := []string{"send s1 b1 /clear", "press s1 b1 enter", "send s1 b1 " + passPrompt(w), "press s1 b1 enter"}
 	if !slices.Equal(f.calls, want) {
 		t.Errorf("calls %q", f.calls)
 	}
-	if err := wakeWatcher(rexSession{ID: "s1"}, "/fld-watch"); err == nil {
+	if err := wakeWatcher(w, rexSession{ID: "s1"}); err == nil {
 		t.Error("a watcher with no pane was woken")
 	}
 }

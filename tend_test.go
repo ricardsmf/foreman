@@ -4,9 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
-	"time"
 )
 
 // A watchLoop for a test: its notes and its notifications are kept, and Rex is asked at once.
@@ -19,7 +19,7 @@ func testLoop(t *testing.T) (l *watchLoop, notes, told *[]string) {
 	t.Cleanup(func() { notify, rexWait, watchers = oldNotify, oldWait, nil })
 	return &watchLoop{
 		note:    func(text string, _ Color) { *notes = append(*notes, text) },
-		lastErr: map[string]string{}, alerted: map[string]string{}, behind: map[string]string{}, checked: map[string]time.Time{},
+		lastErr: map[string]string{}, alerted: map[string]string{},
 	}, notes, told
 }
 
@@ -39,37 +39,36 @@ func TestTickStartsWatchers(t *testing.T) {
 	f := useFakeRex(t)
 	l, notes, _ := testLoop(t)
 	watchers = []Watcher{{Name: "looper", Dir: t.TempDir(), Prompt: "/loop 10m /sweep"}}
-	now := time.Now()
 	running := []rexSession{{ID: "session:looper", Label: "looper", State: "idle"}}
 	starts := func() int { return count(f.calls, "new looper") }
 
 	f.down = 2
-	if wait := l.tick(now); wait != rexWait || starts() != 0 {
+	if wait := l.tick(); wait != rexWait || starts() != 0 {
 		t.Fatalf("Rex down: wait %v, %d starts", wait, starts())
 	}
-	l.tick(now)
+	l.tick()
 	if got := count(*notes, "Waiting for Rex"); got != 1 {
 		t.Errorf("said it waits for Rex %d times: %q", got, *notes)
 	}
-	if wait := l.tick(now); wait != watchPoll || starts() != 1 || count(*notes, "Started looper") != 1 {
+	if wait := l.tick(); wait != watchPoll || starts() != 1 || count(*notes, "Started looper") != 1 {
 		t.Fatalf("Rex up: wait %v, %d starts, %q", wait, starts(), *notes)
 	}
 	f.open = running
-	if l.tick(now); starts() != 1 {
+	if l.tick(); starts() != 1 {
 		t.Fatalf("started a running watcher again: %q", f.calls)
 	}
 	f.open = nil
-	if l.tick(now); starts() != 2 {
+	if l.tick(); starts() != 2 {
 		t.Fatalf("a watcher whose session is gone: %d starts", starts())
 	}
 	if _, err := updateState(func(s *State) { s.WatcherStopped["looper"] = true }); err != nil {
 		t.Fatal(err)
 	}
-	if l.tick(now); starts() != 2 {
+	if l.tick(); starts() != 2 {
 		t.Fatalf("started a watcher I stopped: %q", f.calls)
 	}
 	f.open = running
-	if l.tick(now); loadState().WatcherStopped["looper"] {
+	if l.tick(); loadState().WatcherStopped["looper"] {
 		t.Error("a watcher running again is still marked stopped")
 	}
 }
@@ -143,10 +142,9 @@ func TestTickAlerts(t *testing.T) {
 	f := useFakeRex(t)
 	l, _, told := testLoop(t)
 	watchers = []Watcher{{Name: "looper", Dir: t.TempDir(), Prompt: "/loop 10m /sweep"}}
-	now := time.Now()
 	in := func(state, kind, msg string) {
 		f.open = []rexSession{{ID: "s1", Label: "looper", Panes: []rexPane{pane("block:1", true, rexRecord{State: state, Kind: kind, Msg: msg})}}}
-		l.tick(now)
+		l.tick()
 	}
 	in("working", "", "Reviewing #12")
 	if len(*told) != 0 {
@@ -168,11 +166,10 @@ func TestTickAlerts(t *testing.T) {
 	}
 }
 
-// A watcher whose checkout is behind its repo in .claude is told once per upstream commit; commits
-// elsewhere in the repo say nothing.
-func TestSkillsBehind(t *testing.T) {
-	useFakeRex(t)
-	l, _, told := testLoop(t)
+// A wake moves the watcher's checkout to the tip of origin/develop before its pass, fetching
+// first; a checkout on a branch stays where it is, and one that can't move holds the pass back.
+func TestWakeMovesCheckoutForward(t *testing.T) {
+	f := useFakeRex(t)
 	root := t.TempDir()
 	origin, dir := filepath.Join(root, "origin"), filepath.Join(root, "watch")
 	git(t, root, "init", "-q", "-b", "develop", origin)
@@ -180,44 +177,58 @@ func TestSkillsBehind(t *testing.T) {
 	git(t, root, "clone", "-q", origin, dir)
 	git(t, dir, "checkout", "-q", "--detach", "origin/develop")
 	w := Watcher{Name: "w", Dir: dir, Prompt: "/sweep"}
-	commit := func(path string) {
+	s := rexSession{ID: "s1", Block: "b1"}
+	n := 0
+	commit := func(path string) string {
 		t.Helper()
 		if err := os.MkdirAll(filepath.Dir(filepath.Join(origin, path)), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		writeFile(t, filepath.Join(origin, path), "x")
+		n++
+		writeFile(t, filepath.Join(origin, path), strconv.Itoa(n))
 		git(t, origin, "add", "-A")
 		git(t, origin, "commit", "-q", "-m", "change "+path)
+		return git(t, origin, "rev-parse", "HEAD")
 	}
-	now := time.Now()
-	check := func(what string, want int) {
-		t.Helper()
-		now = now.Add(2 * skillsCheck)
-		l.skills(w, now)
-		if len(*told) != want {
-			t.Fatalf("%s: told %d times: %q", what, len(*told), *told)
-		}
+	head := func() string { return git(t, dir, "rev-parse", "HEAD") }
+
+	tip := commit(".claude/skills/sweep/SKILL.md")
+	if err := wakeWatcher(w, s); err != nil {
+		t.Fatal(err)
 	}
-	check("up to date", 0)
+	if head() != tip {
+		t.Fatalf("the wake left the checkout at %s, not origin's %s", head(), tip)
+	}
+	if !slices.Contains(f.calls, "send s1 b1 "+passPrompt(w)) {
+		t.Errorf("no pass after the move: %q", f.calls)
+	}
+
+	// A file the pass left behind, untracked, doesn't stop the move.
+	writeFile(t, filepath.Join(dir, "notes.txt"), "x")
+	tip = commit("src/app.ts")
+	if err := wakeWatcher(w, s); err != nil || head() != tip {
+		t.Fatalf("with an untracked file: %v, at %s", err, head())
+	}
+
+	// A change to a file the next commit changes too stops it, and the pass with it.
+	writeFile(t, filepath.Join(dir, "src/app.ts"), "mine")
 	commit("src/app.ts")
-	check("a commit outside .claude", 0)
-	commit(".claude/skills/sweep/SKILL.md")
-	check("a skill changed", 1)
-	if want := "w runs old skills: 1 commits on origin/develop changed .claude. Move its checkout forward."; (*told)[0] != want {
-		t.Errorf("told %q", (*told)[0])
+	f.calls = nil
+	if err := wakeWatcher(w, s); err == nil || !strings.Contains(err.Error(), "moving its checkout forward") || len(f.calls) != 0 {
+		t.Fatalf("a checkout that can't move: %v, calls %q", err, f.calls)
 	}
-	check("the same commit again", 1)
-	// Within the hour it doesn't look at all.
+	git(t, dir, "checkout", "-q", "--", "src/app.ts")
+
+	// A checkout on a branch is someone's work.
+	git(t, dir, "checkout", "-q", "-b", "mine")
+	before := head()
 	commit(".claude/agents/reviewer.md")
-	if l.skills(w, now.Add(time.Minute)); len(*told) != 1 {
-		t.Errorf("looked again within the hour: %q", *told)
+	if err := wakeWatcher(w, s); err != nil || head() != before {
+		t.Fatalf("on a branch: %v, moved to %s", err, head())
 	}
-	check("another skill commit", 2)
-	git(t, dir, "checkout", "-q", "--detach", "origin/develop")
-	check("moved forward", 2)
-	// A directory that is no checkout says nothing.
-	l.skills(Watcher{Name: "eod", Dir: t.TempDir()}, now)
-	if len(*told) != 2 {
-		t.Errorf("a plain directory: %q", *told)
+
+	// A directory that is no checkout has nothing to move.
+	if err := moveForward(t.TempDir()); err != nil {
+		t.Errorf("a plain directory: %v", err)
 	}
 }

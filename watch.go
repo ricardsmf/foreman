@@ -93,6 +93,9 @@ func startWatcher(w Watcher, prompt string) (string, error) {
 	if !exists(w.Dir) {
 		return "", fmt.Errorf("%s: its checkout %s doesn't exist", w.Name, tilde(w.Dir))
 	}
+	if err := moveForward(w.Dir); err != nil {
+		return "", fmt.Errorf("%s: moving its checkout forward: %w", w.Name, err)
+	}
 	id, _, err := newSession(w.Name, w.Dir, agentClaude, watcherCommand(prompt))
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", w.Name, err)
@@ -290,7 +293,7 @@ func pollSchedule(w Watcher, sessions []rexSession, recorded string, now time.Ti
 	if err != nil {
 		return time.Time{}, err
 	}
-	return wakeIfDue(w.Name, sc, now, func() error { return wakeWatcher(s, passPrompt(w)) })
+	return wakeIfDue(w.Name, sc, now, func() error { return wakeWatcher(w, s) })
 }
 
 // pollWatcher wakes the watcher when one of its PRs changed since its last wake, and returns those
@@ -306,18 +309,40 @@ func pollWatcher(w Watcher, sessions []rexSession, recorded string) ([]string, e
 	if err != nil {
 		return nil, err
 	}
-	return wakeIfChanged(w.Name, now, w.Batch, func() error { return wakeWatcher(s, passPrompt(w)) })
+	return wakeIfChanged(w.Name, now, w.Batch, func() error { return wakeWatcher(w, s) })
 }
 
-// wakeWatcher starts a pass in the watcher's pane, on an empty conversation: a pass reads
-// everything it needs from GitHub, and the PRs of the passes before would be paid for again on
-// every request of this one, and leave their authors' text in front of the model.
-func wakeWatcher(s rexSession, prompt string) error {
+// wakeWatcher starts a pass in the watcher's pane, on its checkout moved forward and an empty
+// conversation: a pass reads everything it needs from GitHub, and the PRs of the passes before
+// would be paid for again on every request of this one, and leave their authors' text in front of
+// the model. A checkout that can't move holds the pass back: it would run the old skills.
+func wakeWatcher(w Watcher, s rexSession) error {
+	if err := moveForward(w.Dir); err != nil {
+		return fmt.Errorf("moving its checkout forward: %w", err)
+	}
 	if err := sendToAgent(s.ID, s.Block, "/clear"); err != nil {
 		return err
 	}
 	time.Sleep(sendSettle)
-	return sendToAgent(s.ID, s.Block, prompt)
+	return sendToAgent(s.ID, s.Block, passPrompt(w))
+}
+
+// moveForward moves the watcher's checkout to the tip of its base branch, origin/develop for
+// reports-app, fetched first: a pass runs the skills in its checkout, so it runs them as they are
+// upstream. A failed fetch moves it to the tip last fetched. A checkout on a branch is someone's
+// work and stays; one that isn't a checkout of a repo with an origin has nothing to move to.
+func moveForward(dir string) error {
+	if _, err := sh(dir, "git", "symbolic-ref", "--quiet", "HEAD"); err == nil {
+		return nil
+	}
+	base := diffBase(dir, true)
+	remote, branch, ok := strings.Cut(base, "/")
+	if !ok {
+		return nil
+	}
+	_, _ = shFor(fetchTimeout, "", "git", "-C", dir, "fetch", "--quiet", remote, branch)
+	_, err := sh("", "git", "-C", dir, "checkout", "--quiet", "--detach", base)
+	return err
 }
 
 // wakeable is whether the watcher sits at its prompt, so typing into it starts a pass. Working or

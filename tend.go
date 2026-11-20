@@ -2,8 +2,7 @@ package main
 
 // foreman watch: what looks after the watchers, the board open or not. It starts one whose session
 // is gone, wakes each when a PR of its changed or its time came, and tells me what the queue would
-// show if I were looking: a watcher that waits on me or failed, and one whose skills fell behind
-// its repo.
+// show if I were looking: a watcher that waits on me or failed.
 
 import (
 	"cmp"
@@ -20,8 +19,6 @@ import (
 var (
 	// rexWait is how often foreman watch looks for Rex while it isn't answering.
 	rexWait = 15 * time.Second
-	// skillsCheck is how often it looks whether a watcher's checkout fell behind.
-	skillsCheck = time.Hour
 )
 
 // notify shows a notification on this Mac. The text travels as an argument, never inside the
@@ -37,11 +34,9 @@ var notify = func(title, text string) error {
 // A watchLoop is what foreman watch remembers between polls, so it says each thing once.
 type watchLoop struct {
 	note    func(text string, c Color)
-	lastErr map[string]string    // each watcher's last failure, and the last one starting them
-	rexDown string               // why Rex didn't answer, while it doesn't
-	alerted map[string]string    // what each watcher waited on when it last told me
-	behind  map[string]string    // the upstream commit each watcher was last found behind
-	checked map[string]time.Time // when each watcher's checkout was last compared
+	lastErr map[string]string // each watcher's last failure, and the last one starting them
+	rexDown string            // why Rex didn't answer, while it doesn't
+	alerted map[string]string // what each watcher waited on when it last told me
 }
 
 // holdWatchLock takes the lock a foreman watch holds for its life, and fails when another holds
@@ -91,16 +86,16 @@ func runWatch(out io.Writer) error {
 	defer release()
 	l := &watchLoop{
 		note:    func(text string, _ Color) { fmt.Fprintln(out, time.Now().Format("2006-01-02 15:04:05"), text) },
-		lastErr: map[string]string{}, alerted: map[string]string{}, behind: map[string]string{}, checked: map[string]time.Time{},
+		lastErr: map[string]string{}, alerted: map[string]string{},
 	}
 	for {
-		time.Sleep(l.tick(time.Now()))
+		time.Sleep(l.tick())
 	}
 }
 
 // tick is one poll, and returns how long to wait for the next: rexWait while Rex isn't up, as at
 // login, else watchPoll.
-func (l *watchLoop) tick(now time.Time) time.Duration {
+func (l *watchLoop) tick() time.Duration {
 	if _, err := agentSessions(); err != nil {
 		if e := firstLine(err.Error()); e != l.rexDown {
 			l.note("Waiting for Rex: "+e, cRed)
@@ -130,7 +125,6 @@ func (l *watchLoop) tick(now time.Time) time.Duration {
 		// A watcher that isn't running has the zero session, which waits on nothing.
 		s, _ := findWatcher(sessions, w, recorded[w.Name])
 		l.alert(w, s)
-		l.skills(w, now)
 	}
 	wakeWatchers(sessions, recorded, l.note, l.lastErr)
 	return watchPoll
@@ -161,38 +155,6 @@ func (l *watchLoop) alert(w Watcher, s rexSession) {
 	if what != "" {
 		l.tell(what, cRed)
 	}
-}
-
-// skills tells me, once per upstream commit, that the watcher's checkout is behind its repo in
-// `.claude`: it runs its skills from there, and a skill that moved on changes what a pass does,
-// and may change the searches to poll. It only says so. Moving the checkout
-// forward stays mine to do.
-func (l *watchLoop) skills(w Watcher, now time.Time) {
-	if now.Sub(l.checked[w.Name]) < skillsCheck {
-		return
-	}
-	l.checked[w.Name] = now
-	base := diffBase(w.Dir, true)
-	remote, branch, ok := strings.Cut(base, "/")
-	if !ok {
-		return // not a checkout with an origin
-	}
-	// A failed fetch leaves the refs as they were last fetched, by this or by my own fetches.
-	_, _ = shFor(fetchTimeout, "", "git", "-C", w.Dir, "fetch", "--quiet", remote, branch)
-	tip, err := sh("", "git", "-C", w.Dir, "rev-parse", base)
-	if err != nil {
-		return
-	}
-	commits, err := sh("", "git", "-C", w.Dir, "log", "--format=%h", "HEAD.."+base, "--", ".claude")
-	if err != nil {
-		return
-	}
-	n := len(strings.Fields(commits))
-	if tip = strings.TrimSpace(tip); n == 0 || tip == l.behind[w.Name] {
-		return
-	}
-	l.behind[w.Name] = tip
-	l.tell(fmt.Sprintf("%s runs old skills: %d commits on %s changed .claude. Move its checkout forward.", w.Name, n, base), cYellow)
 }
 
 // tell notes the line and shows it as a notification.
