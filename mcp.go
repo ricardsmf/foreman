@@ -349,7 +349,15 @@ func waitForCode(ctx context.Context, state string) (<-chan codeResult, error) {
 	finish := func(r codeResult) {
 		once.Do(func() {
 			out <- r
-			go func() { _ = srv.Close() }()
+			// Shutdown, which lets the handler that called this write its page first. Close cuts
+			// that connection too, and the browser shows an error for a sign-in that worked.
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if srv.Shutdown(ctx) != nil {
+					_ = srv.Close()
+				}
+			}()
 		})
 	}
 	srv.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
