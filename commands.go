@@ -32,8 +32,14 @@ const commandsUsage = `usage: foreman agents [--json] [--prs]   every dispatched
                                           to an agent waiting in foreman ask, TEXT is the answer.
                                           --seen TOKEN: refuse unless the pane still shows what screen or
                                           agents --json printed TOKEN for; answer what you read with it
-       foreman ask [--timeout D] TEXT|-   from an agent: put a question to me in the queue and print the answer
-       foreman answer KEY TEXT|-          answer the question KEY waits on
+       foreman ask [--timeout D] [--option CHOICE]… [--recommend CHOICE] [--proceed] TEXT|-
+                                          from an agent: put a question to me in the queue and print the answer.
+                                          --option, once per choice (at most 9), and --recommend, the one
+                                          you would take, let me answer with a key. --proceed, with
+                                          --recommend: return at once and go on with it; I confirm it
+                                          or send another answer as a message
+       foreman answer KEY TEXT|-          answer the question KEY asked: read by its foreman ask while that
+                                          waits, else typed into its pane as a message
        foreman wait [--timeout D] KEY     block until the agent stops working or asks (default 30m); print
                                           KEY and its state, then why it stopped, by exit code:
                                           0 done (idle, done, closed): the report's first line
@@ -72,10 +78,14 @@ type agentInfo struct {
 	Videos      int         `json:"videos,omitempty"`
 	// Seen is the token reply --seen takes, for what the pane shows now.
 	Seen string `json:"seen,omitempty"`
-	// Question is the one the agent waits on in foreman ask.
+	// Question is the one the agent asked in foreman ask and I haven't answered. Left says nothing
+	// waits on it any more: the answer goes to the agent as a message.
 	Question *Question `json:"question,omitempty"`
-	URL      string    `json:"url,omitempty"`    // a PR's
-	Status   string    `json:"status,omitempty"` // a PR's: approved, changes, conflict…
+	Left     bool      `json:"left,omitempty"`
+	// Decisions are the questions the agent went on without, taking what it recommended.
+	Decisions []Question `json:"decisions,omitempty"`
+	URL       string     `json:"url,omitempty"`    // a PR's
+	Status    string     `json:"status,omitempty"` // a PR's: approved, changes, conflict…
 }
 
 // An agentPort is a TCP port the agent's session listens on, the program that holds it and where
@@ -108,7 +118,7 @@ func agentInfoOf(it queueItem, s State) agentInfo {
 	a := agentInfo{
 		Key: it.Key, Kind: kindName(it), Group: groupNames[it.Group], State: cmp.Or(it.Agent, "closed"),
 		Title: it.Title, Session: it.Session, Pane: it.Block, WaitsFor: it.Waits, Dir: it.Dir, Report: it.Report,
-		Screenshots: it.Shots, Videos: it.Videos, Question: it.Question,
+		Screenshots: it.Shots, Videos: it.Videos, Question: it.Question, Left: it.Left, Decisions: it.Decisions,
 	}
 	if it.Kind == prItem {
 		a.State, a.Session, a.Pane, a.URL, a.Status, a.WaitsFor = "", "", "", it.Pr.URL, it.Pr.Status, it.Wait
@@ -202,6 +212,8 @@ func writeAgents(out io.Writer, infos []agentInfo) error {
 		switch {
 		case a.Kind == "pr":
 			state = a.Status
+		case a.Question != nil && a.Left:
+			state = "left a question"
 		case a.Question != nil:
 			state = "asks you"
 		}
@@ -373,16 +385,16 @@ func runReply(argv []string, stdin io.Reader, out io.Writer) error {
 	if text = strings.TrimSpace(text); text == "" {
 		return errors.New("nothing to send")
 	}
-	s, it, err := lookup(fs.Arg(0))
+	_, it, err := lookup(fs.Arg(0))
 	if err != nil {
 		return err
 	}
 	by := role()
 	// An agent waiting in foreman ask gets the reply as its answer, not as typing.
-	if q, waiting := s.Questions[it.Key]; waiting {
+	if asking(it) {
 		// What the caller read on the pane isn't what this answers.
 		if *seen != "" {
-			return fmt.Errorf("not sent: %s now waits in foreman ask on %q; answer that with foreman answer %s", it.Key, q.Text, it.Key)
+			return fmt.Errorf("not sent: %s now waits in foreman ask on %q; answer that with foreman answer %s", it.Key, it.Question.Text, it.Key)
 		}
 		if err := answerQuestion(it.Key, text, by); err != nil {
 			return err
@@ -463,9 +475,9 @@ type exitError struct {
 
 func (e exitError) Error() string { return e.msg }
 
-// asking is whether the agent waits in foreman ask. A question left behind by a closed session
-// doesn't count.
-func asking(it queueItem) bool { return it.Question != nil && it.Agent != "" }
+// asking is whether the agent waits in foreman ask. A question nothing waits on any more, its
+// session closed or its foreman ask gone, doesn't count.
+func asking(it queueItem) bool { return it.Question != nil && !it.Left }
 
 // writeStopped prints the agent's key and state, the line wait has always printed, then why it
 // stopped, and returns wait's exit code for that. An agent that asks shows as working to Rex, so

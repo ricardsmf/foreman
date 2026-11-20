@@ -223,8 +223,9 @@ foreman reply [--now] [--seen TOKEN] KEY TEXT|-
                                     type TEXT into the agent's pane and press enter, as the queue's f
 foreman wait [--timeout D] KEY      block until the agent stops working or asks (default 30m), say why
 foreman cleanup [--dry-run] [KEY…]  list finished dispatches and remove what ^x ticks, or only KEY…
-foreman ask [--timeout D] TEXT|-    from an agent: put a question to me in the queue, print the answer
-foreman answer KEY TEXT|-           answer the question KEY waits on
+foreman ask [--timeout D] [--option CHOICE]… [--recommend CHOICE] [--proceed] TEXT|-
+                                    from an agent: put a question to me in the queue, print the answer
+foreman answer KEY TEXT|-           answer the question KEY asked
 ```
 
 - `agents --json` gives each one's `key`, `kind` (ticket, review, fix, task, watcher, pr), `group`,
@@ -233,8 +234,10 @@ foreman answer KEY TEXT|-           answer the question KEY waits on
   says it waits for: `permission`, `question` or `auth`, when it says; for a PR, what its row in
   the queue says it waits on), `ports` (what the
   programs in its session [listen on](#ports), each with its `port`, `process` and `url`), `dir`,
-  `report` and `reportAt`, evidence counts, and `seen`, the seen token of an agent whose session
-  is open. The plain listing ends a row with those URLs.
+  `report` and `reportAt`, evidence counts, `seen`, the seen token of an agent whose session
+  is open, `question`, the one it asked and I haven't answered (its `text`, `options` and
+  `recommended`; `left` says nothing waits on it any more), and `decisions`, the questions it
+  [went on without](#going-on-without-an-answer). The plain listing ends a row with those URLs.
 - `reply` refuses a closed session, and a working agent unless `--now`: pi and Claude Code each
   handle text typed mid-turn their own way. To an agent waiting in `foreman ask`, it is the answer.
 - A seen token, printed by `screen` under the pane and by `agents --json` as `seen`, stands for
@@ -289,18 +292,61 @@ typed into a working agent. Claude agents run it without a permission prompt.
 
 - The question puts the agent under **needs you** (`asks you`) at once, with the question in the
   detail pane; `f` answers it, as does `foreman answer` or `foreman reply`.
+- It raises a macOS notification as it is asked, `FLD-1700 asks: …`: the agent shows as working
+  to Rex, so nothing else says outside the queue that it waits, and it waits 8 minutes.
 - What you type into the agent's own session while it waits answers it too, for a Claude Code
   agent. Claude Code queues what is typed mid-turn and notes it in the conversation as it is
   typed, so `ask` returns it at the next look, the question leaves the queue, and the queued
   message reaches the agent after the command, as the same answer. pi keeps no such note: a pi
   agent is answered from the queue.
 - Unanswered after 8 minutes, `ask` tells the agent to put the question in its report and stop to
-  ask me; a later reply is typed into its pane as usual. Dispatching the agent again withdraws it,
-  and a question whose agent's session closed is no longer shown.
+  ask me; a later reply is typed into its pane as usual. Dispatching the agent again withdraws it.
 - `foreman wait` returns when the agent asks, so an orchestrator waiting on it sees the question
   too; it passes on the answer you give it with `foreman answer`.
 - Every question and answer, and every message the orchestrator sends the agent, goes to
   `questions.jsonl` beside the agent's report, shown under **Questions** in the queue's detail pane.
+
+### Choices
+
+`foreman ask --option "<choice>" --option "<choice>" --recommend "<choice>" "<question>"` names
+the choices the agent sees, at most nine, and the one it would take. The options go before or
+after the question. The agent's prompt tells it to name them.
+
+- The detail numbers the choices and marks the recommended one. In the queue a digit answers
+  with that choice and `a` with the recommended one; `f` still takes any answer.
+- `--recommend` without options is the answer the agent would give, and `a` answers with it.
+- A recommendation that is none of the options, or a tenth option, fails the command with the
+  reason, for the agent to ask again.
+
+### Going on without an answer
+
+With `--proceed`, which needs `--recommend`, the command records the question and returns at
+once, and the agent goes on with what it recommended. The agent's prompt keeps it to a guess that
+is cheap to undo.
+
+- The agent's row moves to **review**, `went on, 2 to confirm`, whatever the agent is doing, and
+  the detail starts with each such question and its choices, oldest first. The notification reads
+  `FLD-1700 went on with “Postgres”: …`.
+- `a` confirms the oldest and `x` all of them: they leave the queue, and nothing is sent.
+- A digit or `f` gives the oldest another answer. It is typed into the agent's pane as a message
+  that names the question and what the agent went on with, working or not, since nothing waits on
+  it. The answer the agent went on with confirms it instead.
+- `foreman answer KEY TEXT` does the same for the oldest.
+
+### A question that outlives its asker
+
+A question stays mine to answer when nothing waits on it any more: its session closed, or its
+`foreman ask` is gone, as when I interrupt the agent's turn. Its row stays under **needs you**,
+`left a question`.
+
+- Each question records the `foreman ask` process that waits on it, and the queue looks for that
+  process. One from before that was recorded counts as waiting while its session is open.
+- With the session open, an answer (`f`, a digit, `a`, or `foreman answer`) is typed into the
+  agent's pane as a message that names the question.
+- With the session closed, it resumes the agent, as `enter` on a closed row does, in a
+  background session whose first turn is that message. Only I do that: `foreman answer` from the
+  orchestrator is refused.
+- `x` marks it reviewed without answering.
 
 ## Reviews
 
@@ -351,12 +397,13 @@ it waits on, grouped most urgent first. Within a group a repo's items sit togeth
 repo with the newest report comes first. The repo is the main checkout's directory name, so a
 worktree counts as its repo:
 
-1. **needs you**: agents that stopped to ask something or failed (`●` red), with their report or,
+1. **needs you**: agents that stopped to ask something, [left a question](#a-question-that-outlives-its-asker) or failed (`●` red), with their report or,
    without one, the end of their screen (less the input box Claude Code ends it with, so it ends on
    what the agent last wrote); then your PRs with failed CI (the row names
    the check, `✗ Tests (2/4) +1`), changes requested, a review thread to answer or a conflict (`✗`).
 2. **review**: agents that finished with a report you haven't marked reviewed (`✓`), newest first,
-   with their evidence (`▣ 3` screenshots or captures, `▶ video`). An agent whose worktree is on
+   with their evidence (`▣ 3` screenshots or captures, `▶ video`), and agents that
+   [went on with their own answer](#going-on-without-an-answer) to a question, until you confirm it. An agent whose worktree is on
    the head commit of an open PR of yours isn't among them: its work is in the PR to review, so
    its row reads `in #1395` and sits under idle or closed, until a commit there isn't pushed yet; then your approved PRs whose CI
    passed or has no checks (`✓`), ready to merge. One stacked on another open PR of yours isn't
@@ -413,11 +460,11 @@ queue clears them all.
 
 Keys: `↑↓` pick, `enter` go to the agent's session, resuming a closed one (a PR goes to the agent of
 the ticket its title or branch names; with no agent, to the board's dispatch form on that ticket, which takes the focus;
-with no ticket, the browser), `f` type a reply that is sent to the agent's pane, `y` or `n` answer the prompt an agent waits on (see [Answering a
+with no ticket, the browser), `f` type a reply that is sent to the agent's pane, or the answer to its question, `1`–`9` or `a` answer a question with one of its [choices](#choices) or the recommended one, `y` or `n` answer the prompt an agent waits on (see [Answering a
 prompt](#answering-a-prompt)), `v` show its videos, screenshots and captures in a browser beside the board (see [Reports and
 evidence](#reports-and-evidence)), `d` the worktree's diff in git's
 pager, `o` the ticket or PR in a browser [beside the board](#pages-beside-the-board), `O` in the system browser (either way a PR's news is then read), `p` a [port](#ports) its session listens on, `x` mark reviewed (the agent moves to idle or closed
-until it writes a new report; a PR moves to **waiting** until what it waits on changes or someone writes on it), `K` twice close the agent's Rex
+until it writes a new report, and what it went on with is confirmed; a PR moves to **waiting** until what it waits on changes or someone writes on it), `K` twice close the agent's Rex
 session, or on a closed one drop it from the queue (its worktree and report stay), `c` list or fold
 the closed agents, `^u`/`^d` scroll, `^r` reload, `?` every key, `q` close the queue, leaving the board alone at full width (`^z` there brings the
 queue back beside it; `^c` quits foreman).
@@ -619,6 +666,11 @@ your key.
 
 - Every poll it starts each watcher whose session is gone (Rex restarted, Claude Code exited),
   unless you stopped it.
+- A dispatched agent that stops at a permission prompt or a question in its pane, or fails,
+  raises one too, `FLD-1700 waits on you: permission …`, once per thing it waits on. It is seen at
+  the next poll, so up to two minutes late, and not at all while `foreman watch` isn't running. A
+  question in `foreman ask` raises [its own](#questions-from-agents) as it is asked, with or
+  without `foreman watch`.
 - A watcher that stops at a permission prompt or a question, or fails, raises a macOS
   notification, once per thing it waits on: its pass stalls until you answer, and with the board
   closed only Rex's session list would show it. Nothing it wasn't allowed runs meanwhile.
@@ -677,7 +729,7 @@ see [Waking a watcher](#waking-a-watcher). `at` is optional too, with `prs` or w
 
 ## State
 
-- State (repo per project, last agent per repo, dispatched tickets, PRs and tasks with their sessions and titles, each session's agent pane, the last task number per repo, queue items
+- State (repo per project, last agent per repo, dispatched tickets, PRs and tasks with their sessions and titles, each session's agent pane, the last task number per repo, the question each agent asked and those it went on without, queue items
   marked reviewed, each watcher's PR signatures at its last wake, each scheduled watcher's last time, the watchers you stopped, the branch each cleaned-up ticket's worktree was on) is in
   `~/.local/state/foreman/state.json`, written atomically. foreman and its commands (`dispatch`, `ask`, `answer`…) all write it,
   so each write holds `state.json.lock`, and foreman re-reads it every few seconds. An unreadable

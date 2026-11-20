@@ -2,15 +2,17 @@ package main
 
 // foreman watch: what looks after the watchers, the board open or not. It starts one whose session
 // is gone, wakes each when a PR of its changed or its time came, and tells me what the queue would
-// show if I were looking: a watcher that waits on me or failed.
+// show if I were looking: a watcher or a dispatched agent that waits on me or failed.
 
 import (
 	"cmp"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -36,7 +38,7 @@ type watchLoop struct {
 	note    func(text string, c Color)
 	lastErr map[string]string // each watcher's last failure, and the last one starting them
 	rexDown string            // why Rex didn't answer, while it doesn't
-	alerted map[string]string // what each watcher waited on when it last told me
+	alerted map[string]string // what each watcher and dispatched agent waited on when it last told me
 }
 
 // holdWatchLock takes the lock a foreman watch holds for its life, and fails when another holds
@@ -120,11 +122,17 @@ func (l *watchLoop) tick() time.Duration {
 	if err != nil {
 		return rexWait
 	}
-	recorded := loadState().WatcherSessions
+	st := loadState()
+	recorded := st.WatcherSessions
 	for _, w := range watchers {
 		// A watcher that isn't running has the zero session, which waits on nothing.
 		s, _ := findWatcher(sessions, w, recorded[w.Name])
-		l.alert(w, s)
+		l.alert(w.Name, s)
+	}
+	// In order, so two that stop in one poll are told the same way each time.
+	for _, key := range slices.Sorted(maps.Keys(st.Dispatched)) {
+		s, _ := findSession(sessions, key, st.Dispatched[key].Session)
+		l.alert(key, s)
 	}
 	wakeWatchers(sessions, recorded, l.note, l.lastErr)
 	return watchPoll
@@ -137,21 +145,22 @@ func errText(err error) string {
 	return firstLine(err.Error())
 }
 
-// alert tells me, once, that the watcher stopped on something only I can settle: a permission
-// prompt or a question, where its pass stalls until I answer, or a failure. With the board closed
-// nothing else would say so outside Rex.
-func (l *watchLoop) alert(w Watcher, s rexSession) {
+// alert tells me, once, that a watcher or a dispatched agent, by its name or key, stopped on
+// something only I can settle: a permission prompt or a question in its pane, where it stalls until
+// I answer, or a failure. With the board closed nothing else would say so outside Rex. A question
+// in foreman ask raises its own notification as it is asked: its agent shows as working here.
+func (l *watchLoop) alert(name string, s rexSession) {
 	what := ""
 	switch s.State {
 	case "blocked":
-		what = w.Name + " waits on you: " + strings.TrimSpace(cmp.Or(s.Kind, "permission")+" "+s.Msg)
+		what = name + " waits on you: " + strings.TrimSpace(cmp.Or(s.Kind, "permission")+" "+s.Msg)
 	case "error":
-		what = strings.TrimSuffix(w.Name+" failed: "+s.Msg, ": ")
+		what = strings.TrimSuffix(name+" failed: "+s.Msg, ": ")
 	}
-	if what == l.alerted[w.Name] {
+	if what == l.alerted[name] {
 		return
 	}
-	l.alerted[w.Name] = what
+	l.alerted[name] = what
 	if what != "" {
 		l.tell(what, cRed)
 	}

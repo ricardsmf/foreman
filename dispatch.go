@@ -976,16 +976,26 @@ func askSection() []string {
 		"## Asking",
 		"",
 		"When you need an answer from me to go on, run `foreman ask \"<question>\"`, giving the command a 10-minute timeout. The question shows in my queue; the command prints my answer and you carry on.",
+		"Name the choices you see with `--option \"<choice>\"`, once each, and the one you would take with `--recommend \"<choice>\"`: I answer those with one key.",
+		"When a wrong guess would be cheap to undo, add `--proceed` to a question with `--recommend`: the command returns at once, you go on with your recommendation, and I confirm it or send another answer as a message.",
 		"If it reports no answer, put the question in your report and stop to ask me.",
 	}
 }
 
 // resumeCommand continues the agent's latest conversation in its working directory. A worktree is
-// the ticket's alone, so that conversation is the dispatched one.
-func resumeCommand(agent string) []string {
-	cmd := agentArgs(agent)
+// the ticket's alone, so that conversation is the dispatched one. With a message, the agent starts
+// on it as its next turn.
+func resumeCommand(agent, message string) []string {
 	// Before --add-dir, which takes a list.
-	return slices.Insert(cmd, 1, "--continue")
+	cmd := slices.Insert(agentArgs(agent), 1, "--continue")
+	if message == "" {
+		return cmd
+	}
+	if agent != agentPi {
+		// As in agentCommand: without `--`, --add-dir takes the message as a directory.
+		cmd = append(cmd, "--")
+	}
+	return append(cmd, message)
 }
 
 // dispatchedAgent is the agent to resume key with: the one recorded at dispatch, else, for
@@ -1045,6 +1055,7 @@ func markDispatched(key, title, cwd, session, agent, from string) {
 	_, _ = updateState(func(s *State) {
 		s.Dispatched[key] = Dispatched{Dir: cwd, Session: session, Agent: agent, Title: title, StartedFrom: from}
 		delete(s.Questions, key)
+		delete(s.Decisions, key)
 		delete(s.Dismissed, key)
 		delete(s.Branches, key)
 	})

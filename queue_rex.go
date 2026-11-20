@@ -75,6 +75,8 @@ func itemRecords(items []queueItem) map[string]string {
 			state, kind, msg = "blocked", cmp.Or(it.Waits, "permission"), cmp.Or(it.Doing, waitsFor(it.Waits))
 		case it.Agent == "error":
 			state, msg = "error", "failed"
+		case len(it.Decisions) > 0:
+			msg = "went on with: " + it.Decisions[0].Recommended
 		}
 		id = oneLine(recordIDRe.ReplaceAllString(id, "-"), 32)
 		report := "\x1b]7501;state=" + state + ":id=" + id + ":app=foreman"

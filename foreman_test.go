@@ -1707,7 +1707,7 @@ func TestSessionLabel(t *testing.T) {
 // --add-dir takes a list, so --continue must come before it.
 func TestResumeCommandContinuesBeforeAddDir(t *testing.T) {
 	for _, agent := range []string{agentPi, agentClaude, agentAuto, "Claude (yolo)"} {
-		cmd := resumeCommand(agent)
+		cmd := resumeCommand(agent, "")
 		if cmd[1] != "--continue" {
 			t.Errorf("%s: %q should continue right after the binary", agent, cmd)
 		}
@@ -2171,7 +2171,7 @@ func TestWaitSaysWhy(t *testing.T) {
 			t.Errorf("exit %d:\n%s", code, out)
 		}
 		// A question a closed session left behind isn't one it waits on.
-		it.Agent = ""
+		it.Agent, it.Left = "", true
 		if _, code := stopped(it, noPane); code != waitDone {
 			t.Errorf("closed with a question: exit %d", code)
 		}
@@ -2459,7 +2459,7 @@ func TestAskAnswered(t *testing.T) {
 			t.Error(err)
 		}
 	}
-	answer, err := ask("FLD-1", "Which endpoint?", time.Minute, time.Second, sleep, nobodyTyped)
+	answer, err := ask("FLD-1", Question{Text: "Which endpoint?"}, time.Minute, time.Second, sleep, nobodyTyped)
 	if err != nil || answer != "Use the v2 endpoint" {
 		t.Fatalf("ask = %q, %v", answer, err)
 	}
@@ -2486,7 +2486,7 @@ func TestAskAnsweredInItsSession(t *testing.T) {
 		looks++
 		return "use the v2 endpoint", looks == 2
 	}
-	answer, err := ask("FLD-1", "Which endpoint?", time.Minute, time.Second, func(time.Duration) {}, typed)
+	answer, err := ask("FLD-1", Question{Text: "Which endpoint?"}, time.Minute, time.Second, func(time.Duration) {}, typed)
 	if err != nil || !strings.Contains(answer, "use the v2 endpoint") || !strings.Contains(answer, "one answer, not two") {
 		t.Fatalf("ask = %q, %v", answer, err)
 	}
@@ -2557,7 +2557,7 @@ func TestAskUnanswered(t *testing.T) {
 	dispatched(t, "FLD-1", "/w/app-fld-1")
 	pending := false
 	sleep := func(time.Duration) { _, pending = loadState().Questions["FLD-1"] }
-	_, err := ask("FLD-1", "Which endpoint?", 3*time.Second, time.Second, sleep, nobodyTyped)
+	_, err := ask("FLD-1", Question{Text: "Which endpoint?"}, 3*time.Second, time.Second, sleep, nobodyTyped)
 	if err == nil || !strings.Contains(err.Error(), "stop to ask me") || !pending {
 		t.Fatalf("err %v, pending while it waited %t", err, pending)
 	}
@@ -2574,7 +2574,7 @@ func TestAskWithdrawn(t *testing.T) {
 	tempState(t)
 	dispatched(t, "FLD-1", "/w/app-fld-1")
 	sleep := func(time.Duration) { markDispatched("FLD-1", "t", "/w/app-fld-1", "s2", agentPi, "") }
-	if _, err := ask("FLD-1", "?", time.Minute, time.Second, sleep, nobodyTyped); err == nil || !strings.Contains(err.Error(), "withdrawn") {
+	if _, err := ask("FLD-1", Question{Text: "?"}, time.Minute, time.Second, sleep, nobodyTyped); err == nil || !strings.Contains(err.Error(), "withdrawn") {
 		t.Errorf("err = %v", err)
 	}
 }
@@ -3144,6 +3144,8 @@ func TestMain(m *testing.M) {
 			panic(err)
 		}
 		stateFile = filepath.Join(dir, "state.json")
+		// Nor shows a notification on this Mac, unless it puts its own in notify's place.
+		notify = func(string, string) error { return nil }
 		code := m.Run()
 		_ = os.RemoveAll(dir)
 		os.Exit(code)

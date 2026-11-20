@@ -82,8 +82,12 @@ type queueItem struct {
 	Unwoken bool
 	// Orchestrator marks the orchestrator's session.
 	Orchestrator bool
-	// Question is the one the agent waits on in foreman ask.
+	// Question is the one the agent asked in foreman ask and I haven't answered. Left marks one
+	// nothing waits on any more: its session closed, or its foreman ask is gone.
 	Question *Question
+	Left     bool
+	// Decisions are the questions the agent went on without, oldest first.
+	Decisions []Question
 	// Sig is what the item showed; marking it reviewed holds until this changes.
 	Sig string
 	// Fold marks the row that stands for the closed agents while they are folded, and counts them.
@@ -170,11 +174,23 @@ func mainCheckout(dir string) string {
 	return filepath.Dir(filepath.Dir(worktrees))
 }
 
+// pendingQuestion is the question my answer goes to: the one the agent asked, else the oldest it
+// went on without, which decision marks.
+func (it queueItem) pendingQuestion() (q Question, decision, ok bool) {
+	switch {
+	case it.Question != nil:
+		return *it.Question, false, true
+	case len(it.Decisions) > 0:
+		return it.Decisions[0], true, true
+	}
+	return Question{}, false, false
+}
+
 // pending is whether the item waits on me: it asks something or has a report to read.
 func (it queueItem) pending() bool { return it.Group == needsYou || it.Group == toReview }
 
 // urgent is whether the item is blocked on me rather than done: an agent that asks, failed, or
-// waits in foreman ask on a question handed to me.
+// put a question to me in foreman ask that I haven't answered, whether it still waits there or not.
 func (it queueItem) urgent() bool {
 	if it.Kind == prItem {
 		return it.Group == needsYou
@@ -420,11 +436,16 @@ func queueItems(s State, sessions []rexSession, prs []Pr) []queueItem {
 		it.Shots += len(captures)
 		// Not the state itself: closing a finished agent's session shouldn't bring its report back.
 		it.Sig = fmt.Sprintf("%t %d", it.urgent(), it.When.Unix())
-		// A question a closed session left behind has nobody waiting on its answer.
-		if q, ok := s.Questions[key]; ok && q.Answer == "" && it.Agent != "" {
+		if q, ok := s.Questions[key]; ok && q.Answer == "" {
 			it.Question = &q
 			it.Sig += fmt.Sprintf(" q%d", q.At.Unix())
+			// Nothing waits on a question whose session closed or whose foreman ask is gone: it
+			// stays mine to answer, and the answer goes to the agent as a message.
+			if it.Left = it.Agent == "" || (q.Pid != 0 && !askRuns(q.Pid)); it.Left {
+				it.Sig += " left"
+			}
 		}
+		it.Decisions = s.Decisions[key]
 		reviewed := s.Dismissed[key] == it.Sig
 		if !it.review() {
 			it.InPr = prHolding(prs, d.Dir)
@@ -432,6 +453,9 @@ func queueItems(s State, sessions []rexSession, prs []Pr) []queueItem {
 		switch {
 		case it.urgent() && !reviewed:
 			it.Group = needsYou
+		// What it went on with is mine to confirm, while it works on.
+		case len(it.Decisions) > 0:
+			it.Group = toReview
 		case it.Agent == "working":
 			it.Group = working
 		case it.Report != "" && !reviewed && it.InPr == "":
@@ -618,11 +642,20 @@ type queueModel struct {
 // pressed the row under the cursor may be another agent's.
 type reply struct {
 	key, session, block, text string
-	back                      int  // the text's cursor, in runes from its end
-	answer                    bool // the agent waits in foreman ask: the text is its answer
+	back                      int       // the text's cursor, in runes from its end
+	answer                    bool      // the text answers the agent's pending question
+	asked                     time.Time // when that question was asked: the answer is for it alone
 }
 
-func detailKey(it queueItem) string { return it.Key + " " + it.Sig }
+// detailKey is what an item's detail is kept under. The questions it went on without head the
+// detail but aren't in Sig: confirming them mustn't bring a report marked reviewed back.
+func detailKey(it queueItem) string {
+	key := it.Key + " " + it.Sig
+	if n := len(it.Decisions); n > 0 {
+		key += fmt.Sprintf(" d%d-%d", n, it.Decisions[0].At.Unix())
+	}
+	return key
+}
 
 func (q *queueModel) current() (queueItem, bool) {
 	q.cursor = max(0, min(q.cursor, len(q.items)-1))
@@ -801,11 +834,7 @@ func itemDetail(it queueItem) []string {
 		}
 		return append(prWaitLines(it), strings.Split(prMarkdown(*it.Pr, v), "\n")...)
 	}
-	var out []string
-	if q := it.Question; q != nil {
-		out = append(out, "# Waiting on an answer", "", q.Text, "")
-		out = append(out, "`f` answers it.", "")
-	}
+	out := questionLines(it)
 	if it.Report != "" {
 		b, err := os.ReadFile(it.Report)
 		if err != nil {
@@ -968,6 +997,8 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 		return nil
 	}
 	switch msg.String() {
+	case "1", "2", "3", "4", "5", "6", "7", "8", "9", "a":
+		return q.choose(it, msg.String())
 	case "y", "n":
 		seen := q.seen[detailKey(it)]
 		if it.Kind == agentItem && it.Agent == "blocked" && !pressable(it) {
@@ -1080,11 +1111,13 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 		}
 		return show
 	case "f":
-		if it.Kind == prItem || it.Agent == "" {
+		// A question outlives its session: answering it resumes the agent.
+		asked, _, asks := it.pendingQuestion()
+		if it.Kind == prItem || (it.Agent == "" && !asks) {
 			q.say("No open agent session to reply to", cOverlay)
 			return nil
 		}
-		q.feedback = &reply{key: it.Key, session: it.Session, block: it.Block, answer: it.Question != nil}
+		q.feedback = &reply{key: it.Key, session: it.Session, block: it.Block, answer: asks, asked: asked.At}
 	case "x":
 		if !it.pending() {
 			q.say(it.Key+" has nothing waiting for you", cOverlay)
@@ -1166,11 +1199,49 @@ func (q *queueModel) browse(url string) tea.Cmd {
 	}
 }
 
+// choose answers the item's pending question with one of its choices, by its digit, or with a, the
+// one the agent recommends.
+func (q *queueModel) choose(it queueItem, key string) tea.Cmd {
+	asked, _, ok := it.pendingQuestion()
+	if !ok {
+		q.say(it.Key+" asks nothing to choose from", cOverlay)
+		return nil
+	}
+	answer := asked.Recommended
+	if key != "a" {
+		n := int(key[0] - '0')
+		if n > len(asked.Options) {
+			q.say(fmt.Sprintf("%s's question has %d choices; f answers in your own words", it.Key, len(asked.Options)), cOverlay)
+			return nil
+		}
+		answer = asked.Options[n-1]
+	}
+	if answer == "" {
+		q.say(it.Key+" recommends nothing; f answers in your own words", cOverlay)
+		return nil
+	}
+	state := q.state
+	q.say("Answering "+it.Key+"…", cSubtext)
+	return tea.Sequence(func() tea.Msg {
+		said, err := answerItem(state, it, answer, byMe)
+		if err != nil {
+			return queueStatusMsg{text: "Answer to " + it.Key + ": " + firstLine(err.Error()), color: cRed}
+		}
+		return queueStatusMsg{text: said, color: cGreen}
+	}, pollQueue)
+}
+
 // markReviewed takes the item out of what waits on me until it has something new: a report, or
-// for a PR, something else to wait on or something someone wrote on it.
+// for a PR, something else to wait on or something someone wrote on it. What an agent went on
+// with is confirmed.
 func (q *queueModel) markReviewed(it queueItem) tea.Cmd {
 	key, dkey, sig := it.Key, it.dismissKey(), it.Sig
 	q.state, _ = updateState(func(s *State) { s.Dismissed[dkey] = sig })
+	if it.Kind == agentItem && len(it.Decisions) > 0 {
+		if s, err := confirm(key, it.Decisions, byMe); err == nil {
+			q.state = s
+		}
+	}
 	if it.Kind == prItem {
 		q.say("Marked "+key+" reviewed; it comes back when what it waits on changes or someone writes on it", cOverlay)
 	} else {
@@ -1179,28 +1250,43 @@ func (q *queueModel) markReviewed(it queueItem) tea.Cmd {
 	return q.rebuild()
 }
 
-// resume reopens a closed agent: a new Rex session in its worktree that continues its latest
-// conversation, recorded as the agent's session and shown.
+// resumeAgent reopens a closed agent: a new Rex session in its worktree that continues its latest
+// conversation, recorded as the agent's session. With a message, the agent starts on it.
+func resumeAgent(s State, key, title, dir, message string) (id string, err error) {
+	if !exists(dir) {
+		return "", fmt.Errorf("%s is gone; dispatch it again from the board", tilde(dir))
+	}
+	agent, err := dispatchedAgent(s, key, dir)
+	if err != nil {
+		return "", err
+	}
+	id, _, err = newSession(sessionLabel(key, title), dir, agent, resumeCommand(agent, message))
+	if err != nil {
+		return "", err
+	}
+	_, _ = updateState(func(s *State) {
+		s.change(key, func(d *Dispatched) { d.Session, d.Agent = id, agent })
+	})
+	return id, nil
+}
+
+// resume reopens a closed agent from its row, and shows its session.
 func (q *queueModel) resume(it queueItem) tea.Cmd {
 	if !exists(it.Dir) {
 		q.say(tilde(it.Dir)+" is gone; dispatch it again from the board", cOverlay)
 		return nil
 	}
-	agent, err := dispatchedAgent(q.state, it.Key, it.Dir)
-	if err != nil {
+	if _, err := dispatchedAgent(q.state, it.Key, it.Dir); err != nil {
 		q.say(err.Error(), cOverlay)
 		return nil
 	}
 	q.say("Resuming "+it.Key+"…", cSubtext)
-	key, dir, label := it.Key, it.Dir, sessionLabel(it.Key, it.Title)
+	state, key, title, dir := q.state, it.Key, it.Title, it.Dir
 	return func() tea.Msg {
-		id, _, err := newSession(label, dir, agent, resumeCommand(agent))
+		id, err := resumeAgent(state, key, title, dir, "")
 		if err != nil {
 			return queueStatusMsg{text: "Resuming " + key + ": " + err.Error(), color: cRed}
 		}
-		_, _ = updateState(func(s *State) {
-			s.change(key, func(d *Dispatched) { d.Session, d.Agent = id, agent })
-		})
 		if err := rex.show(id); err != nil {
 			return queueStatusMsg{text: "Switching to " + key + "'s session: " + err.Error(), color: cRed}
 		}
@@ -1286,14 +1372,30 @@ func (q *queueModel) feedbackInput(msg tea.KeyPressMsg) tea.Cmd {
 		if text == "" {
 			return nil
 		}
+		if r.answer {
+			// The list was rebuilt while I typed: the answer goes only to the question it was for.
+			n := slices.IndexFunc(q.all, func(it queueItem) bool { return it.Kind == agentItem && it.Key == r.key })
+			if n < 0 {
+				q.say(r.key+" is gone from the queue; nothing was sent", cYellow)
+				return nil
+			}
+			it := q.all[n]
+			if asked, _, ok := it.pendingQuestion(); !ok || !asked.At.Equal(r.asked) {
+				q.say(r.key+" no longer asks what you answered; nothing was sent", cYellow)
+				return nil
+			}
+			state := q.state
+			q.say("Answering "+r.key+"…", cSubtext)
+			return tea.Sequence(func() tea.Msg {
+				said, err := answerItem(state, it, text, byMe)
+				if err != nil {
+					return queueStatusMsg{text: "Answer to " + r.key + ": " + firstLine(err.Error()), color: cRed}
+				}
+				return queueStatusMsg{text: said, color: cGreen}
+			}, pollQueue)
+		}
 		q.say("Sending to "+r.key+"…", cSubtext)
 		return func() tea.Msg {
-			if r.answer {
-				if err := answerQuestion(r.key, text, byMe); err != nil {
-					return queueStatusMsg{text: "Answer to " + r.key + ": " + err.Error(), color: cRed}
-				}
-				return queueStatusMsg{text: "✓ Answered " + r.key, color: cGreen}
-			}
 			if err := sendToAgent(r.session, r.block, text); err != nil {
 				return queueStatusMsg{text: "Reply to " + r.key + ": " + err.Error(), color: cRed}
 			}

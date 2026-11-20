@@ -111,6 +111,7 @@ func forget(s *State, keys []string) {
 	for _, k := range keys {
 		delete(s.Dispatched, k)
 		delete(s.Questions, k)
+		delete(s.Decisions, k)
 		delete(s.Dismissed, k)
 	}
 }

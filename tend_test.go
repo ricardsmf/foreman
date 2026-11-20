@@ -166,6 +166,30 @@ func TestTickAlerts(t *testing.T) {
 	}
 }
 
+// A dispatched agent that waits on a prompt, or failed, is told the same way.
+func TestTickAlertsOfDispatchedAgents(t *testing.T) {
+	f := useFakeRex(t)
+	l, _, told := testLoop(t)
+	if _, err := updateState(func(s *State) {
+		s.Dispatched["FLD-1"], s.Panes["s1"] = Dispatched{Dir: "/w", Session: "s1"}, "block:1"
+		s.Dispatched["FLD-2"] = Dispatched{Dir: "/w2", Session: "closed"}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	in := func(state, kind, msg string) {
+		f.open = []rexSession{{ID: "s1", Label: "fld-1-x", Panes: []rexPane{pane("block:1", true, rexRecord{State: state, Kind: kind, Msg: msg})}}}
+		l.tick()
+	}
+	in("working", "", "Running the tests")
+	in("blocked", "permission", "Bash: git push")
+	in("blocked", "permission", "Bash: git push")
+	in("working", "", "")
+	in("error", "", "")
+	if want := []string{"FLD-1 waits on you: permission Bash: git push", "FLD-1 failed"}; !slices.Equal(*told, want) {
+		t.Errorf("told %q, want %q", *told, want)
+	}
+}
+
 // A wake moves the watcher's checkout to the tip of origin/develop before its pass, fetching
 // first; a checkout on a branch stays where it is, and one that can't move holds the pass back.
 func TestWakeMovesCheckoutForward(t *testing.T) {

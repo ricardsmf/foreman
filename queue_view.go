@@ -102,8 +102,14 @@ func itemLabel(it queueItem) (string, string) {
 		}
 	}
 	switch {
+	case it.Question != nil && it.Left && it.Agent == "":
+		return fg(cRed, "●"), fg(cRed, "left a question") + fg(cOverlay, " (closed)")
+	case it.Question != nil && it.Left:
+		return fg(cRed, "●"), fg(cRed, "left a question")
 	case it.Question != nil:
 		return fg(cRed, "●"), fg(cRed, "asks you")
+	case len(it.Decisions) > 0 && it.Group == toReview:
+		return fg(cGreen, "✓"), fg(cGreen, fmt.Sprintf("went on, %d to confirm", len(it.Decisions)))
 	case it.Agent == "working":
 		return fg(cYellow, "●"), fg(cYellow, "working")
 	case it.Agent == "blocked" && it.Waits == "auth":
@@ -176,6 +182,18 @@ func (q *queueModel) render(width, h int) []string {
 		keys = "↑↓ pick · enter list them · ? all keys"
 	} else if ok && pressable(it) && q.seen[detailKey(it)] != "" {
 		keys = "y press enter · n press esc · " + keys
+	} else if asked, decision, asks := it.pendingQuestion(); ok && asks && (len(asked.Options) > 0 || asked.Recommended != "") {
+		pick := ""
+		if n := len(asked.Options); n > 0 {
+			pick = fmt.Sprintf("1-%d choose · ", n)
+		}
+		switch {
+		case decision:
+			pick = "a confirm · " + pick
+		case asked.Recommended != "":
+			pick += "a take the recommended · "
+		}
+		keys = pick + keys
 	} else if ok && len(it.Ports) > 0 {
 		keys = "p open " + portsMark(it.Ports[:1]) + " · " + keys
 	}
@@ -248,7 +266,7 @@ func (q *queueModel) render(width, h int) []string {
 		}
 		mark, what := itemLabel(it)
 		// What a working agent says it is doing tells more than that it works.
-		if it.Agent == "working" && it.Question == nil && it.Doing != "" {
+		if it.Group == working && it.Question == nil && it.Doing != "" {
 			what = fg(cYellow, ansi.Truncate(it.Doing, max(16, width/3), "…"))
 		}
 		if it.Kind == prItem {

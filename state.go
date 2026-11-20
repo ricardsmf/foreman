@@ -55,6 +55,9 @@ type State struct {
 	Orchestrator string `json:"orchestrator,omitempty"`
 	// Questions holds the question each agent waits on in foreman ask, by its key.
 	Questions map[string]Question `json:"questions,omitempty"`
+	// Decisions holds the questions each agent went on without, taking its own recommendation,
+	// oldest first, until I confirm them or answer otherwise.
+	Decisions map[string][]Question `json:"decisions,omitempty"`
 	// TaskSeq holds the last task number used in each repo, by the repo's directory name.
 	TaskSeq map[string]int `json:"taskSeq,omitempty"`
 	// Branches maps a ticket to the branch its worktree was on when cleanup removed it: of the
@@ -173,6 +176,9 @@ func readState() State {
 	}
 	if s.Questions == nil {
 		s.Questions = map[string]Question{}
+	}
+	if s.Decisions == nil {
+		s.Decisions = map[string][]Question{}
 	}
 	if s.TaskSeq == nil {
 		s.TaskSeq = map[string]int{}
