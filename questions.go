@@ -122,52 +122,6 @@ func role() string {
 	return byMe
 }
 
-// A logEntry is one line of a dispatch's questions and what the orchestrator sent it, kept beside
-// its report: a new dispatch empties it, a cleanup removes it.
-type logEntry struct {
-	At   time.Time `json:"at"`
-	By   string    `json:"by"`   // agent, orchestrator, me
-	Kind string    `json:"kind"` // question, decision, answer, confirm, aside, reply, expired
-	Text string    `json:"text"`
-}
-
-func logFile(key string) string { return filepath.Join(evidenceDir(key), "questions.jsonl") }
-
-func appendLog(key string, e logEntry) error {
-	if e.At.IsZero() {
-		e.At = time.Now()
-	}
-	if err := os.MkdirAll(evidenceDir(key), 0o755); err != nil {
-		return err
-	}
-	f, err := os.OpenFile(logFile(key), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = f.Close() }()
-	b, _ := json.Marshal(e)
-	_, err = f.Write(append(b, '\n'))
-	return err
-}
-
-func readLog(key string) []logEntry {
-	f, err := os.Open(logFile(key))
-	if err != nil {
-		return nil
-	}
-	defer func() { _ = f.Close() }()
-	var out []logEntry
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for sc.Scan() {
-		var e logEntry
-		if json.Unmarshal(sc.Bytes(), &e) == nil {
-			out = append(out, e)
-		}
-	}
-	return out
-}
-
 // askerKey is the dispatch asking: the one whose recorded session is session, else the one whose
 // directory holds cwd.
 func askerKey(s State, session, cwd string) (string, error) {

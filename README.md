@@ -305,8 +305,9 @@ typed into a working agent. Claude agents run it without a permission prompt.
   its pane. Dispatching the agent again withdraws it.
 - `foreman wait` returns when the agent asks, so an orchestrator waiting on it sees the question
   too; it passes on the answer you give it with `foreman answer`.
-- Every question and answer, and every message the orchestrator sends the agent, goes to
-  `questions.jsonl` beside the agent's report, shown under **Questions** in the queue's detail pane.
+- Every question and answer, and every message the orchestrator sends the agent, goes to the
+  [event log](#state); the current dispatch's are shown under **Questions** in the queue's detail
+  pane.
 
 ### Choices
 
@@ -737,6 +738,34 @@ see [Waking a watcher](#waking-a-watcher). `at` is optional too, with `prs` or w
   `~/.local/state/foreman/state.json`, written atomically. foreman and its commands (`dispatch`, `ask`, `answer`…) all write it,
   so each write holds `state.json.lock`, and foreman re-reads it every few seconds. An unreadable
   file is moved to `state.json.corrupt` rather than overwritten.
+- What happens in each dispatch is appended to `~/.local/state/foreman/events.jsonl`, one JSON
+  line per event, which nothing rewrites or removes: a cleanup or the key's next dispatch keeps it.
+
+  ```json
+  {"at":"2026-11-22T12:06:28.877Z","key":"FLD-1","dispatch":"20261122T120628.877Z","by":"agent","kind":"question","text":"Which store? [Redis | Postgres]"}
+  ```
+
+  `dispatch` is the dispatch's id, the time it started, which tells apart the runs of a key
+  dispatched more than once; a dispatch from before the log has none. `by` is `agent`,
+  `orchestrator`, `me` or `foreman`, for what foreman saw itself. `kind` is one of:
+  - `dispatched`, with `title`, `agent`, `dir` (where the agent works), `repo` (its main checkout)
+    and `startedFrom`.
+  - `question`, `decision` (one it went on without), `answer`, `confirm`, `aside`, `reply` and
+    `expired`: what the queue lists under **Questions**.
+  - `reported` the first time the queue or `foreman watch` sees its `report.md`, and
+    `report-rewritten` each time it changes after; `at` is the report's time and `text` its first
+    line.
+  - `pr-opened` when the queue loads a PR of mine on a ticket's or task's worktree branch, `text`
+    being its key and URL; `pr-merged`, `pr-closed` and `ticket-done` when the board finds the
+    dispatch over (in `^x`, or as it drops finished agents from the queue).
+  - `cleaned-up`, with the reason `^x` gave, or `worktree gone`.
+
+  Each change is logged once, whichever process sees it first: the dispatch's record in
+  `state.json` keeps its `id`, the time of the report logged (`reported`), the PR logged (`pr`)
+  and how it ended (`ended`). Each append holds a lock on the file, so lines from `foreman ask`,
+  the queue and `foreman watch` never interleave. A `questions.jsonl` an older dispatch left
+  beside its report is still shown, and moves into the log before a new dispatch or a cleanup
+  removes the directory.
 
 ## Development
 

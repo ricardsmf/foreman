@@ -83,7 +83,11 @@ func cleanupCandidates(ctx context.Context, jira *Jira, state State, agents map[
 		})
 	}
 	wg.Wait()
-	discard(gone)
+	reasons := map[string]string{}
+	for _, key := range gone {
+		reasons[key] = "worktree gone"
+	}
+	discard(reasons, byForeman)
 	slices.SortFunc(out, func(a, b cleanupCandidate) int { return strings.Compare(a.Dir, b.Dir) })
 	slices.Sort(failed)
 	return cleanupMsg{out, failed, ctx.Err()}
@@ -95,15 +99,29 @@ func defaultPicked(c cleanupCandidate) bool { return !c.Dirty && !agentActive(c.
 
 const cleanupWorkers = 8
 
-// discard forgets the dispatches and removes their reports and evidence.
-func discard(keys []string) {
-	if len(keys) == 0 {
+// discard forgets the dispatches and removes their reports and evidence, logging each as cleaned
+// up by by, for the reason reasons gives by its key.
+func discard(reasons map[string]string, by string) {
+	if len(reasons) == 0 {
 		return
 	}
-	_, _ = updateState(func(s *State) { forget(s, keys) })
+	keys := slices.Sorted(maps.Keys(reasons))
+	ids := map[string]string{}
+	_, err := updateState(func(s *State) {
+		for _, k := range keys {
+			ids[k] = s.Dispatched[k].ID
+		}
+		forget(s, keys)
+	})
+	var events []logEntry
 	for _, k := range keys {
+		_ = keepLegacyLog(k, ids[k])
 		_ = os.RemoveAll(evidenceDir(k))
+		if err == nil {
+			events = append(events, logEntry{Key: k, Dispatch: ids[k], By: by, Kind: kindCleanedUp, Text: reasons[k]})
+		}
 	}
+	_ = writeEvents(events...)
 }
 
 // forget drops keys from the state with their dismissals.
@@ -157,6 +175,7 @@ func finished(ctx context.Context, jira *Jira, key, dir string) (string, error) 
 			return "", err
 		}
 		if state = strings.TrimSpace(state); state == "MERGED" || state == "CLOSED" {
+			noteEnded(key, strings.ToLower(state))
 			return strings.ToLower(state), nil
 		}
 		return "", nil
@@ -165,6 +184,7 @@ func finished(ctx context.Context, jira *Jira, key, dir string) (string, error) 
 	if err != nil || category != "Done" {
 		return "", err
 	}
+	noteEnded(key, "done")
 	return "done", nil
 }
 
@@ -271,7 +291,8 @@ func (m *model) removeWorktrees() tea.Cmd {
 // removeCandidates removes the candidates' worktrees, without --force, closes their agents'
 // sessions and forgets them with their reports.
 func removeCandidates(picked []cleanupCandidate) cleanedMsg {
-	var done, errs []string
+	var errs []string
+	done := map[string]string{}
 	removed, forgotten := 0, 0
 	branches := map[string]string{}
 	for _, c := range picked {
@@ -294,14 +315,14 @@ func removeCandidates(picked []cleanupCandidate) cleanedMsg {
 			}
 			removed++
 		}
-		done = append(done, c.Key)
+		done[c.Key] = c.Reason
 		// Its agent's session has nothing left to work on. A failure to close it isn't one
 		// worth reporting: the worktree, which was the point, is gone.
 		if c.Session != "" && c.Agent != "" {
 			_ = rex.kill(c.Session)
 		}
 	}
-	discard(done)
+	discard(done, role())
 	if len(branches) > 0 {
 		_, _ = updateState(func(s *State) { maps.Copy(s.Branches, branches) })
 	}

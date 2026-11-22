@@ -300,17 +300,26 @@ var onCommit = regexp.MustCompile(` on [0-9a-f]{7,40}\b`)
 // prHolding is the open PR of mine that holds the work in dir: its branch is the one checked out
 // there, in the same repo, and its head the commit dir is on, so nothing there is still unpushed.
 func prHolding(prs []Pr, dir string) string {
-	branch, commit := worktreeHead(dir)
-	if branch == "" || commit == "" {
-		return ""
+	_, commit := worktreeHead(dir)
+	if p, ok := prOn(prs, dir); ok && commit != "" && p.Head == commit {
+		return p.Key
+	}
+	return ""
+}
+
+// prOn is the open PR of mine on the branch checked out in dir, in the same repo.
+func prOn(prs []Pr, dir string) (Pr, bool) {
+	branch, _ := worktreeHead(dir)
+	if branch == "" {
+		return Pr{}, false
 	}
 	main := mainCheckout(dir)
 	for _, p := range prs {
-		if p.Mine && p.Branch == branch && p.Head == commit && p.Checkout != "" && filepath.Clean(p.Checkout) == main {
-			return p.Key
+		if p.Mine && p.Branch == branch && p.Checkout != "" && filepath.Clean(p.Checkout) == main {
+			return p, true
 		}
 	}
-	return ""
+	return Pr{}, false
 }
 
 // worktreeHead is the branch checked out in dir and the commit it is on, "" for a detached HEAD or
@@ -684,10 +693,10 @@ func (q *queueModel) say(text string, c Color) {
 }
 
 // pollQueue reads the state file and the sessions: from Rex's events while they arrive, which
-// costs no call, else by listing them.
+// costs no call, else by listing them. It logs the reports written since the last poll.
 func pollQueue() tea.Msg {
 	sessions, err := agentSessions()
-	return queueStateMsg{loadState(), sessions, err == nil, watchRuns()}
+	return queueStateMsg{noteReports(loadState()), sessions, err == nil, watchRuns()}
 }
 
 // foldClosed is the rows of items: the closed agents become one row that counts them, unless show.
@@ -914,6 +923,7 @@ func (q *queueModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			break
 		}
 		q.prs = msg.prs
+		q.state = notePrs(q.state, q.prs)
 		if stale := staleDismissals(q.state, q.prs); len(stale) > 0 {
 			q.state, _ = updateState(func(s *State) {
 				for _, k := range stale {

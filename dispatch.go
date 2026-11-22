@@ -1052,13 +1052,18 @@ func headCommit(dir string) string {
 
 // markDispatched records the dispatch. from is the commit the agent starts from, "" for none.
 func markDispatched(key, title, cwd, session, agent, from string) {
-	_, _ = updateState(func(s *State) {
-		s.Dispatched[key] = Dispatched{Dir: cwd, Session: session, Agent: agent, Title: title, StartedFrom: from}
+	id := newDispatchID()
+	_, err := updateState(func(s *State) {
+		s.Dispatched[key] = Dispatched{Dir: cwd, Session: session, Agent: agent, Title: title, StartedFrom: from, ID: id}
 		delete(s.Questions, key)
 		delete(s.Decisions, key)
 		delete(s.Dismissed, key)
 		delete(s.Branches, key)
 	})
+	if err == nil {
+		_ = writeEvents(logEntry{Key: key, Dispatch: id, By: role(), Kind: kindDispatched,
+			Title: title, Agent: agent, Dir: cwd, Repo: mainCheckout(cwd), StartedFrom: from})
+	}
 }
 
 // evidenceDir is where the agent on a ticket or PR writes its report and evidence, e.g. …/evidence/fld-1671.
@@ -1070,8 +1075,12 @@ func keySlug(key string) string {
 	return strings.Trim(nonAlnum.ReplaceAllString(strings.ToLower(key), "-"), "-")
 }
 
-// resetEvidence empties the key's evidence directory, so the queue never shows a previous run's report.
+// resetEvidence empties the key's evidence directory, so the queue never shows a previous run's
+// report. A questions.jsonl from before the event log goes into the log first.
 func resetEvidence(key string) error {
+	if err := keepLegacyLog(key, loadState().Dispatched[key].ID); err != nil {
+		return err
+	}
 	dir := evidenceDir(key)
 	if err := os.RemoveAll(dir); err != nil {
 		return err

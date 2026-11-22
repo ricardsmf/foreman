@@ -1857,7 +1857,7 @@ func TestNewTaskKey(t *testing.T) {
 			t.Errorf("newTaskKey(%s) = %q, %v; want %q", tc.repo, key, err, tc.want)
 		}
 	}
-	discard([]string{"task:foreman-2"})
+	discard(map[string]string{"task:foreman-2": "session closed"}, byMe)
 	if key, n, _ := newTaskKey("/w/foreman"); key != "task:foreman-3" || n != 3 {
 		t.Errorf("after cleanup: %q, %d", key, n)
 	}

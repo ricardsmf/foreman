@@ -122,7 +122,7 @@ func (l *watchLoop) tick() time.Duration {
 	if err != nil {
 		return rexWait
 	}
-	st := loadState()
+	st := noteReports(loadState())
 	recorded := st.WatcherSessions
 	for _, w := range watchers {
 		// A watcher that isn't running has the zero session, which waits on nothing.

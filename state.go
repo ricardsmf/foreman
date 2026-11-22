@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 )
 
 // A Dispatched is everything the state keeps of one dispatch, so forgetting its key forgets it all.
@@ -25,6 +26,13 @@ type Dispatched struct {
 	// Hidden is whether I dropped its closed session from the queue. The worktree stays dispatched,
 	// for the board's cleanup; reopening the session or dispatching again shows it.
 	Hidden bool `json:"hidden,omitempty"`
+	// ID tells this dispatch from the key's others in the event log. "" for one from before the log.
+	ID string `json:"id,omitempty"`
+	// What the event log has of it, so that each change is logged once whichever process sees it:
+	// its report's time, the PR it opened, and why it is over ("merged", "closed", "done").
+	Reported time.Time `json:"reported,omitzero"`
+	Pr       string    `json:"pr,omitempty"`
+	Ended    string    `json:"ended,omitempty"`
 }
 
 type State struct {
