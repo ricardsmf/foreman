@@ -304,26 +304,21 @@ func deliverReview(s State, it queueItem, text, count string) (string, error) {
 func (q *queueModel) renderReview(width, h int) []string {
 	r := q.review
 	dot := fg(cSurface, " · ")
-	head := bold(fg(cMauve, "review")) + dot + fg(cText, r.key)
+	head := bold("Review") + dot + fg(cSubtext, r.key)
 	if r.from != "" {
-		head += dot + fg(cSubtext, "since "+short(r.from))
+		head += dot + fg(cOverlay, "since "+short(r.from))
 	}
 	if n := len(r.comments); n > 0 {
 		head += dot + fg(cYellow, plural(n, "comment"))
 	}
-	keys := "↑↓ line · n p hunk · c comment · x drop it · s send them to the agent · esc back"
-	if r.typing {
-		keys = "type the comment · enter keep it · esc cancel"
-	}
-	footer := hints(keys, width)
 	var box []string
 	if r.typing {
-		box = append(box, fg(cSurface, strings.Repeat("─", width)), bold(fg(cMauve, "Comment on "+r.lines[r.cursor].where())))
+		box = append(box, fg(cSurface, strings.Repeat("─", width)), bold("Comment on "+r.lines[r.cursor].where()))
 		for _, l := range wrap(cursorText(r.text, r.back), width-2) {
 			box = append(box, "  "+l)
 		}
 	}
-	rows := max(1, h-1-len(box)-len(footer))
+	rows := max(1, h-1-len(box))
 	out := []string{head}
 	if r.loading {
 		out = append(out, fg(cOverlay, "  Loading the diff…"))
@@ -353,7 +348,15 @@ func (q *queueModel) renderReview(width, h int) []string {
 	for len(out) < 1+rows {
 		out = append(out, "")
 	}
-	return append(append(out, box...), footer...)
+	return append(out, box...)
+}
+
+// reviewKeys are the diff review's.
+func (q *queueModel) reviewKeys() string {
+	if q.review.typing {
+		return "type the comment · enter keep it · esc cancel"
+	}
+	return "↑↓ line · n p hunk · c comment · x drop it · s send them to the agent · esc back"
 }
 
 // lineRows are the rows a line of the diff takes: itself, coloured by what it does, and under

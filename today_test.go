@@ -186,7 +186,7 @@ func TestQueueTabs(t *testing.T) {
 	tab := tea.KeyPressMsg{Code: tea.KeyTab}
 	q.input(tab)
 	screen := ansi.Strip(q.content())
-	for _, want := range []string{"today", "1 in progress", "1 up next", "1 done since yesterday", "progress", "FLD-1", "up next", "FLD-7", "to do", "ticket done", "Timeline", "dispatched by me: One"} {
+	for _, want := range []string{"Today", "1 in progress", "1 up next", "1 done since yesterday", "progress", "FLD-1", "up next", "FLD-7", "to do", "ticket done", "Timeline", "dispatched by me: One"} {
 		if !strings.Contains(screen, want) {
 			t.Errorf("today lacks %q:\n%s", want, screen)
 		}
@@ -214,7 +214,7 @@ func TestQueueTabs(t *testing.T) {
 	}
 	q.Update(count())
 	screen = ansi.Strip(q.content())
-	for _, want := range []string{"stats", "today  7 days  30 days", "by ticket", "$0.00", "0 tokens", "1 ticket done"} {
+	for _, want := range []string{"Stats", "today  7 days  30 days", "by ticket", "$0.00", "0 tokens", "1 ticket done"} {
 		if !strings.Contains(screen, want) {
 			t.Errorf("stats lack %q:\n%s", want, screen)
 		}
@@ -231,7 +231,7 @@ func TestQueueTabs(t *testing.T) {
 	if _, again := q.Update(week()); again == nil || q.stats.Days != 1 {
 		t.Errorf("a stale count: shown for %d days, counted again %t", q.stats.Days, again != nil)
 	}
-	if q.input(tab); q.tab != listTab || !strings.Contains(ansi.Strip(q.content()), "queue") {
+	if q.input(tab); q.tab != listTab || !strings.Contains(ansi.Strip(q.content()), "Your move") {
 		t.Errorf("tab from the stats: view %d", q.tab)
 	}
 }

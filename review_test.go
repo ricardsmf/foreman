@@ -204,7 +204,7 @@ func TestReviewSendsCommentsAsOneReply(t *testing.T) {
 	press(tea.KeyPressMsg{Code: tea.KeyEnter})
 	press(letter('x'))
 	screen := ansi.Strip(q.content())
-	for _, want := range []string{"review · FLD-1 · since abcdef12 · 2 comments", "↳ keep it", "s send them to the agent"} {
+	for _, want := range []string{"Review · FLD-1 · since abcdef12 · 2 comments", "↳ keep it", "s send them to the agent"} {
 		if !strings.Contains(screen, want) {
 			t.Errorf("the review lacks %q:\n%s", want, screen)
 		}

@@ -21,10 +21,21 @@ foreman stats --days 7      # what the agents used: cost, tokens and time worked
 ```
 
 foreman is one program in one pane: the board on the left and the [queue](#queue) on the right.
-`^l` moves between them, and the side in focus gets the keys; the other is drawn faint. `^z` shows
-the side in focus alone, full width, and `^z` again both; `^l` while one is alone shows the other
-alone. A pane under 110 columns shows only the side in focus. `foreman queue` opens on the queue
-alone.
+`^l` moves between them, and the side in focus gets the keys; the other is drawn faint, without
+its cursor. The board takes 45% of the width. `^z` shows the side in focus alone, full width, and
+`^z` again both; `^l` while one is alone shows the other alone. A pane under 110 columns shows
+only the side in focus. `foreman queue` opens on the queue alone.
+
+Neither side keeps a pane of whole documents beside its list. The row under the cursor opens in
+the reading pane (`→` on the board, `space` or `→` in the queue), which takes the place of the
+side out of focus, or of the whole pane where one side shows alone. It opens on the row's brief:
+a line of what it is, its title, then for a question the question and its numbered choices, for a
+report its headline, a line of facts (oracles, evidence, ports), its **Open points** (the section
+named `Open`, `Open points`, `Left open`, `Left for you` and the like) as bullets, and **Also
+in the report**, its other sections each with its length in lines; for a ticket, its facts and as
+much of its description as fits. The same key again opens the whole text, the detail the queue
+and the board always had, scrolled by `^u`/`^d`; `←` goes back to the brief and `esc` closes
+the pane. `↑↓` move to the next row with the pane open.
 
 The board draws on the terminal its output goes to. Where that is no terminal, in a script or an
 agent's shell, foreman starts no board: a word that isn't a command would have been read as a Jira
@@ -44,13 +55,23 @@ write takes at most 4 KB. The OAuth callback listens on `localhost:3127`.
 
 ## Keys
 
-Board: type or paste to filter (every word must match), `↑↓` pick, `enter` dispatch, `tab`
+Board: type or paste to filter (every word must match), `↑↓` pick, `→` read the row (where the
+filter has nothing right of its cursor; `←` back), `enter` dispatch, `tab`
 tickets/PRs, `^o` mine (on PRs: cycles review requested, mine, everyone), `^a` cycle assignee (on
 PRs: author), `^w` set the ticket's status, `^y` set its assignee (see [Changing a
-ticket](#changing-a-ticket)), `^u`/`^d` scroll the description, `^b` open in a browser [beside the board](#pages-beside-the-board), `^s` go to the agent's Rex
-session, `^t` a [task](#tasks), `^g` the [orchestrator](#orchestrator), `^x` clean up worktrees, `^r` refresh, `esc` quit.
-The footer names the keys of every moment; `?`, while the filter is empty, lists them all, and
-`↑↓` scroll that list in a short pane.
+ticket](#changing-a-ticket)), `^u`/`^d` scroll the description's whole text, opening it, `^b` open in a browser [beside the board](#pages-beside-the-board), `^s` go to the agent's Rex
+session, `^t` a [task](#tasks), `^g` the [orchestrator](#orchestrator), `^x` clean up worktrees, `^r` refresh, `esc` close the reading pane, clear the filter, then quit.
+The footer, under both sides, names at most five keys, those of the moment and of the row under
+the cursor on the side in focus, then `? keys`; `?`, while the filter is empty, lists them all,
+and `↑↓` scroll that list in a short pane.
+
+The board groups its rows under quiet lowercase headings, a ticket's status (`blocked` in red)
+or, for PRs, `review requested`, `yours` and `others`, so a ticket's row has no status of its
+own; a PR's row keeps its state. A row is one line, its title first, without the bracketed tags it
+starts with (`[Reports App][Tests]`) or a conventional commit's type and tag (`fix: [FLD-1885]`),
+then the assignee and the key, quiet, at the right edge. The tags show as the brief's `area`. The
+row under the cursor shows the first three lines of its description under itself, while no reading
+pane shows the row. The filter shows over the list only while it is set.
 
 The board opens on the view (tickets or PRs) and the `^o` filter it was last on. A list filtered to
 one person, by `^o` or `^a`, leaves the assignee column to the summary.
@@ -67,12 +88,15 @@ or write extra context, `alt+enter` new line, paste works, `^e` writes the conte
 
 Both views reload when the board regains focus after five minutes or more, and every five minutes.
 
-The row under the cursor has a background. The key footer wraps between keys onto as many lines as
-the pane needs, and the rule over a description, report or screen names the lines shown (`1–24 of
-88`) when there are more. The queue does the same.
+The row under the cursor has a background and a bar at its left edge. The key footer wraps
+between keys onto as many lines as the pane needs, and the reading pane's first line names the lines
+of the whole text shown (`1–24 of 88`) when there are more; so does the rule over the today and
+stats views' detail.
 
 Colours follow the terminal's theme: the hues are its palette's, and the greys and the selected
-row's background are shades between its background and its text, which the board asks it for. A
+row's background are shades between its background and its text, which the board asks it for.
+Colour stands for a state alone: red needs you or failed, green to review or passed, yellow
+working; everything else is in the greys, headings and code included. A
 terminal that doesn't answer gets Catppuccin Macchiato's greys.
 
 A status line clears by itself: after ten seconds, a warning after twenty, an error after a minute.
@@ -84,7 +108,7 @@ The PR view stops at 500 open PRs the same way.
 ## Changing a ticket
 
 `^w` and `^y` change the selected ticket's status and assignee in Jira, in a picker that takes the
-detail pane's place. Type to filter, `↑↓` pick, `enter` set, `esc` back.
+reading pane's place. Type to filter, `↑↓` pick, `enter` set, `esc` back.
 
 - `^w` lists the transitions Jira allows the ticket now, by the status each leads to (`via …`
   names a transition called something else); the current status is marked `(now)`.
@@ -136,7 +160,7 @@ detail pane's place. Type to filter, `↑↓` pick, `enter` set, `esc` back.
 - Dispatching to a ticket or PR whose agent session is still open takes `enter` twice: the second
   agent would work in the first one's worktree, and the board would track only the new session.
 - `◆` marks a dispatched row, coloured by what its agent reports to Rex: yellow working, red
-  waiting for you or failed, green idle or done. `◇` means its session is closed.
+  waiting for you or failed, grey idle or done. `◇` means its session is closed.
 - The agent gets the ticket as markdown, your extra context, and a workflow: understand, name an
   oracle for each acceptance criterion and see it red, implement, verify until every oracle is
   green, commit. It is told not to push, open a PR or touch the ticket.
@@ -309,8 +333,8 @@ A ticket's or task's agent is told to run `foreman ask "<question>"` before it s
 The command waits inside the agent's turn, up to 8 minutes, and prints the answer, so nothing is
 typed into a working agent. Claude agents run it without a permission prompt.
 
-- The question puts the agent under **needs you** (`asks you`) at once, with the question in the
-  detail pane; `f` answers it, as does `foreman answer` or `foreman reply`.
+- The question puts the agent under **needs you** (`asks you`) at once, with the question and its
+  choices on its card; `f` answers it, as does `foreman answer` or `foreman reply`.
 - It raises a macOS notification as it is asked, `FLD-1700 asks: …`: the agent shows as working
   to Rex, so nothing else says outside the queue that it waits, and it waits 8 minutes.
 - What you type into the agent's own session while it waits answers it too, for a Claude Code
@@ -325,8 +349,8 @@ typed into a working agent. Claude agents run it without a permission prompt.
 - `foreman wait` returns when the agent asks, so an orchestrator waiting on it sees the question
   too; it passes on the answer you give it with `foreman answer`.
 - Every question and answer, and every message the orchestrator sends the agent, goes to the
-  [event log](#state); the current dispatch's are shown under **Questions** in the queue's detail
-  pane.
+  [event log](#state); the current dispatch's are shown under **Questions** in the item's whole
+  text.
 
 ### Choices
 
@@ -334,7 +358,7 @@ typed into a working agent. Claude agents run it without a permission prompt.
 the choices the agent sees, at most nine, and the one it would take. The options go before or
 after the question. The agent's prompt tells it to name them.
 
-- The detail numbers the choices and marks the recommended one. In the queue a digit answers
+- The card and the brief number the choices and mark the recommended one. In the queue a digit answers
   with that choice and `a` with the recommended one; `f` still takes any answer.
 - `--recommend` without options is the answer the agent would give, and `a` answers with it.
 - A recommendation that is none of the options, or a tenth option, fails the command with the
@@ -347,7 +371,7 @@ once, and the agent goes on with what it recommended. The agent's prompt keeps i
 is cheap to undo.
 
 - The agent's row moves to **review**, `went on, 2 to confirm`, whatever the agent is doing, and
-  the detail starts with each such question and its choices, oldest first. The notification reads
+  its card and whole text start with each such question and its choices, oldest first. The notification reads
   `FLD-1700 went on with “Postgres”: …`.
 - `a` confirms the oldest and `x` all of them: they leave the queue, and nothing is sent.
 - A digit or `f` gives the oldest another answer. It is typed into the agent's pane as a message
@@ -379,7 +403,7 @@ turn. Its row stays under **needs you**, `left a question`.
 - Your PRs show their review state (`in review`, `approved`, `changes`, `threads`, `conflict`,
   `draft`) and CI (`✓` passed, `✗` failed, `●` running). `threads` is an open review thread someone
   else had the last word in. Red means something needs you; green means approved with CI done.
-  Their detail pane lists the failing and running checks.
+  Their whole text lists the failing and running checks.
 - A repo may hold a PR back with a commit status that fails until it has its reviews:
   `reviewCheck` in the [config](#config) names it, and mine is `review-tier`. It stands for the
   reviews, not for CI: while it fails or is pending the PR is `in review`, whatever GitHub's own
@@ -437,9 +461,19 @@ review it first:
 ## Queue
 
 The queue lists every dispatched agent, whatever its state, and every open PR of yours, by what
-it waits on, grouped most urgent first. Within a group a repo's items sit together, under its name, and the
+it waits on, grouped most urgent first. Within a group a repo's items sit together, and the
 repo with the newest report comes first. The repo is the main checkout's directory name, so a
-worktree counts as its repo:
+worktree counts as its repo; the brief names it.
+
+Size follows urgency, under **Your move** and one count of what waits on you; with nothing, it
+says `Nothing waits on you.` Each item of the first two groups is a card: its key and what it
+waits on, its title, then the question with its numbered choices and the recommended one marked,
+what the pane of a blocked agent asks, or the report's headline over a line of its facts (oracles,
+evidence, ports, how many points it leaves open). The agents at work are two lines each, under
+**Agents at work**: the title, then the key, what the agent says it is doing and its oracles. The
+rest is a line each, quieter: under **Waiting on others** the PRs, under **At rest** the idle and
+closed agents. The row under the cursor shows a few lines of what it holds under itself: the end
+of a working agent's screen, a PR's first sentence and facts, a report's headline.
 
 1. **needs you**: agents that stopped to ask something, [left a question](#a-question-that-outlives-its-asker) or failed (`●` red), with their report or,
    without one, the end of their screen (less the input box Claude Code ends it with, so it ends on
@@ -464,7 +498,7 @@ worktree counts as its repo:
    stack runs from its bottom up, by the branch each merges into: a row right under the PR it is
    stacked on starts with `↳` and says only what its title adds to that one's. The age is how
    long it has been open for review: since it was made, or last taken out of draft. A PR's
-   detail starts with the latest thing someone else did on it, then what it waits on in full, who
+   whole text starts with the latest thing someone else did on it, then what it waits on in full, who
    was asked to review it and the PR it is stacked on.
 5. **idle**: agents whose session is open with nothing new for you (`○`), reviewed or without a report.
 6. **closed**: agents whose session is closed (`◇`), folded into one row that counts them (`▸ 8
@@ -510,11 +544,13 @@ evidence](#reports-and-evidence)), `d` the worktree's diff in git's
 pager, `r` that diff in the queue, to [comment on its lines](#reviewing-work-before-its-pr), `o` the ticket or PR in a browser [beside the board](#pages-beside-the-board), `O` in the system browser (either way a PR's news is then read), `p` a [port](#ports) its session listens on, `x` mark reviewed (the agent moves to idle or closed
 until it writes a new report, what it went on with is confirmed, and a question it left is set aside; a PR moves to **waiting** until what it waits on changes or someone writes on it), `K` twice close the agent's Rex
 session, or on a closed one drop it from the queue (its worktree and report stay), `c` list or fold
-the closed agents, `^u`/`^d` scroll, `^r` reload, `?` every key, `q` close the queue, leaving the board alone at full width (`^z` there brings the
+the closed agents, `space` or `→` read the row (again for its whole text, which `space` then
+scrolls; `←` back, `esc` closes it), `^u`/`^d` scroll the whole text, `^r` reload, `?` every key, `q` close the queue, leaving the board alone at full width (`^z` there brings the
 queue back beside it; `^c` quits foreman).
 
 `tab` turns the queue to its two other views, [today](#today) and the [stats](#stats), and back to
-the list. Each is a list over the detail of the row picked, as the queue itself is.
+the list. Each is a list under quiet headings over the detail of the row picked, which `space`,
+`^u` and `^d` scroll.
 
 ### Today
 
@@ -578,7 +614,7 @@ A row names the port its agent's session listens on, `:5173`, or `:3000 +1` with
 program there has one open: the dev server the agent started and left running, or one you started
 in a shell split beside it. So what the agent built can be opened as it runs in its worktree.
 
-- The detail starts with where each port is opened and the program that holds it
+- The whole text starts with where each port is opened and the program that holds it
   (`http://localhost:5173 (vite)`); for an agent that waits on a prompt or asks a question, it
   comes after that.
 - `p` opens it in a browser [beside the board](#pages-beside-the-board). With several, each `p` opens the next, lowest first, and the
@@ -594,18 +630,19 @@ in a shell split beside it. So what the agent built can be opened as it runs in 
 
 ### Answering a prompt
 
-An agent that reports `blocked` waits on a permission prompt or a menu. Its detail starts with
-what its pane asks, read again on every poll, and `y` presses `enter` there, `n` presses `esc`:
+An agent that reports `blocked` waits on a permission prompt or a menu. Its brief and whole text
+start with what its pane asks, read again on every poll while the cursor is on it, and so does its
+card once the cursor has been there (before, the card shows what the agent says it waits for); and `y` presses `enter` there, `n` presses `esc`:
 in Claude Code's permission prompt, the highlighted "Yes" and a cancel.
 
-- The key is pressed only while the pane still shows what the detail showed: the queue keeps the
+- The key is pressed only while the pane still shows what the queue showed: the queue keeps the
   [seen token](#reading-and-steering-agents) of the pane it read and reads the pane again before
-  pressing. A prompt answered meanwhile, or replaced by the next one, gets nothing, and the detail
+  pressing. A prompt answered meanwhile, or replaced by the next one, gets nothing, and the pane
   is read again.
 - They are keys in the pane, not answers: on a menu, `enter` picks whatever is highlighted. Read
-  the prompt in the detail first; `enter` on the row goes to the session for anything else.
+  the prompt on the card or in the brief first; `enter` on the row goes to the session for anything else.
 - An agent that says it waits on a question or a sign-in (`kind=question`, `kind=auth` in its
-  status) isn't a yes or no: `y` and `n` do nothing there, and the detail says so. One that names
+  status) isn't a yes or no: `y` and `n` do nothing there, and the whole text says so. One that names
   no kind is taken as a permission prompt.
 - Only these keys do it. No command presses a key in a pane, so the orchestrator can't.
 
@@ -644,7 +681,7 @@ foreman oracle --stays-green "lint" green
   the change may have been written to fit it. `--stays-green` is for the one nothing can make red
   first, as the check a refactor must keep, which isn't counted so. The command tells the agent
   when the green it records was never red.
-- The detail lists them under the report, each with its last result and the note it came with.
+- The whole text lists them under the report, each with its last result and the note it came with.
 - The runs are kept in `oracles.jsonl` beside the report, a line each, so a new dispatch starts
   with none. A name is one oracle whatever its case.
 - Claude Code runs `foreman oracle` without a permission prompt, as it does `foreman ask`.

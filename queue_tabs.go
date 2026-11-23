@@ -10,7 +10,6 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/x/ansi"
 )
 
 type queueTab int
@@ -166,66 +165,55 @@ func (q *queueModel) statsInput(key string) tea.Cmd {
 	return nil
 }
 
-// tabLayout splits the h lines under head lines of heading between a list of total rows and the
-// detail of the one picked, as the queue's own list does.
-func tabLayout(h, head, total int, footer []string) (listRows, detailRows int) {
-	listRows = max(3, min(total, (h-head-1-len(footer))*50/100))
-	return listRows, h - head - listRows - 1 - len(footer)
+// tabLayout splits the h lines under head lines of heading between a list of total lines and
+// the detail of the row picked, as the queue's own list does.
+func tabLayout(h, head, total int) (listRows, detailRows int) {
+	listRows = max(3, min(total, (h-head-1)*50/100))
+	return listRows, h - head - listRows - 1
 }
 
 func (q *queueModel) renderToday(width, h int) []string {
 	dot := fg(cSurface, " · ")
 	t := q.today
-	head := bold(fg(cMauve, "today")) + dot + fg(cSubtext, time.Now().Format("Mon 2 Jan")) + dot +
-		fg(cYellow, fmt.Sprintf("%d in progress", len(t.InProgress))) + dot +
+	head := bold("Today") + "  " + fg(cOverlay, time.Now().Format("Mon 2 Jan")) + dot +
+		fg(cSubtext, fmt.Sprintf("%d in progress", len(t.InProgress))) + dot +
 		fg(cSubtext, fmt.Sprintf("%d up next", len(t.UpNext))) + dot +
-		fg(cGreen, fmt.Sprintf("%d done since yesterday", len(t.Done)))
-	out := []string{head}
+		fg(cSubtext, fmt.Sprintf("%d done since yesterday", len(t.Done)))
+	out := []string{head, ""}
 	rows := q.todayRows()
-	footer := hints("↑↓ pick · enter go to it, dispatch or open · o open · tab stats · ? all keys", width)
-	listRows, detailRows := tabLayout(h, 1, len(rows), footer)
 	q.todayCursor = max(0, min(q.todayCursor, len(rows)-1))
-	q.todayTop = scrollTo(q.todayTop, q.todayCursor, listRows, len(rows))
-	keyW := 8
-	for _, r := range rows {
-		keyW = max(keyW, len(r.row.Key))
+	sections := 0
+	for n, r := range rows {
+		if n == 0 || rows[n-1].section != r.section {
+			sections++
+		}
 	}
-	keyW = min(22, keyW)
-	for n := q.todayTop; n < q.todayTop+listRows; n++ {
-		if n >= len(rows) {
-			empty := ""
-			if n == 0 {
-				empty = fg(cOverlay, "  nothing in progress, up next or done since yesterday")
+	listRows, detailRows := tabLayout(h, len(out), len(rows)+sections*2)
+	if len(rows) == 0 {
+		out = append(out, tall([]string{fg(cOverlay, "  nothing in progress, up next or done since yesterday")}, listRows)...)
+	} else {
+		keyW := 8
+		for _, r := range rows {
+			keyW = max(keyW, len(r.row.Key))
+		}
+		keyW = min(18, keyW)
+		entries := make([]listEntry, len(rows))
+		for n, r := range rows {
+			sel := n == q.todayCursor
+			mark, what := q.todayLabel(r)
+			right := cut(what, max(16, width/3))
+			if r.row.At != nil {
+				right += "  " + fg(cOverlay, fmt.Sprintf("%3s", age(*r.row.At)))
 			}
-			out = append(out, empty)
-			continue
+			right += "  " + fg(cOverlay, fit(r.row.Key, keyW))
+			title := displayTitle(r.row.Title)
+			text := fg(cSubtext, title)
+			if sel {
+				text = bold(fg(cText, title))
+			}
+			entries[n] = listEntry{todaySections[r.section], cOverlay, []string{row(sel, mark, text, right, width)}}
 		}
-		r, sel := rows[n], n == q.todayCursor
-		line := " "
-		if sel {
-			line = fg(cMauve, "▌")
-		}
-		// The list's name on its first row, and on the top row when the list starts above it.
-		name := ""
-		if n == q.todayTop || rows[n-1].section != r.section {
-			name = todaySections[r.section]
-		}
-		line += fg(cOverlay, fit(name, 9)) + " "
-		mark, what := q.todayLabel(r)
-		meta := ansi.Truncate(what, max(16, width/3), "…")
-		if r.row.At != nil {
-			meta += "  " + fg(cOverlay, age(*r.row.At))
-		}
-		keyColor, title := cOverlay, fg(cSubtext, r.row.Title)
-		if sel {
-			keyColor, title = cText, bold(fg(cText, r.row.Title))
-		}
-		left := line + mark + " " + fg(keyColor, fit(r.row.Key, keyW)) + "  "
-		row := left + fit(title, max(0, width-ansi.StringWidth(left)-ansi.StringWidth(meta)-2)) + "  " + meta
-		if sel {
-			row = selected(row, width)
-		}
-		out = append(out, row)
+		out = append(out, groupedList(entries, q.todayCursor, &q.todayTop, listRows)...)
 	}
 	var detail []string
 	if len(rows) > 0 {
@@ -233,7 +221,7 @@ func (q *queueModel) renderToday(width, h int) []string {
 	}
 	shown := window(detail, &q.scroll, detailRows)
 	out = append(out, divider(width, q.scroll, detailRows, len(detail)))
-	return append(append(out, shown...), footer...)
+	return append(out, shown...)
 }
 
 // todayLabel is a row's mark and what it says: a dispatch in progress as its row in the queue,
@@ -278,19 +266,21 @@ func (q *queueModel) renderStats(width, h int) []string {
 			periods = append(periods, fg(cOverlay, periodName(d)))
 		}
 	}
-	head := bold(fg(cMauve, "stats")) + dot + strings.Join(periods, "  ") + dot + fg(cSubtext, "by "+cmp.Or(q.statsBy, byTicket))
+	head := bold("Stats") + "  " + strings.Join(periods, "  ") + dot + fg(cOverlay, "by "+cmp.Or(q.statsBy, byTicket))
 	if q.statsLoading {
-		head += fg(cYellow, "  counting…")
+		head += fg(cOverlay, "  counting…")
 	}
 	totals := fg(cOverlay, "nothing counted yet")
 	if q.statsLoaded {
 		parts := statsHead(rep)[1:]
 		parts[0] = bold(fg(cText, parts[0]))
+		for n := range parts[1:] {
+			parts[n+1] = fg(cSubtext, parts[n+1])
+		}
 		totals = strings.Join(parts, dot)
 	}
-	out := []string{head, totals}
-	footer := hints("↑↓ pick · ←→ today, 7 or 30 days · g by ticket or repo · tab queue · ? all keys", width)
-	listRows, detailRows := tabLayout(h, 2, len(rep.Rows), footer)
+	out := []string{head, totals, ""}
+	listRows, detailRows := tabLayout(h, len(out), len(rep.Rows))
 	q.statsCursor = max(0, min(q.statsCursor, len(rep.Rows)-1))
 	q.statsTop = scrollTo(q.statsTop, q.statsCursor, listRows, len(rep.Rows))
 	nameW := 8
@@ -308,17 +298,13 @@ func (q *queueModel) renderStats(width, h int) []string {
 			continue
 		}
 		r, sel := rep.Rows[n], n == q.statsCursor
-		line, nameColor, title := " ", cOverlay, fg(cSubtext, r.Title)
+		title := displayTitle(r.Title)
+		text := fg(cSubtext, title)
 		if sel {
-			line, nameColor, title = fg(cMauve, "▌"), cText, bold(fg(cText, r.Title))
+			text = bold(fg(cText, title))
 		}
-		left := line + " " + fg(nameColor, fit(r.Name, nameW)) + "  "
-		meta := fmt.Sprintf("%8s  %6s  %7s", money(r.Cost), tokenCount(r.tokens()), workTime(r.Seconds))
-		row := left + fit(title, max(0, width-ansi.StringWidth(left)-ansi.StringWidth(meta)-2)) + "  " + fg(cSubtext, meta)
-		if sel {
-			row = selected(row, width)
-		}
-		out = append(out, row)
+		meta := fg(cSubtext, fmt.Sprintf("%8s  %6s  %7s", money(r.Cost), tokenCount(r.tokens()), workTime(r.Seconds)))
+		out = append(out, row(sel, " ", text, meta+"  "+fg(cOverlay, fit(r.Name, nameW)), width))
 	}
 	var detail []string
 	if len(rep.Rows) > 0 {
@@ -326,7 +312,7 @@ func (q *queueModel) renderStats(width, h int) []string {
 	}
 	shown := window(detail, &q.scroll, detailRows)
 	out = append(out, divider(width, q.scroll, detailRows, len(detail)))
-	return append(append(out, shown...), footer...)
+	return append(out, shown...)
 }
 
 // statDetail is a row's tokens by kind, under what they cost and the time its agents worked.

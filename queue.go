@@ -632,12 +632,18 @@ type queueModel struct {
 	prsLoading    bool
 	// reloadPrs, when set, has the board load the PRs, which then reach the queue too: beside the
 	// board, the queue loads none of its own.
-	reloadPrs    func() tea.Cmd
-	all          []queueItem // every item
-	items        []queueItem // the rows: all, with the closed agents folded into one unless showClosed
-	showClosed   bool
-	cursor, top  int
-	scroll       int
+	reloadPrs  func() tea.Cmd
+	all        []queueItem // every item
+	items      []queueItem // the rows: all, with the closed agents folded into one unless showClosed
+	showClosed bool
+	cursor     int
+	top        int // the list's first line
+	scroll     int
+	// reading is how far the reading pane is open on the row under the cursor: 0, the brief,
+	// or the whole text, which scroll scrolls.
+	reading      int
+	unfocused    bool                // the board has the keys: the queue draws no cursor
+	docs         map[string]doc      // by key + sig: the item's report, read for its card and brief
 	details      map[string][]string // by key + sig
 	feedback     *reply              // the reply being typed to an agent
 	review       *diffReview         // the diff of an agent's work, where I comment on lines
@@ -1045,10 +1051,30 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 		return move(q.cursor - 1)
 	case "down", "j", "ctrl+n":
 		return move(q.cursor + 1)
-	case "ctrl+u":
-		q.scroll -= 10
-	case "ctrl+d", "space":
-		q.scroll += 10
+	// space and → open the reading pane on the row, then its whole text; ← goes back, esc closes it.
+	case "space", "right":
+		switch {
+		case q.tab != listTab:
+			q.scroll += 10
+		case q.reading < readAll:
+			q.reading, q.scroll = q.reading+1, 0
+		case msg.String() == "space":
+			q.scroll += 10
+		}
+	case "left":
+		if q.reading > 0 {
+			q.reading, q.scroll = q.reading-1, 0
+		}
+	case "esc":
+		q.reading, q.scroll = 0, 0
+	case "ctrl+u", "ctrl+d":
+		if q.tab == listTab && q.reading != readAll {
+			q.reading, q.scroll = readAll, 0
+		} else if msg.String() == "ctrl+u" {
+			q.scroll -= 10
+		} else {
+			q.scroll += 10
+		}
 	case "ctrl+r":
 		q.details = map[string][]string{}
 		return tea.Batch(pollQueue, q.loadPrs())
@@ -1056,6 +1082,7 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 		q.help = true
 		return nil
 	case "tab":
+		q.reading = 0
 		return q.showTab((q.tab + 1) % 3)
 	case "c":
 		q.showClosed = !q.showClosed

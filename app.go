@@ -2,7 +2,7 @@ package main
 
 // The program: the board and the queue in one pane, side by side or one of them alone. Each keeps
 // its own model and keys; the app gives the keys to the side in focus, everything else to both,
-// and draws them next to each other.
+// and draws them next to each other, with what the side in focus has open to read over the other.
 
 import (
 	"fmt"
@@ -19,8 +19,10 @@ const (
 )
 
 const (
-	// boardShare is the board's share of the width beside the queue, in tenths.
-	boardShare = 6
+	// boardShare is the board's share of the width beside the queue, in percent.
+	boardShare = 45
+	// gapWidth is the space between the two.
+	gapWidth = 3
 	// bothMinWidth is the narrowest pane that fits the two side by side; under it, only the side
 	// in focus shows.
 	bothMinWidth = 110
@@ -65,8 +67,8 @@ func (a *app) widths() (board, queue int) {
 	if a.alone() {
 		return a.width, a.width
 	}
-	board = (a.width - 1) * boardShare / 10
-	return board, a.width - 1 - board
+	board = (a.width - gapWidth) * boardShare / 100
+	return board, a.width - gapWidth - board
 }
 
 // resize tells each side its size.
@@ -74,6 +76,7 @@ func (a *app) resize() tea.Cmd {
 	if a.width == 0 {
 		return nil
 	}
+	a.board.unfocused, a.queue.unfocused = a.focus != boardSide, a.focus != queueSide
 	bw, qw := a.widths()
 	return tea.Batch(
 		a.to(boardSide, tea.WindowSizeMsg{Width: bw, Height: a.height}),
@@ -152,7 +155,8 @@ func (a *app) View() tea.View {
 	return v
 }
 
-// content is the side in focus alone, or the board, a rule and the queue, the other side faint.
+// content is the side in focus alone, or the board beside the queue, the side out of focus faint
+// unless what the other has open to read takes its place. The footer is the focused side's.
 func (a *app) content() string {
 	if a.alone() {
 		if a.focus == queueSide {
@@ -161,24 +165,34 @@ func (a *app) content() string {
 		return a.board.content()
 	}
 	bw, qw := a.widths()
-	left, right := strings.Split(a.board.content(), "\n"), strings.Split(a.queue.content(), "\n")
-	rule := fg(cSurface, "│")
-	lines := make([]string, a.height)
-	for n := range lines {
-		l, r := "", ""
-		if n < len(left) {
-			l = left[n]
-		}
-		if n < len(right) {
-			r = right[n]
-		}
-		l, r = fit(l, bw), fit(r, qw)
-		if a.focus == queueSide {
-			l = dim(l)
-		} else {
-			r = dim(r)
-		}
-		lines[n] = l + rule + r
+	var focus sidePane = a.board
+	if a.focus == queueSide {
+		focus = a.queue
 	}
-	return strings.Join(lines, "\n")
+	footer := hints(focus.keys(), a.width-2)
+	rows := max(0, a.height-len(footer)-1)
+	var left, right []string
+	if a.focus == boardSide {
+		left = a.board.body(bw, rows)
+		if right = a.board.reader(qw, rows); right == nil {
+			right = dimAll(a.queue.body(qw, rows))
+		}
+	} else {
+		right = a.queue.body(qw, rows)
+		if left = a.queue.reader(bw, rows); left == nil {
+			left = dimAll(a.board.body(bw, rows))
+		}
+	}
+	text, c := a.status()
+	return frame(beside(left, bw, spaces(gapWidth), right, qw, rows), footer, text, c, a.width, rows)
+}
+
+// status is the newer of the two sides' status lines.
+func (a *app) status() (string, Color) {
+	bt, bc, bat := a.board.statusLine()
+	qt, qc, qat := a.queue.statusLine()
+	if qt != "" && (bt == "" || qat.After(bat)) {
+		return qt, qc
+	}
+	return bt, bc
 }

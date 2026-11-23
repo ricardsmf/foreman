@@ -180,6 +180,10 @@ type model struct {
 	help         bool      // the list of keys is showing
 	helpScroll   int
 	theme        theme
+	// reading is how far the reading pane is open on the row under the cursor: 0, the brief,
+	// or the whole text, which detailScroll scrolls.
+	reading      int
+	unfocused    bool // the queue has the keys: the board draws no cursor
 	detailScroll int
 	details      map[string][]string // nil value = loading
 	detailOK     map[string]bool     // the cached detail is the real thing, not an error

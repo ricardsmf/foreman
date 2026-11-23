@@ -388,9 +388,9 @@ func (m *model) cleanupInput(msg tea.KeyPressMsg) tea.Cmd {
 
 func (m *model) renderCleanup(width, h int) []string {
 	v := m.cleanup
-	out := []string{m.header("clean up worktrees"),
+	out := []string{m.header("clean up worktrees"), "",
 		bold("Dispatches whose ticket is done, PR is closed, or task's session is closed"),
-		fg(cMauve, strings.Repeat("─", width))}
+		fg(cSurface, strings.Repeat("─", width))}
 	for n, c := range v.items {
 		mark := " "
 		if n == v.cursor {
@@ -425,12 +425,5 @@ func (m *model) renderCleanup(width, h int) []string {
 		}
 		out = append(out, line)
 	}
-	footer := hints("↑↓ pick · space toggle · a all/none · enter remove (branches stay; agent sessions close) · esc back", width)
-	if v.busy {
-		footer = []string{fg(cOverlay, "removing…")}
-	}
-	for len(out) < h-len(footer) {
-		out = append(out, "")
-	}
-	return append(out[:max(0, h-len(footer))], footer...)
+	return tall(out, h)
 }

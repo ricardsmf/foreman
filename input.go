@@ -16,11 +16,18 @@ func (m *model) boardInput(msg tea.KeyPressMsg) tea.Cmd {
 	move := func(to int) { m.cursor, m.detailScroll = max(0, to), 0 }
 	text := msg.Key().Text
 	switch k := msg.String(); {
+	case k == "esc" && m.reading > 0:
+		m.reading, m.detailScroll = 0, 0
 	case k == "esc":
 		if m.query == "" {
 			return tea.Quit
 		}
 		m.query, m.queryBack = "", 0
+	// → reads the row where the filter's cursor has nowhere to go, and ← goes back.
+	case k == "right" && m.queryBack == 0 && ok:
+		m.reading, m.detailScroll = min(readAll, m.reading+1), 0
+	case k == "left" && m.reading > 0:
+		m.reading, m.detailScroll = m.reading-1, 0
 	case k == "ctrl+c":
 		return tea.Quit
 	case k == "up" || k == "ctrl+p":
@@ -31,11 +38,14 @@ func (m *model) boardInput(msg tea.KeyPressMsg) tea.Cmd {
 		move(m.cursor - 10)
 	case k == "pgdown":
 		move(m.cursor + 10)
+	case (k == "ctrl+u" || k == "ctrl+d") && m.reading != readAll:
+		m.reading, m.detailScroll = readAll, 0
 	case k == "ctrl+u":
 		m.detailScroll -= 10
 	case k == "ctrl+d":
 		m.detailScroll += 10
 	case k == "tab":
+		m.reading = 0
 		m.view = 1 - m.view
 		m.assignee, m.query, m.queryBack = nil, "", 0
 		move(0)

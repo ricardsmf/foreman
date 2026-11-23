@@ -1280,7 +1280,7 @@ func TestTruncatedPrList(t *testing.T) {
 	if !strings.Contains(m.status, "first 500 open PRs") {
 		t.Errorf("status = %q", m.status)
 	}
-	if header := firstLine(m.View().Content); !strings.Contains(header, "1/1+") {
+	if header := firstLine(m.View().Content); !strings.Contains(header, "1 of 1+") {
 		t.Errorf("header = %q", header)
 	}
 	m.Update(loadedMsg{which: prs, rows: []Row{prRow(Pr{Key: "app#1"})}})
@@ -1465,8 +1465,8 @@ func TestFormTogglesFix(t *testing.T) {
 	m := &model{state: State{RepoByProject: map[string]string{}}, repos: []string{"/r/one"}}
 	tab, space := tea.KeyPressMsg{Code: tea.KeyTab}, tea.KeyPressMsg{Code: tea.KeySpace, Text: " "}
 	m.openForm(prRow(Pr{Key: "app#1", Checkout: "/w/app", Number: 1, Branch: "li/fld-1-x"}))
-	if form := strings.Join(m.renderForm(140, 40), "\n"); !strings.Contains(form, "/w/app-pr-1") || !strings.Contains(form, fg(cSubtext, "enter")+" "+fg(cOverlay, "review")) {
-		t.Errorf("a review form:\n%s", form)
+	if form := strings.Join(m.renderForm(140, 40), "\n"); !strings.Contains(form, "/w/app-pr-1") || !strings.Contains(m.keys(), "enter review") {
+		t.Errorf("a review form:\n%s\nkeys %q", form, m.keys())
 	}
 	m.formInput(tab)
 	m.formInput(space)
@@ -1474,10 +1474,13 @@ func TestFormTogglesFix(t *testing.T) {
 		t.Fatalf("after tab, space: fix %t", m.form.fix)
 	}
 	form := strings.Join(m.renderForm(140, 40), "\n")
-	for _, want := range []string{fg(cGreen, "[x]") + " fix it", "li/fld-1-x", "/w/app-fix-1", fg(cSubtext, "enter") + " " + fg(cOverlay, "fix")} {
+	for _, want := range []string{fg(cGreen, "[x]") + " fix it", "li/fld-1-x", "/w/app-fix-1"} {
 		if !strings.Contains(form, want) {
 			t.Errorf("the fix form lacks %q:\n%s", want, form)
 		}
+	}
+	if !strings.Contains(m.keys(), "enter fix") {
+		t.Errorf("the fix form's keys: %q", m.keys())
 	}
 }
 
@@ -2941,7 +2944,7 @@ func TestHintsWrapBetweenKeys(t *testing.T) {
 // A list item's wrapped lines hang under its text, and a fenced block isn't styled as markdown.
 func TestRenderMarkdownHangsAndFences(t *testing.T) {
 	got := renderMarkdown([]string{"- one two three four", "```", "a **b** c", "```"}, 12)
-	want := []string{"- one two", "  three four", fg(cOverlay, "```"), fg(cSubtext, "a **b** c"), fg(cOverlay, "```")}
+	want := []string{fg(cOverlay, "· ") + "one two", "  three four", fg(cOverlay, "```"), fg(cSubtext, "a **b** c"), fg(cOverlay, "```")}
 	if !slices.Equal(got, want) {
 		t.Errorf("renderMarkdown:\n%q\nwant\n%q", got, want)
 	}

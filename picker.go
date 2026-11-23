@@ -320,7 +320,7 @@ func (m *model) renderPicker(width, rows int) []string {
 		what, now = "Assignee", cmp.Or(p.row.Assignee, "unassigned")
 	}
 	out := []string{
-		bold(fg(cMauve, what+" of "+p.row.Key)) + fg(cOverlay, " now "+now+" · "+p.row.Summary),
+		bold(what+" of "+p.row.Key) + fg(cOverlay, "  now "+now), fg(cSubtext, cut(displayTitle(p.row.Summary), width)), "",
 		fg(cMauve, "› ") + cursorText(p.query, p.queryBack),
 	}
 	items := m.choices()

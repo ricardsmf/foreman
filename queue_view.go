@@ -1,17 +1,19 @@
 package main
 
-// The queue's screen: its rows, the detail under them and the keys.
+// The queue's screen. Size follows urgency: what waits on me is a card that says what it asks or
+// found, what moves without me a line or two, and what is at rest a quieter line. The row under
+// the cursor opens in the reading pane.
 
 import (
 	"cmp"
 	"fmt"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/x/ansi"
 )
 
 func (q *queueModel) View() tea.View {
@@ -31,12 +33,59 @@ func (q *queueModel) content() string {
 	if q.width == 0 {
 		return ""
 	}
-	inner := q.width - 2
-	body := q.render(inner, q.height-1)
-	if q.help {
-		body = renderHelp("queue", queueHelp, inner, q.height-1, &q.helpScroll)
+	return screen(q, q.width, q.height)
+}
+
+// body is the queue's list, or the view it has open in its place.
+func (q *queueModel) body(width, h int) []string {
+	switch {
+	case q.help:
+		return indent(renderHelp("queue", queueHelp, width-2, h, &q.helpScroll), 1)
+	case q.review != nil:
+		return indent(q.renderReview(width-2, h), 1)
+	case q.tab == todayTab:
+		return indent(q.renderToday(width-2, h), 1)
+	case q.tab == statsTab:
+		return indent(q.renderStats(width-2, h), 1)
 	}
-	return frame(body, q.status, q.statusColor, inner)
+	return q.render(width, h)
+}
+
+func (q *queueModel) statusLine() (string, Color, time.Time) {
+	return q.status, q.statusColor, q.statusAt
+}
+
+// reader is the reading pane of the item under the cursor: its brief, or its whole text.
+func (q *queueModel) reader(width, h int) []string {
+	it, ok := q.current()
+	if q.reading == 0 || !ok || q.help || q.review != nil || q.tab != listTab || q.feedback != nil {
+		return nil
+	}
+	tw := paneText(width)
+	if q.reading == readBrief {
+		return panel(q.itemBrief(it, tw, h-2), width, h)
+	}
+	kick, _ := q.itemKicker(it)
+	return panel(readAllOf(kick, renderMarkdown(q.detailLines(it), tw), &q.scroll, tw, h-2), width, h)
+}
+
+// detailLines are the item's whole text: its report, evidence and screen, or a PR's
+// description, with what its session listens on.
+func (q *queueModel) detailLines(it queueItem) []string {
+	lines := q.details[detailKey(it)]
+	if lines == nil {
+		lines = []string{"# " + it.Key + ": " + it.Title, "", fg(cOverlay, "Loading…")}
+	}
+	// Not part of the detail that is kept: the ports change while a report stays as it is.
+	// Under a prompt or a question, which the detail starts with, else over the rest.
+	switch {
+	case len(it.Ports) == 0:
+	case it.Agent == "blocked" || it.Question != nil:
+		lines = append(slices.Clone(lines), "", portsLine(it.Ports))
+	default:
+		lines = append([]string{portsLine(it.Ports), ""}, lines...)
+	}
+	return lines
 }
 
 func age(t time.Time) string {
@@ -156,199 +205,388 @@ func portsLine(ports []rexPort) string {
 	return "**Listening:** " + strings.Join(urls, " · ") + ", `p` opens it"
 }
 
+// shortKey is the item's key as a row has room for it: #1434, task 18, fix #12.
+func shortKey(it queueItem) string {
+	key := it.Key
+	n := strings.Index(key, "#")
+	switch {
+	case it.Kind == prItem && n >= 0:
+		return key[n:]
+	case isTask(key):
+		return "task " + key[strings.LastIndex(key, "-")+1:]
+	case isFix(key) && n >= 0:
+		return "fix " + key[n:]
+	case it.review() && n >= 0:
+		return "review " + key[n:]
+	}
+	return key
+}
+
+// itemTitle is the title a row shows: without its tags, or for a PR under the one it is stacked
+// on, what its title adds to that one's.
+func itemTitle(it queueItem) string {
+	switch {
+	case it.Under != "":
+		// What it adds keeps its kind, docs: or fix:, and drops its tags.
+		rest := it.Title[sharedLead(it.Under, it.Title):]
+		kind := conventionalRe.FindString(rest)
+		return "↳ " + kind + strings.TrimLeft(tagRe.ReplaceAllString(strings.TrimSpace(rest[len(kind):]), ""), " ")
+	case it.Watcher || it.Orchestrator:
+		return it.Title
+	}
+	return displayTitle(it.Title)
+}
+
+// doc is the item's report read for a glance, once for what the item shows.
+func (q *queueModel) doc(it queueItem) doc {
+	if it.Kind != agentItem || it.Report == "" {
+		return doc{}
+	}
+	key := detailKey(it)
+	if d, ok := q.docs[key]; ok {
+		return d
+	}
+	b, _ := os.ReadFile(it.Report)
+	d := parseDoc(strings.Split(string(b), "\n"))
+	if q.docs == nil {
+		q.docs = map[string]doc{}
+	}
+	q.docs[key] = d
+	return d
+}
+
+// render is the queue's list, h lines: a card for each item that waits on me, then the agents
+// at work, then what waits on others and what is at rest.
 func (q *queueModel) render(width, h int) []string {
-	if q.review != nil {
-		return q.renderReview(width, h)
-	}
-	switch q.tab {
-	case todayTab:
-		return q.renderToday(width, h)
-	case statsTab:
-		return q.renderStats(width, h)
-	}
-	dot := fg(cSurface, " · ")
-	need := fg(cGreen, "nothing needs you")
-	if n := q.needYou(); n > 0 {
-		need = bold(fg(cRed, fmt.Sprintf("%d need you", n)))
-	}
-	head := bold(fg(cMauve, "queue")) + dot + need
-	for _, g := range []struct {
-		g group
-		c Color
-	}{{working, cYellow}, {waiting, cOverlay}, {idle, cGreen}, {closed, cOverlay}} {
-		if n := q.count(g.g); n > 0 {
-			head += dot + fg(g.c, fmt.Sprintf("%d %s", n, groupNames[g.g]))
-		}
-	}
-	if q.prsLoading {
-		head += fg(cYellow, "  loading PRs…")
-	}
-	out := []string{head}
-
-	// The keys of every moment, and those the row under the cursor adds; ? lists the rest.
-	keys := "↑↓ pick · enter go/resume · f reply · x reviewed · d diff · tab today · ? all keys"
-	if it, ok := q.current(); ok && it.Fold > 0 {
-		keys = "↑↓ pick · enter list them · tab today · ? all keys"
-	} else if ok && pressable(it) && q.seen[detailKey(it)] != "" {
-		keys = "y press enter · n press esc · " + keys
-	} else if asked, decision, asks := it.pendingQuestion(); ok && asks && (len(asked.Options) > 0 || asked.Recommended != "") {
-		pick := ""
-		if n := len(asked.Options); n > 0 {
-			pick = fmt.Sprintf("1-%d choose · ", n)
-		}
-		switch {
-		case decision:
-			pick = "a confirm · " + pick
-		case asked.Recommended != "":
-			pick += "a take the recommended · "
-		}
-		keys = pick + keys
-	} else if ok && len(it.Ports) > 0 {
-		keys = "p open " + portsMark(it.Ports[:1]) + " · " + keys
-	}
-	if q.showClosed {
-		keys += " · c fold closed"
-	}
-	if q.feedback != nil {
-		keys = "type the reply · enter send · esc cancel"
-	}
-	footer := hints(keys, width)
-	listRows := max(3, min(len(q.items), (h-2-len(footer))*40/100))
-	detailRows := h - listRows - 2 - len(footer)
-	q.top = scrollTo(q.top, q.cursor, listRows, len(q.items))
-
-	keyW := 8
-	for _, it := range q.items {
-		keyW = max(keyW, len(it.Key))
-	}
-	keyW = min(22, keyW)
-	repoW := 0
-	for _, it := range q.items {
-		repoW = max(repoW, len(it.Repo))
-	}
-	repoW = min(14, repoW)
-	// Ages line up in a column of their own at the right edge.
-	ageW := 0
-	for _, it := range q.items {
-		ageW = max(ageW, len(age(it.When)))
-	}
-	for n := q.top; n < q.top+listRows; n++ {
-		if n >= len(q.items) {
-			empty := ""
-			if n == 0 {
-				empty = fg(cOverlay, "  no agents dispatched")
-			}
-			out = append(out, empty)
-			continue
-		}
-		it := q.items[n]
-		sel := n == q.cursor
-		line := " "
-		if sel {
-			line = fg(cMauve, "▌")
-		}
-		// The group's name on its first row, and on the top row when the group starts above it.
-		name := ""
-		if n == q.top || q.items[n-1].Group != it.Group {
-			name = groupNames[it.Group]
-		}
-		groupColor := cOverlay
-		if it.pending() {
-			groupColor = cMauve
-		}
-		line += fg(groupColor, fit(name, 9)) + " "
-		// Likewise the repo, on the first row of its run within the group.
-		if repoW > 0 {
-			repo := ""
-			if name != "" || q.items[n-1].Repo != it.Repo {
-				repo = it.Repo
-			}
-			line += fg(cSubtext, fit(repo, repoW)) + " "
-		}
-		if it.Fold > 0 {
-			row := line + fg(cOverlay, "▸") + " " + fg(cSubtext, fmt.Sprintf("%d closed", it.Fold)) + fg(cOverlay, "  c lists them")
-			if sel {
-				row = selected(row, width)
-			}
-			out = append(out, row)
-			continue
-		}
-		mark, what := itemLabel(it)
-		// What a working agent says it is doing tells more than that it works.
-		if it.Group == working && it.Question == nil && it.Doing != "" {
-			what = fg(cYellow, ansi.Truncate(it.Doing, max(16, width/3), "…"))
-		}
-		if it.Kind == prItem {
-			what = ansi.Truncate(what, max(16, width/3), "…")
-		}
-		var ev []string
-		if len(it.Ports) > 0 {
-			ev = append(ev, portsMark(it.Ports))
-		}
-		if it.Shots > 0 {
-			ev = append(ev, fmt.Sprintf("▣ %d", it.Shots))
-		}
-		if it.Videos > 0 {
-			ev = append(ev, "▶ video")
-		}
-		meta := what
-		if mark := oracleMark(it.Oracles); mark != "" {
-			meta += "  " + mark
-		}
-		if len(ev) > 0 {
-			meta += "  " + fg(cBlue, strings.Join(ev, " "))
-		}
-		if ageW > 0 {
-			meta += "  " + fg(cOverlay, fmt.Sprintf("%*s", ageW, age(it.When)))
-		}
-		// A PR under the one it is stacked on says what its title adds to that one's.
-		text := it.Title
-		if it.Under != "" {
-			text = "↳ " + it.Title[sharedLead(it.Under, it.Title):]
-		}
-		keyColor, title := cOverlay, fg(cSubtext, text)
-		if it.Group == closed {
-			title = fg(cOverlay, text)
-		}
-		if sel {
-			keyColor, title = cText, bold(fg(cText, text))
-		}
-		left := line + mark + " " + fg(keyColor, fit(it.Key, keyW)) + "  "
-		titleW := width - ansi.StringWidth(left) - ansi.StringWidth(meta) - 2
-		row := left + fit(title, max(0, titleW)) + "  " + meta
-		if sel {
-			row = selected(row, width)
-		}
-		out = append(out, row)
-	}
-
-	var detail []string
-	if q.feedback != nil {
+	var box []string
+	if f := q.feedback; f != nil {
 		verb := "Reply to "
-		if q.feedback.answer {
+		if f.answer {
 			verb = "Answer "
 		}
-		detail = append(detail, bold(fg(cMauve, verb+q.feedback.key)), "")
-		for _, l := range wrap(cursorText(q.feedback.text, q.feedback.back), width-2) {
-			detail = append(detail, "  "+l)
+		box = append(box, fg(cSurface, strings.Repeat("─", width)), " "+bold(verb+f.key))
+		for _, l := range wrap(cursorText(f.text, f.back), width-4) {
+			box = append(box, "   "+l)
 		}
-	} else if it, ok := q.current(); ok {
-		lines := q.details[detailKey(it)]
-		if lines == nil {
-			lines = []string{"# " + it.Key + ": " + it.Title, "", fg(cOverlay, "Loading…")}
-		}
-		// Not part of the detail that is kept: the ports change while a report stays as it is.
-		// Under a prompt or a question, which the detail starts with, else over the rest.
-		switch {
-		case len(it.Ports) == 0:
-		case it.Agent == "blocked" || it.Question != nil:
-			lines = append(slices.Clone(lines), "", portsLine(it.Ports))
-		default:
-			lines = append([]string{portsLine(it.Ports), ""}, lines...)
-		}
-		detail = renderMarkdown(lines, width)
 	}
-	shown := window(detail, &q.scroll, detailRows)
-	out = append(out, divider(width, q.scroll, detailRows, len(detail)))
-	return append(append(out, shown...), footer...)
+	rows := max(1, h-len(box))
+	lines, from, to := q.listLines(width)
+	q.top = scrollSpan(q.top, max(0, from-1), to, rows, len(lines))
+	// The cards come first: while the cursor's fits from the top, the top stays.
+	if to < rows {
+		q.top = 0
+	}
+	shown := window(lines, &q.top, rows)
+	if q.top+rows < len(lines) {
+		shown[rows-1] = " " + fg(cOverlay, "↓ more below")
+	}
+	return append(shown, box...)
+}
+
+// listLines are the list's lines, and the first and last of the item under the cursor.
+func (q *queueModel) listLines(width int) (lines []string, from, to int) {
+	heading := func(name string, c Color) {
+		lines = append(lines, "", " "+fg(c, name))
+	}
+	count := ""
+	if n := q.needYou(); n > 0 {
+		count = fmt.Sprint(n)
+	}
+	if q.prsLoading {
+		count = strings.TrimSpace("loading PRs…  " + count)
+	}
+	lines = append(lines, lr(" "+bold("Your move"), fg(cOverlay, count)+" ", width))
+	if q.needYou() == 0 {
+		lines = append(lines, "", "   "+fg(cOverlay, "Nothing waits on you."))
+	}
+	if len(q.items) == 0 {
+		lines = append(lines, "", "   "+fg(cOverlay, "no agents dispatched"))
+	}
+	// What each row at rest says lines up in a column.
+	whatW := 0
+	for _, it := range q.items {
+		if _, what := itemLabel(it); !it.pending() && it.Group != working {
+			whatW = max(whatW, textWidth(what))
+		}
+	}
+	whatW = min(whatW, max(12, width*2/5))
+	extraW := 0
+	for _, it := range q.items {
+		if !it.pending() && it.Group != working {
+			extraW = max(extraW, textWidth(portsMark(it.Ports)))
+		}
+	}
+	prev := group(-1)
+	for n, it := range q.items {
+		sel := n == q.cursor && !q.unfocused
+		start := len(lines)
+		switch {
+		case it.pending():
+			lines = append(lines, "")
+			lines = append(lines, q.card(it, sel, width)...)
+		case it.Group == working:
+			if prev != working {
+				heading("Agents at work", cSubtext)
+			}
+			lines = append(lines, q.workingRow(it, sel, width)...)
+		default:
+			rest := it.Group == idle || it.Group == closed
+			switch {
+			case it.Group == waiting && prev != waiting:
+				heading("Waiting on others", cSubtext)
+			case rest && prev != idle && prev != closed:
+				heading("At rest", cOverlay)
+			}
+			lines = append(lines, q.restRow(it, sel, width, whatW, extraW)...)
+		}
+		if n == q.cursor {
+			from, to = start, len(lines)-1
+		}
+		prev = it.Group
+	}
+	return lines, from, to
+}
+
+// card is an item that waits on me, with what it asks or what it found.
+func (q *queueModel) card(it queueItem, sel bool, width int) []string {
+	cw := paneText(width)
+	mark, what := itemLabel(it)
+	when := it.When
+	if asked, _, ok := it.pendingQuestion(); ok && when.IsZero() {
+		when = asked.At
+	}
+	body := []string{lr(mark+" "+bold(shortKey(it))+" "+what, fg(cOverlay, age(when)), cw)}
+	for _, l := range wrapN(itemTitle(it), cw, 2) {
+		body = append(body, fg(cSubtext, l))
+	}
+	if more := q.cardBody(it, cw); len(more) > 0 {
+		body = append(append(body, ""), more...)
+	}
+	bg, bar := bgPanel, " "
+	if sel {
+		bg, bar = bgSelected, fg(cMauve, "▌")
+	}
+	out := []string{bar + paint(bg, "", width-1)}
+	for _, l := range body {
+		out = append(out, bar+paint(bg, "  "+l, width-1))
+	}
+	return append(out, bar+paint(bg, "", width-1))
+}
+
+// cardBody is what a card says under its title: the question and its choices, what the pane
+// asks, or the report's headline and a line of its facts.
+func (q *queueModel) cardBody(it queueItem, width int) []string {
+	if asked, decision, ok := it.pendingQuestion(); ok {
+		out := wrapN(asked.Text, width, 6)
+		if rows := choiceRows(asked, decision, width, 2); len(rows) > 0 {
+			out = append(append(out, ""), rows...)
+		}
+		return out
+	}
+	if it.Kind == prItem {
+		return factsLine(prFacts(it), width)
+	}
+	var out []string
+	if it.Agent == "blocked" {
+		asks := promptOf(q.details[detailKey(it)])
+		for _, l := range asks[max(0, len(asks)-6):] {
+			out = append(out, fg(cSubtext, cut(l, width)))
+		}
+		if len(asks) == 0 {
+			out = append(out, fg(cSubtext, cmp.Or(it.Doing, "It "+waitsFor(it.Waits))))
+		}
+	}
+	d := q.doc(it)
+	switch {
+	case d.head != "":
+		out = append(out, wrapN(inline(d.head), width, 3)...)
+	case it.Report == "" && it.Agent != "blocked":
+		out = append(out, fg(cOverlay, "It wrote no report."))
+	}
+	var facts []string
+	for _, f := range itemFacts(it) {
+		if f.text != "" && f.label != "session" {
+			facts = append(facts, fg(cmp.Or(f.tone, cSubtext), f.text))
+		}
+	}
+	if _, points := d.open(); len(points) > 0 {
+		facts = append(facts, fg(cYellow, fmt.Sprintf("%d left open", len(points))))
+	}
+	if len(facts) > 0 {
+		out = append(out, "", strings.Join(facts, fg(cSurface, "  ·  ")))
+	}
+	return out
+}
+
+// workingRow is an agent at work: its title, and under it what it says it is doing.
+func (q *queueModel) workingRow(it queueItem, sel bool, width int) []string {
+	mark, what := itemLabel(it)
+	if it.Question == nil && it.Doing != "" {
+		what = fg(cYellow, it.Doing)
+	}
+	second := fg(cOverlay, shortKey(it)+" · ") + what
+	if o := oracleMark(it.Oracles); o != "" {
+		second += fg(cOverlay, " · ") + o
+	}
+	if p := portsMark(it.Ports); p != "" {
+		second += fg(cOverlay, " · "+p)
+	}
+	title := itemTitle(it)
+	text := fg(cSubtext, title)
+	if sel {
+		text = bold(fg(cText, title))
+	}
+	out := []string{row(sel, mark, text, fg(cOverlay, age(it.When)), width), barLine(sel, "  "+second, width)}
+	if sel {
+		out = append(out, peek(q.rowPeek(it, width-5), 3, width)...)
+	}
+	return out
+}
+
+// restRow is an item that waits on others or rests: one line, quieter for what rests.
+func (q *queueModel) restRow(it queueItem, sel bool, width, whatW, portsW int) []string {
+	if it.Fold > 0 {
+		text := fg(cOverlay, fmt.Sprintf("%d closed", it.Fold))
+		if sel {
+			text = bold(fg(cText, fmt.Sprintf("%d closed", it.Fold)))
+		}
+		return []string{row(sel, fg(cOverlay, "▸"), text, fg(cOverlay, "c lists them"), width)}
+	}
+	mark, what := itemLabel(it)
+	tone := cSubtext
+	if it.Group != waiting {
+		tone = cOverlay
+	}
+	keyColor, title := cOverlay, fg(tone, itemTitle(it))
+	if sel {
+		keyColor, title = cText, bold(fg(cText, itemTitle(it)))
+	}
+	right := ""
+	if portsW > 0 {
+		right = fg(cOverlay, fit(portsMark(it.Ports), portsW)) + "  "
+	}
+	right += fit(what, whatW) + fg(cOverlay, fmt.Sprintf(" %4s", age(it.When)))
+	out := []string{row(sel, mark, fg(keyColor, fit(shortKey(it), 9))+" "+title, right, width)}
+	if sel {
+		out = append(out, peek(q.rowPeek(it, width-15), 13, width)...)
+	}
+	return out
+}
+
+// barLine is a row's further line, marked as the cursor's when it is.
+func barLine(sel bool, text string, width int) string {
+	if sel {
+		return selected(fg(cMauve, "▌")+text, width)
+	}
+	return " " + text
+}
+
+// rowPeek is what the row under the cursor shows under itself while no reading pane does: the
+// end of a working agent's screen, a PR's first sentence and facts, a report's headline.
+func (q *queueModel) rowPeek(it queueItem, width int) []string {
+	detail := q.details[detailKey(it)]
+	switch {
+	case it.Fold > 0 || q.reading > 0:
+		return nil
+	case it.Group == working:
+		var out []string
+		for _, l := range screenOf(detail, 3) {
+			out = append(out, cut(l, width))
+		}
+		return out
+	case it.Kind == prItem:
+		var out []string
+		if detail != nil {
+			if d := parseDoc(descriptionOf(detail)); d.head != "" {
+				out = wrapN(d.head, width, 2)
+			}
+		}
+		var facts []string
+		for _, f := range prFacts(it) {
+			if f.text != "" {
+				facts = append(facts, f.label+" "+f.text)
+			}
+		}
+		return append(out, cut(strings.Join(facts, " · "), width))
+	}
+	if d := q.doc(it); d.head != "" {
+		return wrapN(d.head, width, 2)
+	}
+	return nil
+}
+
+// keys are the footer's: at most five for the moment and the row under the cursor, then ?.
+func (q *queueModel) keys() string {
+	switch {
+	case q.help:
+		return "↑↓ scroll · any other key back"
+	case q.review != nil:
+		return q.reviewKeys()
+	case q.tab == todayTab:
+		return "↑↓ pick · enter go to it, dispatch or open · o open · space scroll · tab stats · ? keys"
+	case q.tab == statsTab:
+		return "↑↓ pick · ←→ today, 7 or 30 days · g by ticket or repo · tab the queue · ? keys"
+	case q.feedback != nil:
+		return "type the reply · enter send · esc cancel"
+	case q.reading == readAll:
+		return "^u ^d scroll · esc back · ↑↓ the next one · ? keys"
+	}
+	it, ok := q.current()
+	if !ok {
+		return "^l board · tab today · ^r reload · ? keys"
+	}
+	keys := q.rowKeys(it)
+	if q.reading == readBrief {
+		if n := slices.Index(keys, "space read"); n >= 0 {
+			keys = slices.Delete(keys, n, n+1)
+		}
+		keys = append([]string{"space the whole text", "esc back"}, keys...)
+	}
+	return strings.Join(append(keys[:min(5, len(keys))], "? keys"), " · ")
+}
+
+// rowKeys are the keys of the row under the cursor, the likeliest first.
+func (q *queueModel) rowKeys(it queueItem) []string {
+	asked, decision, asks := it.pendingQuestion()
+	pick := ""
+	if n := len(asked.Options); n > 0 {
+		pick = fmt.Sprintf("1–%d choose", n)
+	}
+	var keys []string
+	switch {
+	case it.Fold > 0:
+		return []string{"enter list them", "space read", "^l board"}
+	case asks && decision:
+		keys = nonEmpty("a confirm", pick, "x confirm all", "f another answer", "space read")
+	case asks:
+		recommended := ""
+		if asked.Recommended != "" {
+			recommended = "a take the recommended"
+		}
+		keys = nonEmpty(pick, recommended, "f write an answer", "space read", "enter go to it")
+	case pressable(it) && q.seen[detailKey(it)] != "":
+		keys = []string{"y press enter", "n press esc", "space read", "enter go to it", "f reply"}
+	case it.Kind == prItem:
+		keys = []string{"enter go to its agent", "o open the PR", "space read"}
+		if it.pending() {
+			keys = append(keys, "x seen")
+		}
+	case it.Group == toReview:
+		keys = []string{"space read", "x reviewed", "d diff", "r review it", "enter go to it"}
+		if it.Shots+it.Videos > 0 {
+			keys[3] = "v evidence"
+		}
+	case it.Agent == "" && it.Watcher:
+		keys = []string{"enter start it", "space read"}
+	case it.Agent == "":
+		keys = []string{"enter resume", "space read", "K K drop", "c fold"}
+	case it.Group == working:
+		keys = []string{"enter go to it", "f reply", "space read", "^l board"}
+	default:
+		keys = []string{"enter go to it", "f reply", "space read", "d diff", "K K close"}
+	}
+	if len(it.Ports) > 0 {
+		keys = slices.Insert(keys, min(2, len(keys)), "p open "+portsMark(it.Ports[:1]))
+	}
+	return keys
 }

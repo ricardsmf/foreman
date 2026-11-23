@@ -91,12 +91,17 @@ func TestQueueOpensPorts(t *testing.T) {
 	if it, ok := q.current(); !ok || it.Key != "FLD-1" {
 		t.Fatalf("the first row = %+v", it)
 	}
-	rows := strings.Join(q.render(98, 29), "\n")
-	for _, want := range []string{":3000 +1", "http://localhost:3000 (node) · http://localhost:5173 (vite)", "open :3000"} {
-		if !strings.Contains(rows, want) {
-			t.Errorf("the queue lacks %q:\n%s", want, rows)
-		}
+	if rows := strings.Join(q.render(98, 29), "\n"); !strings.Contains(rows, ":3000 +1") {
+		t.Errorf("the row lacks its ports:\n%s", rows)
 	}
+	if keys := q.keys(); !strings.Contains(keys, "p open :3000") {
+		t.Errorf("the keys lack p: %q", keys)
+	}
+	q.reading = readAll
+	if text := strings.Join(q.reader(98, 29), "\n"); !strings.Contains(text, "http://localhost:3000 (node) · http://localhost:5173 (vite)") {
+		t.Errorf("the whole text lacks the ports:\n%s", text)
+	}
+	q.reading = 0
 	p := func() {
 		if cmd := q.input(tea.KeyPressMsg{Code: 'p', Text: "p"}); cmd != nil {
 			cmd()
@@ -117,8 +122,9 @@ func TestQueueOpensPorts(t *testing.T) {
 	if it, _ := q.current(); it.Key != "FLD-2" || len(opened) != 3 || !strings.Contains(q.status, "listens on a port") {
 		t.Errorf("an agent with no port: on %s, opened %v, status %q", it.Key, opened, q.status)
 	}
-	if rows := strings.Join(q.render(98, 29), "\n"); strings.Contains(rows, "Listening") || strings.Contains(rows, "p open") {
-		t.Errorf("its detail names a port:\n%s", rows)
+	q.reading = readAll
+	if text := strings.Join(q.reader(98, 29), "\n"); strings.Contains(text, "Listening") || strings.Contains(q.keys(), "p open") {
+		t.Errorf("its detail names a port:\n%s\nkeys %q", text, q.keys())
 	}
 }
 
@@ -132,7 +138,8 @@ func TestQueuePortsUnderAPrompt(t *testing.T) {
 	q.rebuild()
 	it, _ := q.current()
 	q.details[detailKey(it)] = []string{"Do you want to proceed?"}
-	rows := strings.Join(q.render(98, 29), "\n")
+	q.reading = readAll
+	rows := strings.Join(q.reader(98, 29), "\n")
 	asks, listens := strings.Index(rows, "Do you want to proceed?"), strings.Index(rows, "http://localhost:5173")
 	if asks < 0 || listens < asks {
 		t.Errorf("prompt at %d, ports at %d:\n%s", asks, listens, rows)

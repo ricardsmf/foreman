@@ -6,7 +6,9 @@ import (
 	"image/color"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -34,6 +36,8 @@ var (
 	cOverlay   Color = "38;2;128;135;162"
 	cSurface   Color = "38;2;73;77;100"
 	bgSelected       = "48;2;54;58;79"
+	// bgPanel is the reading pane's surface and a card's, a shade off the background.
+	bgPanel = "48;2;43;46;66"
 )
 
 // setTheme derives the greys from the terminal's own background and text colours: each sits a
@@ -46,7 +50,7 @@ func setTheme(text, background color.Color) {
 		return fmt.Sprintf("%d;%d;%d", mix(br, fr), mix(bgc, fgc), mix(bb, fb))
 	}
 	cSubtext, cOverlay, cSurface = Color("38;2;"+shade(0.78)), Color("38;2;"+shade(0.55)), Color("38;2;"+shade(0.22))
-	bgSelected = "48;2;" + shade(0.11)
+	bgSelected, bgPanel = "48;2;"+shade(0.11), "48;2;"+shade(0.045)
 }
 
 // A theme collects the terminal's answers about its colours; the greys follow once both are in.
@@ -103,7 +107,7 @@ func hints(text string, width int) []string {
 			lines = append(lines, line)
 			line, used = "", 0
 		default:
-			line += fg(cSurface, " · ")
+			line += "   "
 			used += 3
 		}
 		line += fg(cSubtext, key)
@@ -133,19 +137,71 @@ var (
 	codeRe     = regexp.MustCompile("`([^`]+)`")
 )
 
+// markdownLine styles a line in greys and weights: colour is for states.
 func markdownLine(l string) string {
 	if strings.HasPrefix(l, "# ") {
-		return bold(fg(cMauve, l[2:]))
+		return bold(inline(l[2:]))
 	}
 	if subheading.MatchString(l) {
-		return bold(fg(cBlue, subheading.ReplaceAllString(l, "")))
+		return bold(fg(cSubtext, plain(subheading.ReplaceAllString(l, ""))))
 	}
-	l = boldRe.ReplaceAllStringFunc(l, func(m string) string { return bold(m[2 : len(m)-2]) })
-	return codeRe.ReplaceAllStringFunc(l, func(m string) string { return fg(cCode, m[1:len(m)-1]) })
+	return inline(l)
 }
 
+// inline styles a line's bold and code, and keeps its links' text.
+func inline(l string) string {
+	l = boldRe.ReplaceAllStringFunc(unlink(l), func(m string) string { return bold(m[2 : len(m)-2]) })
+	// Code recedes a shade instead of taking a hue: a report is half file names.
+	return codeRe.ReplaceAllStringFunc(l, func(m string) string { return fg(cSubtext, m[1:len(m)-1]) })
+}
+
+var sgrRe = regexp.MustCompile("\x1b\\[([0-9;]*)m")
+
+// wrap breaks s into lines width wide. A colour or bold that runs past a line's end is closed
+// there and opened again on the next, so a line can sit beside another column.
 func wrap(s string, width int) []string {
-	return strings.Split(ansi.Wrap(s, max(1, width), ""), "\n")
+	lines := strings.Split(ansi.Wrap(s, max(1, width), ""), "\n")
+	isBold, colour := false, ""
+	for n, l := range lines {
+		lead := ""
+		if isBold {
+			lead += "\x1b[1m"
+		}
+		if colour != "" {
+			lead += "\x1b[" + colour + "m"
+		}
+		for _, m := range sgrRe.FindAllStringSubmatch(l, -1) {
+			switch code := m[1]; {
+			case code == "1":
+				isBold = true
+			case code == "22":
+				isBold = false
+			case code == "39":
+				colour = ""
+			case strings.HasPrefix(code, "3"):
+				colour = code
+			}
+		}
+		if isBold {
+			l += "\x1b[22m"
+		}
+		if colour != "" {
+			l += "\x1b[39m"
+		}
+		lines[n] = lead + l
+	}
+	return lines
+}
+
+// wrapN wraps s to at most n lines, the last one ending in an ellipsis when there was more.
+func wrapN(s string, width, n int) []string {
+	lines := wrap(s, width)
+	if len(lines) <= n {
+		return lines
+	}
+	lines = lines[:n]
+	lines[n-1] = ansi.Truncate(lines[n-1], max(0, width-2), "") + " …"
+	return lines
 }
 
 // scrollTo is the list's first row, moved just far enough to show the cursor.
@@ -179,9 +235,13 @@ func renderMarkdown(lines []string, width int) []string {
 			if indent > width/2 {
 				prefix, indent = "", 0
 			}
+			mark := prefix
+			if bullet := strings.TrimLeft(prefix, " "); strings.HasPrefix(bullet, "- ") || strings.HasPrefix(bullet, "* ") {
+				mark = fg(cOverlay, strings.Replace(strings.Replace(prefix, "- ", "· ", 1), "* ", "· ", 1))
+			}
 			for n, w := range wrap(markdownLine(l[len(prefix):]), width-indent) {
 				if n == 0 {
-					out = append(out, prefix+w)
+					out = append(out, mark+w)
 				} else {
 					out = append(out, strings.Repeat(" ", indent)+w)
 				}
@@ -205,20 +265,23 @@ func window(lines []string, scroll *int, rows int) []string {
 	return out
 }
 
-// frame is the screen: the body padded to width, over the status line.
-func frame(body []string, status string, statusColor Color, width int) string {
-	lines := make([]string, 0, len(body)+1)
-	for _, l := range body {
-		lines = append(lines, " "+fit(l, width))
+// frame is the screen: rows lines of the body, then the footer's keys and the status line.
+func frame(body, footer []string, status string, statusColor Color, width, rows int) string {
+	lines := make([]string, 0, rows+len(footer)+1)
+	for _, l := range tall(body, rows) {
+		lines = append(lines, fit(l, width))
+	}
+	for _, l := range footer {
+		lines = append(lines, " "+fit(l, width-1))
 	}
 	if status != "" {
 		status = fg(statusColor, status)
 	}
-	return strings.Join(append(lines, " "+fit(status, width)), "\n")
+	return strings.Join(append(lines, " "+fit(status, width-1)), "\n")
 }
 
+// header names what the board lists, and for whom; extra says what it shows of it.
 func (m *model) header(extra string) string {
-	dot := fg(cSurface, " · ")
 	isPrs := m.view == prs
 	who := "everyone"
 	switch {
@@ -229,15 +292,11 @@ func (m *model) header(extra string) string {
 	case m.assignee != nil:
 		who = cmp.Or(*m.assignee, "unassigned")
 	}
-	title := m.title
+	noun, scope := "Tickets", strings.TrimSuffix(m.title, " open tickets")
 	if isPrs {
-		title = "open PRs"
+		noun, scope = "Pull requests", ""
 	}
-	loading := ""
-	if m.loading() {
-		loading = fg(cYellow, "  loading…")
-	}
-	return bold(fg(cMauve, "foreman")) + dot + title + dot + fg(cYellow, who) + dot + fg(cOverlay, extra) + loading
+	return bold(noun) + fg(cOverlay, "  "+strings.Join(nonEmpty(scope, who, extra), " · "))
 }
 
 func (m *model) View() tea.View {
@@ -253,19 +312,95 @@ func (m *model) content() string {
 	if m.width == 0 {
 		return ""
 	}
-	inner := m.width - 2
-	var body []string
+	return screen(m, m.width, m.height)
+}
+
+// body is the board's list, or the screen it has open in its place.
+func (m *model) body(width, h int) []string {
 	switch {
 	case m.help:
-		body = renderHelp("foreman", boardHelp, inner, m.height-1, &m.helpScroll)
+		return indent(renderHelp("foreman", boardHelp, width-2, h, &m.helpScroll), 1)
 	case m.cleanup != nil:
-		body = m.renderCleanup(inner, m.height-1)
+		return indent(m.renderCleanup(width-2, h), 1)
 	case m.form != nil:
-		body = m.renderForm(inner, m.height-1)
-	default:
-		body = m.renderBoard(inner, m.height-1)
+		return indent(m.renderForm(width-2, h), 1)
 	}
-	return frame(body, m.status, m.statusColor, inner)
+	return m.renderBoard(width, h)
+}
+
+// reader is the reading pane of the row under the cursor, or the picker that changes it.
+func (m *model) reader(width, h int) []string {
+	if m.help || m.form != nil || m.cleanup != nil {
+		return nil
+	}
+	tw := paneText(width)
+	if m.picker != nil {
+		return panel(m.renderPicker(tw, h-1), width, h)
+	}
+	r, ok := m.current()
+	if m.reading == 0 || !ok {
+		return nil
+	}
+	if m.reading == readBrief {
+		return panel(m.rowBrief(r, tw, h-2), width, h)
+	}
+	detail := m.details[r.Key]
+	if detail == nil {
+		detail = []string{fg(cOverlay, "Loading…")}
+	}
+	return panel(readAllOf(r.Key, renderMarkdown(detail, tw), &m.detailScroll, tw, h-2), width, h)
+}
+
+func (m *model) statusLine() (string, Color, time.Time) { return m.status, m.statusColor, m.statusAt }
+
+// keys are the footer's: at most five for the moment and the row under the cursor, then ?.
+func (m *model) keys() string {
+	switch {
+	case m.help:
+		return "↑↓ scroll · any other key back"
+	case m.cleanup != nil && m.cleanup.busy:
+		return "removing…"
+	case m.cleanup != nil:
+		return "↑↓ pick · space toggle · a all/none · enter remove (branches stay; agent sessions close) · esc back"
+	case m.form != nil:
+		return m.formKeys()
+	case m.picker != nil:
+		return m.pickerKeys()
+	case m.reading == readAll:
+		return "^u ^d scroll · ← back · ↑↓ the next one · enter dispatch · ? keys"
+	}
+	isPrs := m.view == prs
+	who := "^o everyone"
+	switch {
+	case isPrs:
+		who = "^o requested/mine"
+	case !m.mine:
+		who = "^o mine"
+	}
+	row, ok := m.current()
+	if !ok {
+		keys := []string{"tab PRs", who, "^t task", "^r reload"}
+		if isPrs {
+			keys[0] = "tab tickets"
+		}
+		if m.query != "" {
+			keys = append([]string{"esc clear the filter"}, keys[:3]...)
+		}
+		return strings.Join(append(keys, "? keys"), " · ")
+	}
+	enter := "enter dispatch"
+	if isPrs {
+		enter = "enter review"
+	}
+	keys := []string{enter, "→ read", who, "^t task"}
+	if session := m.state.Dispatched[m.agentKey(row.Key)].Session; session != "" && m.agents[session] != "" {
+		keys = []string{"^s go to its agent", enter + " again", "→ read", who}
+	}
+	if m.reading == readBrief {
+		keys[slices.Index(keys, "→ read")] = "→ the whole text"
+		keys = append(keys[:3], "← back")
+	}
+	return strings.Join(append(keys, "? keys"), " · ")
 }
 
 // A helpKey is a line of the key list: a key and what it does, or with no key, a heading.
@@ -275,11 +410,13 @@ var boardHelp = []helpKey{
 	{"", "The list"},
 	{"↑↓  ^p ^n", "pick a row; pgup and pgdn move ten"},
 	{"type, paste", "filter: every word must match"},
-	{"esc", "clear the filter, then quit"},
+	{"esc", "close the reading pane, clear the filter, then quit"},
 	{"tab", "tickets or open PRs"},
 	{"^o", "mine (PRs: review requested, mine, everyone)"},
 	{"^a", "cycle the assignee (PRs: the author)"},
-	{"^u  ^d", "scroll the description"},
+	{"→", "read the row: its brief, then its whole text (where the filter has nothing to the cursor's right)"},
+	{"←", "back from the whole text to the brief, then to the list"},
+	{"^u  ^d", "scroll the description's whole text"},
 	{"^r", "reload"},
 	{"", "The row"},
 	{"enter", "dispatch an agent on it (PRs: a review, or a fix)"},
@@ -295,14 +432,16 @@ var boardHelp = []helpKey{
 	{"^l", "the queue"},
 	{"^z", "the board alone, or beside the queue"},
 	{"", "Marks"},
-	{"◆", "dispatched: yellow working, red waiting for you or failed, green idle or done"},
+	{"◆", "dispatched: red waiting for you or failed, yellow working, grey idle or done"},
 	{"◇", "dispatched, its session closed"},
 }
 
 var queueHelp = []helpKey{
 	{"", "The list"},
 	{"↑↓  j k", "pick a row"},
-	{"^u  ^d  space", "scroll the report or screen"},
+	{"space  →", "read the row: its brief, then its whole text, which space scrolls"},
+	{"←  esc", "back to the brief; close the reading pane"},
+	{"^u  ^d", "scroll the whole text"},
 	{"c", "show or fold the closed agents"},
 	{"^r", "reload"},
 	{"tab", "the next view: the queue, today, the stats"},
@@ -346,7 +485,7 @@ func renderHelp(title string, keys []helpKey, width, h int, scroll *int) []strin
 	}
 	for _, k := range keys {
 		if k.key == "" {
-			out = append(out, "", bold(k.what))
+			out = append(out, "", fg(cSubtext, k.what))
 			continue
 		}
 		for n, l := range wrap(k.what, width-keyW-4) {
@@ -354,131 +493,125 @@ func renderHelp(title string, keys []helpKey, width, h int, scroll *int) []strin
 			if n == 0 {
 				key = k.key
 			}
-			out = append(out, "  "+fg(cSubtext, fit(key, keyW))+"  "+l)
+			out = append(out, "  "+fg(cSubtext, fit(key, keyW))+"  "+fg(cOverlay, l))
 		}
 	}
-	footer := hints("↑↓ scroll · any other key back", width)
-	rows := max(0, h-2-len(footer))
+	rows := max(0, h-2)
 	shown := window(out[1:], scroll, rows)
-	head := []string{bold(fg(cMauve, title)) + fg(cSurface, " · ") + "keys", divider(width, *scroll, rows, len(out)-1)}
-	return append(append(head, shown...), footer...)
+	head := []string{bold(title) + fg(cOverlay, "  keys"), divider(width, *scroll, rows, len(out)-1)}
+	return append(head, shown...)
+}
+
+// boardGroup is the heading a row sits under: a ticket's status, or which of the PRs it is.
+func boardGroup(r Row) (string, Color) {
+	if p := r.Pr; p != nil {
+		switch {
+		case p.Requested:
+			return "review requested", cOverlay
+		case p.Mine:
+			return "yours", cOverlay
+		}
+		return "others", cOverlay
+	}
+	tone := cOverlay
+	if r.Category == "Blocked" || strings.Contains(strings.ToLower(r.Status), "blocked") {
+		tone = cRed
+	}
+	return strings.ToLower(cmp.Or(r.Status, "no status")), tone
+}
+
+// rowPeek is a few lines of the row's description, for under it while no reading pane shows it.
+func (m *model) rowPeek(r Row, width int) []string {
+	p := prose(descriptionOf(m.details[r.Key]))
+	if len(p) == 0 {
+		return nil
+	}
+	return wrapN(strings.Join(p, "  "), width, 3)
 }
 
 func (m *model) renderBoard(width, h int) []string {
 	items := m.visible()
-	current, hasCurrent := m.current()
-
 	isPrs := m.view == prs
-	// The keys of every moment; ? lists the rest.
-	keys := "↑↓ pick · enter dispatch · tab PRs · ^o mine · ^t task · ? all keys · esc quit"
-	if isPrs {
-		keys = "↑↓ pick · enter review · tab tickets · ^o requested/mine · ^t task · ? all keys · esc quit"
-	}
-	footer := hints(keys, width)
-	if m.picker != nil {
-		footer = hints(m.pickerKeys(), width)
-		if m.picker.busy {
-			footer = []string{fg(cOverlay, m.pickerKeys())}
-		}
-	}
-	listRows := max(4, (h-3-len(footer))*45/100)
-	detailRows := h - listRows - 3 - len(footer)
-	m.top = scrollTo(m.top, m.cursor, listRows, len(items))
-
 	total := fmt.Sprint(len(m.rows()))
 	if (isPrs && m.prsTruncated) || (!isPrs && m.truncated) {
 		total += "+"
 	}
-	out := []string{m.header(fmt.Sprintf("%d/%s", len(items), total))}
-	hint := ""
-	if m.query == "" {
-		noun := "tickets"
-		if isPrs {
-			noun = "PRs"
-		}
-		hint = fg(cOverlay, " type to filter "+noun+": every word must match")
+	count := fmt.Sprintf("%d of %s", len(items), total)
+	if m.loading() {
+		count = "loading…  " + count
 	}
-	out = append(out, fg(cMauve, "› ")+cursorText(m.query, m.queryBack)+hint)
+	out := []string{lr(" "+m.header(""), fg(cOverlay, count)+" ", width)}
+	if m.query != "" {
+		out = append(out, " "+fg(cMauve, "› ")+cursorText(m.query, m.queryBack))
+	}
+	out = append(out, "")
+	rows := max(1, h-len(out))
+	if len(items) == 0 {
+		empty := ""
+		switch {
+		case m.loading():
+		case m.query != "" && isPrs:
+			empty = "no PR matches"
+		case m.query != "":
+			empty = "no ticket matches"
+		case isPrs:
+			empty = "no open PRs"
+		default:
+			empty = "no tickets"
+		}
+		return append(out, tall([]string{"   " + fg(cOverlay, empty)}, rows)...)
+	}
 
-	keyW, statusW, whoW := 7, 6, 10
+	keyW, whoW, statusW := 7, 0, 0
 	for _, i := range items {
 		keyW = max(keyW, len(i.Key))
-		statusW = max(statusW, ansi.StringWidth(i.Status))
 		whoW = max(whoW, ansi.StringWidth(cmp.Or(i.Assignee, "unassigned")))
+		if i.Pr != nil && !i.Pr.Requested {
+			statusW = max(statusW, ansi.StringWidth(i.Status))
+		}
 	}
-	keyW, statusW, whoW = min(24, keyW), min(14, statusW), min(18, whoW)
+	keyW, whoW, statusW = min(18, keyW), min(14, whoW), min(12, statusW)
 	// A list filtered to one person needn't name them on every row.
 	showWho := m.assignee == nil && !(isPrs && m.prFilter == "mine") && !(!isPrs && m.mine)
-	if !showWho {
-		whoW = -2
-	}
-	sumW := width - keyW - statusW - whoW - 9
-	for n := m.top; n < m.top+listRows; n++ {
-		if n >= len(items) {
-			empty := ""
-			if n == 0 && !m.loading() {
-				empty = fg(cOverlay, "  no tickets")
-				if isPrs {
-					empty = fg(cOverlay, "  no open PRs")
-				}
-			}
-			out = append(out, empty)
-			continue
-		}
-		i := items[n]
-		sel := n == m.cursor
-		statusColor := cOverlay
-		switch i.Category {
-		case "In Progress":
-			statusColor = cYellow
-		case "Done":
-			statusColor = cGreen
-		case "Blocked":
-			statusColor = cRed
-		}
-		whoColor := cSubtext
-		if i.Assignee == "" {
-			whoColor = cOverlay
-		} else if i.isMine() {
-			whoColor = cMauve
-		}
-		line := " "
-		if sel {
-			line = fg(cMauve, "▌")
-		}
-		line += m.dispatchMark(m.agentKey(i.Key)) + " "
-		keyColor, summary := cOverlay, fg(cSubtext, fit(i.Summary, sumW))
-		if sel {
-			keyColor, summary = cText, bold(fg(cText, fit(i.Summary, sumW)))
-		}
-		cols := []string{fg(keyColor, fit(i.Key, keyW)), fg(statusColor, fit(i.Status, statusW))}
+	entries := make([]listEntry, len(items))
+	for n, r := range items {
+		sel := n == m.cursor && !m.unfocused
+		right := ""
 		if showWho {
-			cols = append(cols, fg(whoColor, fit(cmp.Or(i.Assignee, "unassigned"), whoW)))
+			whoColor := cOverlay
+			if r.isMine() {
+				whoColor = cSubtext
+			}
+			right += fg(whoColor, fit(cmp.Or(r.Assignee, "unassigned"), whoW)) + "  "
 		}
-		line += strings.Join(append(cols, summary), "  ")
+		// A PR's state is its own, where a ticket's is the heading it sits under.
+		if statusW > 0 {
+			status, c := "", cOverlay
+			if r.Pr != nil && !r.Pr.Requested {
+				status = r.Status
+			}
+			switch r.Category {
+			case "Blocked":
+				c = cRed
+			case "Done":
+				c = cGreen
+			}
+			right += fg(c, fit(status, statusW)) + "  "
+		}
+		right += fg(cOverlay, fit(r.Key, keyW))
+		title := displayTitle(r.Summary)
+		text := fg(cSubtext, title)
 		if sel {
-			line = selected(line, width)
+			text = bold(fg(cText, title))
 		}
-		out = append(out, line)
-	}
-
-	if m.picker != nil {
-		out = append(out, fg(cSurface, strings.Repeat("─", width)))
-		out = append(out, m.renderPicker(width, detailRows)...)
-		return append(out, footer...)
-	}
-	var detail []string
-	if hasCurrent {
-		if lines := m.details[current.Key]; lines != nil {
-			detail = lines
-		} else {
-			detail = []string{fmt.Sprintf("# %s: %s", current.Key, current.Summary), "", fg(cOverlay, "Loading…")}
+		lines := []string{row(sel, m.dispatchMark(m.agentKey(r.Key)), text, right, width)}
+		if sel && m.reading == 0 && m.picker == nil {
+			lines = append(lines, peek(m.rowPeek(r, width-6), 3, width)...)
 		}
+		group, tone := boardGroup(r)
+		entries[n] = listEntry{group, tone, lines}
 	}
-	text := renderMarkdown(detail, width)
-	shown := window(text, &m.detailScroll, detailRows)
-	out = append(out, divider(width, m.detailScroll, detailRows, len(text)))
-	return append(append(out, shown...), footer...)
+	return append(out, groupedList(entries, m.cursor, &m.top, rows)...)
 }
 
 func (m *model) renderForm(width, h int) []string {
@@ -490,25 +623,37 @@ func (m *model) renderForm(width, h int) []string {
 			verb = "fix"
 		}
 	}
-	header, heading := m.header(verb+" "+f.row.Key), fg(cMauve, f.row.Key)+" "+bold(`"`+f.row.Summary+`"`)
+	header, heading := m.header(verb+" "+f.row.Key), bold(f.row.Key)+" "+fg(cSubtext, displayTitle(f.row.Summary))
 	if f.task {
-		header, heading = m.header("new task"), bold(fg(cMauve, "New task"))
+		header, heading = m.header("new task"), bold("New task")
 		if repo := m.formRepo(); repo != "" {
 			heading += fg(cOverlay, " in "+filepath.Base(repo))
 		}
 	}
-	return m.renderFormFields([]string{header, heading, fg(cMauve, strings.Repeat("─", width))}, verb, width, h)
+	return m.renderFormFields([]string{header, "", heading, fg(cSurface, strings.Repeat("─", width))}, width, h)
+}
+
+// formKeys are the dispatch form's.
+func (m *model) formKeys() string {
+	f := m.form
+	if f.busy {
+		return "dispatching…"
+	}
+	verb := "dispatch"
+	if f.row.Pr != nil {
+		verb = "review"
+		if f.fix {
+			verb = "fix"
+		}
+	}
+	fieldKeys := []string{"←→ agent", "space toggle", "space toggle", "←→ repo", "type · alt+enter newline"}[f.field]
+	return fmt.Sprintf("tab/↑↓ field · %s · ^e editor · enter %s · esc back", fieldKeys, verb)
 }
 
 // renderFormFields draws the form's fields under its heading, out.
-func (m *model) renderFormFields(out []string, verb string, width, h int) []string {
+func (m *model) renderFormFields(out []string, width, h int) []string {
 	f := m.form
 	isPr := f.row.Pr != nil
-	fieldKeys := []string{"←→ agent", "space toggle", "space toggle", "←→ repo", "type · alt+enter newline"}[f.field]
-	footer := hints(fmt.Sprintf("tab/↑↓ field · %s · ^e editor · enter %s · esc back", fieldKeys, verb), width)
-	if f.busy {
-		footer = []string{fg(cOverlay, "dispatching…")}
-	}
 	label := func(n int, text string) string {
 		if f.field == n {
 			return fg(cMauve, "› "+text)
@@ -597,7 +742,7 @@ func (m *model) renderFormFields(out []string, verb string, width, h int) []stri
 			lines = append(lines, wrap(para, width-4)...)
 		}
 		// Keep the end, where the cursor is, in view when the text outgrows the screen.
-		if room := max(2, h-len(footer)-len(out)); len(lines) > room {
+		if room := max(2, h-len(out)); len(lines) > room {
 			lines = append([]string{fg(cOverlay, fmt.Sprintf("… %d more lines", len(lines)-room+1))}, lines[len(lines)-room+1:]...)
 		}
 		for _, l := range lines {
@@ -613,10 +758,7 @@ func (m *model) renderFormFields(out []string, verb string, width, h int) []stri
 		out = append(out, "    "+fg(cOverlay, "Anything the ticket doesn't say: approach, files to look at, constraints…"))
 	}
 
-	for len(out) < h-len(footer) {
-		out = append(out, "")
-	}
-	return append(out[:max(0, h-len(footer))], footer...)
+	return tall(out, h)
 }
 
 // agentKey is the dispatch a row's mark and ^s follow: its own, else, for a PR not dispatched for
@@ -628,8 +770,8 @@ func (m *model) agentKey(key string) string {
 	return key
 }
 
-// dispatchMark is the board's dispatch column: ◆ coloured by what the agent's Rex session reports,
-// ◇ when the session is closed.
+// dispatchMark is the board's dispatch column: ◆ red when the agent waits on me or failed, yellow
+// while it works, grey when it rests, and ◇ when its session is closed.
 func (m *model) dispatchMark(key string) string {
 	if m.state.Dispatched[key].Dir == "" {
 		return " "
@@ -641,7 +783,7 @@ func (m *model) dispatchMark(key string) string {
 	case "working":
 		return fg(cYellow, "◆")
 	case "done", "idle", "open":
-		return fg(cGreen, "◆")
+		return fg(cSubtext, "◆")
 	}
 	// No session recorded (older dispatches) or it was closed.
 	return fg(cOverlay, "◇")
