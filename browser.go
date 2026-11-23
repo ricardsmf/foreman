@@ -20,8 +20,9 @@ var terminalBrowser = func(args ...string) (string, error) { return sh("", "term
 // a placeholder 80x24 and sizes it seconds later; a browser started before that reads the jump in
 // cell height as a font change and zooms the page by the ratio, a zoom Chromium then keeps for the
 // URL. The wait has no limit: a pane still at the placeholder is one no client shows, and a browser
-// started in it would be zoomed the moment one did.
-const browserWaitScript = `echo "Waiting for Rex to size this pane; ctrl+c closes it."; while [ "$(stty size)" = "24 80" ]; do sleep 0.1; done; exec terminal-browser open "$1" --no-merge`
+// started in it would be zoomed the moment one did. It says so only past two seconds, since a pane
+// a client shows is sized within one.
+const browserWaitScript = `i=0; while [ "$(stty size)" = "24 80" ]; do i=$((i+1)); if [ $i = 20 ]; then echo "Waiting for Rex to size this pane; ctrl+c closes it."; fi; sleep 0.1; done; exec terminal-browser open "$1" --no-merge`
 
 // browserPaneCmd is the command of the pane that shows page.
 func browserPaneCmd(page string) []string {

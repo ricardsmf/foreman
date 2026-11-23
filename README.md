@@ -704,7 +704,8 @@ the port of `p` and the evidence page of `v`.
   Rex creates a pane at a placeholder 80x24 and sizes it seconds later; a browser started at
   once takes the jump in cell height for a font change and zooms the page by the ratio, a zoom
   Chromium then keeps for the page. The wait has no limit, since a pane still at the placeholder
-  is one no Rex app shows: the browser starts when one does. A pane whose real size is exactly
+  is one no Rex app shows: the browser starts when one does. The pane says it is waiting only
+  once the wait passes two seconds. A pane whose real size is exactly
   80x24 never starts it. A page that already kept a wrong zoom keeps it until `ctrl+0` in the
   browser.
 

@@ -2,8 +2,11 @@ package main
 
 import (
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -184,5 +187,43 @@ func TestBoardOpensBesideTheBoard(t *testing.T) {
 	b.tabErr = errors.New("no browser 53782-1")
 	if msg, _ := m.boardInput(ctrlB)().(statusMsg); !strings.HasPrefix(msg.text, "Opening https://github.com/o/app/pull/5: no browser") {
 		t.Errorf("status %+v", msg)
+	}
+}
+
+// The wait says nothing when Rex sizes the pane at once, as it does when a client shows it, and
+// says what it waits on once the wait passes two seconds.
+func TestBrowserWaitScript(t *testing.T) {
+	const wait = "Waiting for Rex to size this pane; ctrl+c closes it."
+	for _, tc := range []struct {
+		name   string
+		checks int // how many size checks still find the placeholder
+		want   []string
+	}{
+		{"sized at once", 3, []string{"terminal-browser open https://x.test --no-merge"}},
+		{"sized late", 40, []string{wait, "terminal-browser open https://x.test --no-merge"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bin := t.TempDir()
+			fake := map[string]string{
+				"stty":             "n=$(cat \"$FAKE_DIR/n\" 2>/dev/null || echo 0); n=$((n+1)); echo $n > \"$FAKE_DIR/n\"; if [ $n -le $FAKE_CHECKS ]; then echo 24 80; else echo 46 64; fi",
+				"sleep":            ":",
+				"terminal-browser": "echo terminal-browser \"$@\"",
+			}
+			for name, body := range fake {
+				if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			c := browserPaneCmd("https://x.test")
+			cmd := exec.Command(c[0], c[1:]...)
+			cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "FAKE_DIR="+bin, "FAKE_CHECKS="+strconv.Itoa(tc.checks))
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("%v: %s", err, out)
+			}
+			if got := strings.Split(strings.TrimSpace(string(out)), "\n"); !slices.Equal(got, tc.want) {
+				t.Errorf("printed %q; want %q", got, tc.want)
+			}
+		})
 	}
 }

@@ -143,7 +143,7 @@ func TestBrowserPaneWaitsForItsSize(t *testing.T) {
 	if cmd[0] != "sh" || cmd[len(cmd)-1] != "/e/fld-1/.evidence.html" {
 		t.Errorf("command %q", cmd)
 	}
-	for _, want := range []string{`while [ "$(stty size)" = "24 80" ]; do sleep 0.1; done`, `exec terminal-browser open "$1" --no-merge`} {
+	for _, want := range []string{`while [ "$(stty size)" = "24 80" ]`, `exec terminal-browser open "$1" --no-merge`} {
 		if !strings.Contains(cmd[2], want) {
 			t.Errorf("the script lacks %q: %s", want, cmd[2])
 		}
