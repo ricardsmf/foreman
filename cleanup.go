@@ -216,12 +216,39 @@ func dropFinished(ctx context.Context, jira *Jira) []string {
 	return keys
 }
 
+// noteTicketsDone logs as done the dispatched tickets that are, whatever their agent's session
+// shows: today's list of what got done reads it from the log. listed holds the category of each
+// ticket the board loaded; Jira is asked for the others, which a search for open tickets leaves
+// out once they are done.
+func noteTicketsDone(ctx context.Context, jira *Jira, listed map[string]string) {
+	for key, d := range loadState().Dispatched {
+		if isTask(key) || strings.Contains(key, "#") || d.Ended == "done" {
+			continue
+		}
+		category, ok := listed[key]
+		if !ok {
+			var err error
+			if category, err = jira.category(ctx, key); err != nil {
+				continue
+			}
+		}
+		if category == "Done" {
+			noteEnded(key, "done")
+		}
+	}
+}
+
 // dropFinished runs after the tickets load, when Jira is known to answer.
 func (m *model) dropFinished() tea.Cmd {
 	jira := m.jira
+	listed := map[string]string{}
+	for _, r := range m.issues {
+		listed[r.Key] = r.Category
+	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), jiraTimeout)
 		defer cancel()
+		noteTicketsDone(ctx, jira, listed)
 		keys := dropFinished(ctx, jira)
 		if len(keys) == 0 {
 			return nil

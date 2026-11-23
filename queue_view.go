@@ -157,6 +157,12 @@ func portsLine(ports []rexPort) string {
 }
 
 func (q *queueModel) render(width, h int) []string {
+	switch q.tab {
+	case todayTab:
+		return q.renderToday(width, h)
+	case statsTab:
+		return q.renderStats(width, h)
+	}
 	dot := fg(cSurface, " · ")
 	need := fg(cGreen, "nothing needs you")
 	if n := q.needYou(); n > 0 {
@@ -177,9 +183,9 @@ func (q *queueModel) render(width, h int) []string {
 	out := []string{head}
 
 	// The keys of every moment, and those the row under the cursor adds; ? lists the rest.
-	keys := "↑↓ pick · enter go/resume · f reply · x reviewed · d diff · ? all keys"
+	keys := "↑↓ pick · enter go/resume · f reply · x reviewed · d diff · tab today · ? all keys"
 	if it, ok := q.current(); ok && it.Fold > 0 {
-		keys = "↑↓ pick · enter list them · ? all keys"
+		keys = "↑↓ pick · enter list them · tab today · ? all keys"
 	} else if ok && pressable(it) && q.seen[detailKey(it)] != "" {
 		keys = "y press enter · n press esc · " + keys
 	} else if asked, decision, asks := it.pendingQuestion(); ok && asks && (len(asked.Options) > 0 || asked.Recommended != "") {

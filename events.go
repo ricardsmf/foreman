@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -112,6 +113,11 @@ func readLog(key string) []logEntry {
 	return append(out, readEntries(eventsFile(), func(e logEntry) bool {
 		return e.Key == key && e.Dispatch == id && slices.Contains(questionKinds, e.Kind)
 	})...)
+}
+
+// readEvents is the whole log, oldest first.
+func readEvents() []logEntry {
+	return readEntries(eventsFile(), func(logEntry) bool { return true })
 }
 
 func readEntries(file string, keep func(logEntry) bool) []logEntry {
@@ -223,7 +229,7 @@ func notePrs(s State, prs []Pr) State {
 		for key, p := range seen {
 			if d, ok := s.Dispatched[key]; ok && d.Pr != p.Key {
 				events = append(events, logEntry{Key: key, Dispatch: d.ID, By: byForeman, Kind: kindPrOpened, Text: p.Key + " " + p.URL})
-				s.change(key, func(d *Dispatched) { d.Pr = p.Key })
+				s.change(key, func(d *Dispatched) { d.Pr, d.PrEnded = p.Key, "" })
 			}
 		}
 	})
@@ -250,5 +256,67 @@ func noteEnded(key, reason string) {
 	})
 	if err == nil && event != nil {
 		_ = writeEvents(*event)
+	}
+}
+
+// prEnd asks GitHub how the PR numbered num, in the repo dir is a checkout of, stands: "MERGED"
+// or "CLOSED" and when, else "OPEN".
+var prEnd = func(dir, num string) (state string, at time.Time, err error) {
+	out, err := sh(dir, "gh", "pr", "view", num, "--json", "state,mergedAt,closedAt")
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	var v struct {
+		State    string
+		MergedAt time.Time
+		ClosedAt time.Time
+	}
+	if err := json.Unmarshal([]byte(out), &v); err != nil {
+		return "", time.Time{}, err
+	}
+	if v.State == "MERGED" {
+		return v.State, v.MergedAt, nil
+	}
+	return v.State, v.ClosedAt, nil
+}
+
+// goneOwnPrs are the dispatches whose own PR, logged as opened, is no longer among the open
+// ones: it was merged or closed, and the log doesn't say so yet.
+func goneOwnPrs(s State, prs []Pr) map[string]Dispatched {
+	open := map[string]bool{}
+	for _, p := range prs {
+		open[p.Key] = true
+	}
+	gone := map[string]Dispatched{}
+	for key, d := range s.Dispatched {
+		if d.Pr != "" && d.PrEnded == "" && !open[d.Pr] {
+			gone[key] = d
+		}
+	}
+	return gone
+}
+
+// noteOwnPrsEnded logs, once each, how those PRs ended, at the time GitHub gives: a ticket's or
+// a task's PR merging is what its dispatch was for, and nothing else tells foreman of it. One
+// GitHub still has open, past the PRs foreman loads, is asked about again at the next load.
+func noteOwnPrsEnded(gone map[string]Dispatched) {
+	for _, key := range slices.Sorted(maps.Keys(gone)) {
+		d := gone[key]
+		_, num, _ := strings.Cut(d.Pr, "#")
+		state, at, err := prEnd(d.Dir, num)
+		if err != nil || (state != "MERGED" && state != "CLOSED") {
+			continue
+		}
+		how := strings.ToLower(state)
+		var event *logEntry
+		_, err = updateState(func(s *State) {
+			if now, ok := s.Dispatched[key]; ok && now.Pr == d.Pr && now.PrEnded == "" {
+				event = &logEntry{At: at, Key: key, Dispatch: now.ID, By: byForeman, Kind: "pr-" + how, Text: d.Pr}
+				s.change(key, func(d *Dispatched) { d.PrEnded = how })
+			}
+		})
+		if err == nil && event != nil {
+			_ = writeEvents(*event)
+		}
 	}
 }

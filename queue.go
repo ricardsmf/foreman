@@ -111,7 +111,10 @@ func (it queueItem) dismissKey() string {
 
 func prDismissKey(key string) string { return "pr:" + key }
 
-func (it queueItem) review() bool { return strings.Contains(it.Key, "#") && !isFix(it.Key) }
+// reviewKey is whether key is a review's: a PR's, which a fix's holds too.
+func reviewKey(key string) bool { return strings.Contains(key, "#") && !isFix(key) }
+
+func (it queueItem) review() bool { return reviewKey(it.Key) }
 
 func (it queueItem) working() bool { return it.Group == working }
 
@@ -626,25 +629,39 @@ type queueModel struct {
 	prsLoading    bool
 	// reloadPrs, when set, has the board load the PRs, which then reach the queue too: beside the
 	// board, the queue loads none of its own.
-	reloadPrs   func() tea.Cmd
-	all         []queueItem // every item
-	items       []queueItem // the rows: all, with the closed agents folded into one unless showClosed
-	showClosed  bool
-	cursor, top int
-	scroll      int
-	details     map[string][]string // by key + sig
-	feedback    *reply              // the reply being typed to an agent
-	confirmKill string              // the session the first K asked to close
-	seen        map[string]string   // by key + sig: the seen token of the prompt a detail shows
-	portNext    map[string]int      // by key: which of an agent's ports p opens next
-	reported    string              // the last status reported to Rex
-	records     map[string]string   // the last record reported to Rex for each item that waits on me
-	statusAt    time.Time           // when the status line was set: it clears after statusTTL
-	help        bool                // the list of keys is showing
-	helpScroll  int
-	theme       theme
-	status      string
-	statusColor Color
+	reloadPrs    func() tea.Cmd
+	all          []queueItem // every item
+	items        []queueItem // the rows: all, with the closed agents folded into one unless showClosed
+	showClosed   bool
+	cursor, top  int
+	scroll       int
+	details      map[string][]string // by key + sig
+	feedback     *reply              // the reply being typed to an agent
+	confirmKill  string              // the session the first K asked to close
+	seen         map[string]string   // by key + sig: the seen token of the prompt a detail shows
+	portNext     map[string]int      // by key: which of an agent's ports p opens next
+	tab          queueTab            // the view showing: the list, today or the stats
+	issues       []Issue             // the board's tickets, for today's up next
+	events       []logEntry          // the event log as of today's last load
+	today        todayList
+	todayCursor  int
+	todayTop     int
+	stats        statsReport
+	statsLoaded  bool // stats holds a count, rather than nothing yet
+	statsDays    int  // the days it counts, 0 for today
+	statsBy      string
+	statsCursor  int
+	statsTop     int
+	statsLoading bool
+	statsRead    time.Time         // when the last count started
+	reported     string            // the last status reported to Rex
+	records      map[string]string // the last record reported to Rex for each item that waits on me
+	statusAt     time.Time         // when the status line was set: it clears after statusTTL
+	help         bool              // the list of keys is showing
+	helpScroll   int
+	theme        theme
+	status       string
+	statusColor  Color
 }
 
 // A reply names its agent itself: the list is rebuilt on every poll, and by the time enter is
@@ -777,6 +794,9 @@ func (q *queueModel) rebuild() tea.Cmd {
 			q.cursor = n
 		}
 	}
+	if q.tab == todayTab {
+		q.loadToday()
+	}
 	return tea.Batch(q.loadDetail(), q.report())
 }
 
@@ -902,6 +922,9 @@ func (q *queueModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if time.Since(q.prsAt) >= refreshInterval {
 			cmds = append(cmds, q.loadPrs())
 		}
+		if q.tab == statsTab && time.Since(q.statsRead) >= statsRefresh {
+			cmds = append(cmds, q.loadStats())
+		}
 		return q, tea.Batch(cmds...)
 	case queueStateMsg:
 		q.state, q.watching = msg.state, msg.watching
@@ -924,6 +947,14 @@ func (q *queueModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		q.prs = msg.prs
 		q.state = notePrs(q.state, q.prs)
+		var ended tea.Cmd
+		if gone := goneOwnPrs(q.state, q.prs); len(gone) > 0 {
+			// GitHub says how each ended; the next poll reads what that logged.
+			ended = func() tea.Msg {
+				noteOwnPrsEnded(gone)
+				return nil
+			}
+		}
 		if stale := staleDismissals(q.state, q.prs); len(stale) > 0 {
 			q.state, _ = updateState(func(s *State) {
 				for _, k := range stale {
@@ -931,7 +962,19 @@ func (q *queueModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			})
 		}
-		return q, q.rebuild()
+		return q, tea.Batch(q.rebuild(), ended)
+	case queueTicketsMsg:
+		q.issues = msg.issues
+		if q.tab == todayTab {
+			q.loadToday()
+		}
+	case queueStatsMsg:
+		q.statsLoading = false
+		// A count of the days or the grouping I have since left is counted again.
+		if msg.report.Days != max(1, q.statsDays) || msg.report.By != cmp.Or(q.statsBy, byTicket) {
+			return q, q.loadStats()
+		}
+		q.stats, q.statsLoaded = msg.report, true
 	case rexEventMsg:
 		return q, pollQueue
 	case queueDetailMsg:
@@ -967,6 +1010,11 @@ func (q *queueModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
+	if q.tab != listTab {
+		if cmd, handled := q.tabInput(msg); handled {
+			return cmd
+		}
+	}
 	it, ok := q.current()
 	move := func(to int) tea.Cmd {
 		q.cursor, q.scroll = max(0, to), 0
@@ -992,6 +1040,8 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 	case "?":
 		q.help = true
 		return nil
+	case "tab":
+		return q.showTab((q.tab + 1) % 3)
 	case "c":
 		q.showClosed = !q.showClosed
 		return q.rebuild()
@@ -1032,33 +1082,7 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 			return queueStatusMsg{text: did + it.Key + "'s pane", color: cGreen}
 		}, pollQueue)
 	case "enter", "s":
-		if it.Kind == prItem {
-			agent, ok := q.prAgent(*it.Pr)
-			if !ok {
-				return q.requestForm(*it.Pr)
-			}
-			it = agent
-		}
-		if it.Agent == "" && it.Watcher {
-			q.say("Starting "+it.Key+"…", cSubtext)
-			name := it.Key
-			return func() tea.Msg {
-				if err := restartWatcher(name); err != nil {
-					return queueStatusMsg{text: err.Error(), color: cRed}
-				}
-				return pollQueue()
-			}
-		}
-		if it.Agent == "" {
-			return q.resume(it)
-		}
-		session := it.Session
-		return func() tea.Msg {
-			if err := rex.show(session); err != nil {
-				return queueStatusMsg{text: "Switching to " + it.Key + "'s session: " + err.Error(), color: cRed}
-			}
-			return nil
-		}
+		return q.open(it)
 	case "v":
 		if it.Kind == prItem {
 			return nil
@@ -1169,6 +1193,38 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 		return tea.Sequence(kill, pollQueue)
 	}
 	return nil
+}
+
+// open goes to the item's agent: its session, resumed when it is closed, or a stopped watcher
+// started. A PR goes to the agent on it, else to the board's dispatch form.
+func (q *queueModel) open(it queueItem) tea.Cmd {
+	if it.Kind == prItem {
+		agent, ok := q.prAgent(*it.Pr)
+		if !ok {
+			return q.requestForm(*it.Pr)
+		}
+		it = agent
+	}
+	if it.Agent == "" && it.Watcher {
+		q.say("Starting "+it.Key+"…", cSubtext)
+		name := it.Key
+		return func() tea.Msg {
+			if err := restartWatcher(name); err != nil {
+				return queueStatusMsg{text: err.Error(), color: cRed}
+			}
+			return pollQueue()
+		}
+	}
+	if it.Agent == "" {
+		return q.resume(it)
+	}
+	session := it.Session
+	return func() tea.Msg {
+		if err := rex.show(session); err != nil {
+			return queueStatusMsg{text: "Switching to " + it.Key + "'s session: " + err.Error(), color: cRed}
+		}
+		return nil
+	}
 }
 
 // prAgent is the agent fixing the PR, else the one dispatched on its ticket, found by the Jira key in

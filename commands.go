@@ -49,6 +49,11 @@ const commandsUsage = `usage: foreman agents [--json] [--prs]   every dispatched
                                           4 timeout: still working after D, on stderr
                                           1 wait failed, as for an unknown KEY
        foreman cleanup [--dry-run] [KEY…] remove finished worktrees, as ^x on the board
+       foreman today [--json]             the dispatches in progress, my tickets no agent is on yet, and
+                                          what got done since yesterday: tickets done, PRs of mine merged
+       foreman stats [--days N] [--by ticket|repo] [--json]
+                                          what the agents used today (--days 7: the last seven days): cost
+                                          at API prices, tokens and time worked, a dispatch or a repo a row
 
 KEY is a dispatch's key (FLD-1700, reports-app#1185, fix:reports-app#1185, task:foreman-3) or a
 watcher's name, in any case.`
@@ -104,14 +109,8 @@ func kindName(it queueItem) string {
 		return "watcher"
 	case it.Orchestrator:
 		return "orchestrator"
-	case it.review():
-		return "review"
-	case isFix(it.Key):
-		return "fix"
-	case isTask(it.Key):
-		return "task"
 	}
-	return "ticket"
+	return keyKind(it.Key)
 }
 
 func agentInfoOf(it queueItem, s State) agentInfo {

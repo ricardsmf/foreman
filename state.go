@@ -29,9 +29,11 @@ type Dispatched struct {
 	// ID tells this dispatch from the key's others in the event log. "" for one from before the log.
 	ID string `json:"id,omitempty"`
 	// What the event log has of it, so that each change is logged once whichever process sees it:
-	// its report's time, the PR it opened, and why it is over ("merged", "closed", "done").
+	// its report's time, the PR it opened and how that one ended ("merged", "closed"), and why the
+	// dispatch is over ("merged", "closed", "done").
 	Reported time.Time `json:"reported,omitzero"`
 	Pr       string    `json:"pr,omitempty"`
+	PrEnded  string    `json:"prEnded,omitempty"`
 	Ended    string    `json:"ended,omitempty"`
 }
 

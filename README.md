@@ -16,6 +16,8 @@ foreman open                # go to the foreman Rex session, starting it when it
 foreman watch               # start the watchers and wake them, for launchd
 foreman dispatch --repo foreman 'Add a --verbose flag'   # a task, no ticket
 foreman repos               # the repos a dispatch takes, each with the agent it starts on
+foreman today               # what is in progress, up next and done since yesterday
+foreman stats --days 7      # what the agents used: cost, tokens and time worked
 ```
 
 foreman is one program in one pane: the board on the left and the [queue](#queue) on the right.
@@ -226,6 +228,9 @@ foreman cleanup [--dry-run] [KEY…]  list finished dispatches and remove what ^
 foreman ask [--timeout D] [--option CHOICE]… [--recommend CHOICE] [--proceed] TEXT|-
                                     from an agent: put a question to me in the queue, print the answer
 foreman answer KEY TEXT|-           answer the question KEY asked
+foreman today [--json]              the dispatches in progress, my tickets no agent is on yet, what got done
+foreman stats [--days N] [--by ticket|repo] [--json]
+                                    what the agents used today, or over the last N days
 ```
 
 - `agents --json` gives each one's `key`, `kind` (ticket, review, fix, task, watcher, pr), `group`,
@@ -256,6 +261,16 @@ foreman answer KEY TEXT|-           answer the question KEY asked
   as `screen` prints it; 3 asked, with the first line `KEY asked`, then its question; 4 still
   working when the timeout ran out. 1 is a failure to wait, as for an unknown KEY.
 - `cleanup` never forces: git refuses a worktree with changes, and branches stay.
+- `today` prints the queue's [today](#today) view, and with `--json` gives `since`, the start of
+  yesterday, and `inProgress`, `upNext` and `done`: rows with a `key`, `kind`, `title`, `repo` and
+  `url`, and a dispatch in progress its `state`, a ticket its `status`, one done `what` ended it
+  and `at` when. It is there for a script that sums the day up. It reads Rex's sessions, the
+  event log and Jira, for the default project's open tickets; when Jira doesn't answer, `upNext`
+  is empty and stderr says why.
+- `stats` prints the queue's [stats](#stats) view, and with `--json` gives `days`, `since`, `by`,
+  `ticketsDone`, `prsMerged`, and `total` and each of `rows` (with its `name`, `title` and `repo`)
+  as `in`, `out`, `cacheRead` and `cacheWrite` tokens, `cost` in dollars, `unpriced` tokens and
+  `agentSeconds`.
 
 ## Orchestrator
 
@@ -472,6 +487,65 @@ until it writes a new report, what it went on with is confirmed, and a question 
 session, or on a closed one drop it from the queue (its worktree and report stay), `c` list or fold
 the closed agents, `^u`/`^d` scroll, `^r` reload, `?` every key, `q` close the queue, leaving the board alone at full width (`^z` there brings the
 queue back beside it; `^c` quits foreman).
+
+`tab` turns the queue to its two other views, [today](#today) and the [stats](#stats), and back to
+the list. Each is a list over the detail of the row picked, as the queue itself is.
+
+### Today
+
+Three lists, which `foreman today` prints too:
+
+- **progress**: the dispatches with something still going on: an agent whose session is open, or
+  one that left a report to read or a question. A row says what its row in the queue says. A
+  dispatch whose own PR merged, or whose ticket is Done, has left the list whatever its session
+  shows.
+- **up next**: your tickets no agent was dispatched on, in the board's order, among the tickets
+  the board loaded, so those of its project or search. A ticket whose status has `blocked`,
+  `review`, `testing` or `staging` in it isn't listed: its work can't start, or is past starting.
+- **done**: what got done since the start of yesterday, newest first: a dispatched ticket that
+  reached Done, and a PR of yours merged, the one a ticket's or a task's agent opened or the one a
+  fix was dispatched on. One dispatch is one row, `reports-app#1415 merged, ticket done`. A
+  review's PR merging is someone else's work, and isn't listed.
+
+`enter` goes to an agent's session as it does in the queue, opens the board's dispatch form on a
+ticket up next, and opens a done row's ticket or PR in a browser beside the board; `o` opens any
+row's, `O` in the system browser. The detail of a dispatch is its timeline: every event the
+[log](#state) has of it.
+
+What got done is read from the event log, so it outlives the cleanup of its worktree. foreman
+learns of it while it runs. A ticket is found Done each time the board loads its tickets: a
+dispatched ticket the load leaves out, as a search for open tickets does once it is done, is
+asked about. A PR is found merged when the queue's load of open PRs no longer has it: GitHub is
+then asked how it ended, and when. A ticket is logged as done at the time foreman finds it so, a
+PR at the time it merged.
+
+### Stats
+
+What the agents foreman started used over today, the last 7 days or the last 30 (`←→`), a row
+per dispatch or per repo (`g`), the costliest first. `foreman stats [--days N] [--by repo]` prints
+the same. Over the rows are the totals, and how many tickets got done and PRs of yours merged in
+those days, by the event log. A row's detail splits its tokens by kind.
+
+- **Tokens** are read from the conversations Claude Code keeps under `~/.claude/projects` and pi
+  under `~/.pi/agent/sessions` for the directory the agent worked in: each message's input,
+  output, cache read and cache write tokens, its subagents' too, a message counted once however
+  many conversations hold it. Nothing is recorded as it happens, so once a conversation's file is
+  gone what it used is no longer counted.
+- **Cost** is at Anthropic's API prices, whatever a subscription charges. pi writes what each
+  message cost. Claude Code's are priced by model, from the table in `stats.go`: a cache write
+  costs 1.25 times the input price when it is kept five minutes and twice when kept an hour, and
+  fast mode twice the lot. Tokens of a model the table lacks are counted and left out of the
+  cost, which the row's detail says.
+- **Agent time** is the time the agents worked: in each conversation, from each prompt to the
+  last entry before the next one, so not the wait for you. A gap of more than 30 minutes between
+  two entries, the machine asleep, isn't counted, nor a subagent's time, which its caller's
+  covers.
+- What a worktree's conversations hold goes to the dispatch that had started there last, by the
+  log's `dispatched` events: a key dispatched again is still one row, and what the directory held
+  before its first dispatch isn't counted. A dispatch from before the log is counted from the
+  state file, with everything its worktree holds. A dispatch without a worktree is left out: its
+  directory is the repo's main checkout, shared with whatever else you run there. Each watcher
+  and the orchestrator have a row of their own.
 
 ### Ports
 
@@ -756,13 +830,16 @@ see [Waking a watcher](#waking-a-watcher). `at` is optional too, with `prs` or w
     `report-rewritten` each time it changes after; `at` is the report's time and `text` its first
     line.
   - `pr-opened` when the queue loads a PR of mine on a ticket's or task's worktree branch, `text`
-    being its key and URL; `pr-merged`, `pr-closed` and `ticket-done` when the board finds the
-    dispatch over (in `^x`, or as it drops finished agents from the queue).
+    being its key and URL; `pr-merged` or `pr-closed` once that PR is no longer among the open
+    ones, `text` being its key and `at` the time GitHub gives.
+  - `ticket-done` when the board finds a dispatched ticket Done, each time its tickets load; and
+    for a review or a fix, whose key is its PR's, `pr-merged` or `pr-closed` when the board finds
+    the dispatch over (in `^x`, or as it drops finished agents from the queue).
   - `cleaned-up`, with the reason `^x` gave, or `worktree gone`.
 
   Each change is logged once, whichever process sees it first: the dispatch's record in
-  `state.json` keeps its `id`, the time of the report logged (`reported`), the PR logged (`pr`)
-  and how it ended (`ended`). Each append holds a lock on the file, so lines from `foreman ask`,
+  `state.json` keeps its `id`, the time of the report logged (`reported`), the PR logged (`pr`),
+  how that PR ended (`prEnded`) and how the dispatch did (`ended`). Each append holds a lock on the file, so lines from `foreman ask`,
   the queue and `foreman watch` never interleave. A `questions.jsonl` an older dispatch left
   beside its report is still shown, and moves into the log before a new dispatch or a cleanup
   removes the directory.

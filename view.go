@@ -305,6 +305,7 @@ var queueHelp = []helpKey{
 	{"^u  ^d  space", "scroll the report or screen"},
 	{"c", "show or fold the closed agents"},
 	{"^r", "reload"},
+	{"tab", "the next view: the queue, today, the stats"},
 	{"q", "close the queue: the board alone (^z brings it back beside it)"},
 	{"^l", "the board"},
 	{"^z", "the queue alone, or beside the board"},
@@ -321,6 +322,12 @@ var queueHelp = []helpKey{
 	{"O", "open the ticket or PR in the system browser"},
 	{"K K", "close the agent's session, or drop a closed agent from the queue"},
 	{"?", "this list"},
+	{"", "Today"},
+	{"enter", "go to the agent's session; on a ticket up next, the board's dispatch form"},
+	{"o  O", "open the ticket or PR beside the board, or in the system browser"},
+	{"", "Stats"},
+	{"←→  h l", "count today, the last 7 days or the last 30"},
+	{"g", "a row per dispatch, or per repo"},
 }
 
 // renderHelp is the full list of keys, which the footer has no room for, scrolled to *scroll.

@@ -107,7 +107,17 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case loadedMsg:
 		cmd := a.to(boardSide, msg)
 		if msg.which != prs {
-			return a, cmd
+			if msg.err != nil {
+				return a, cmd
+			}
+			// The queue's today view lists the tickets no agent is on yet.
+			issues := make([]Issue, 0, len(msg.rows))
+			for _, r := range msg.rows {
+				if r.Issue != nil {
+					issues = append(issues, *r.Issue)
+				}
+			}
+			return a, tea.Batch(cmd, a.to(queueSide, queueTicketsMsg{issues}))
 		}
 		list := make([]Pr, 0, len(msg.rows))
 		for _, r := range msg.rows {
