@@ -774,6 +774,8 @@ func run() error {
 			return runAsk(rest, os.Stdin, os.Stdout)
 		case "answer":
 			return runAnswer(rest, os.Stdin, os.Stdout)
+		case "oracle":
+			return runOracle(rest, os.Stdout)
 		case "today":
 			return runToday(rest, os.Stdout)
 		case "stats":

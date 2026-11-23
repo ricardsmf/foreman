@@ -88,6 +88,8 @@ type queueItem struct {
 	Left     bool
 	// Decisions are the questions the agent went on without, oldest first.
 	Decisions []Question
+	// Oracles are the checks the agent recorded with foreman oracle, as each stands.
+	Oracles []Oracle
 	// Sig is what the item showed; marking it reviewed holds until this changes.
 	Sig string
 	// Fold marks the row that stands for the closed agents while they are folded, and counts them.
@@ -458,6 +460,7 @@ func queueItems(s State, sessions []rexSession, prs []Pr) []queueItem {
 			}
 		}
 		it.Decisions = s.Decisions[key]
+		it.Oracles = readOracles(key)
 		reviewed := s.Dismissed[key] == it.Sig
 		if !it.review() {
 			it.InPr = prHolding(prs, d.Dir)
@@ -637,6 +640,7 @@ type queueModel struct {
 	scroll       int
 	details      map[string][]string // by key + sig
 	feedback     *reply              // the reply being typed to an agent
+	review       *diffReview         // the diff of an agent's work, where I comment on lines
 	confirmKill  string              // the session the first K asked to close
 	seen         map[string]string   // by key + sig: the seen token of the prompt a detail shows
 	portNext     map[string]int      // by key: which of an agent's ports p opens next
@@ -871,6 +875,9 @@ func itemDetail(it queueItem) []string {
 		}
 		out = append(out, strings.Split(strings.TrimRight(string(b), "\n"), "\n")...)
 	}
+	if oracles := oracleLines(it.Oracles); oracles != nil {
+		out = append(append(out, ""), oracles...)
+	}
 	if log := logLines(readLog(it.Key)); log != nil {
 		out = append(append(out, ""), log...)
 	}
@@ -968,6 +975,8 @@ func (q *queueModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if q.tab == todayTab {
 			q.loadToday()
 		}
+	case queueDiffMsg:
+		q.takeDiff(msg)
 	case queueStatsMsg:
 		q.statsLoading = false
 		// A count of the days or the grouping I have since left is counted again.
@@ -990,6 +999,9 @@ func (q *queueModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return q, q.loadPrs()
 		}
 	case tea.PasteMsg:
+		if r := q.review; r != nil && r.typing {
+			r.text = insertText(r.text, r.back, strings.Join(strings.Fields(msg.Content), " "))
+		}
 		if q.feedback != nil {
 			q.feedback.text = insertText(q.feedback.text, q.feedback.back, strings.Join(strings.Fields(msg.Content), " "))
 		}
@@ -997,6 +1009,9 @@ func (q *queueModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if q.help {
 			q.help = helpInput(msg, &q.helpScroll)
 			return q, nil
+		}
+		if q.review != nil {
+			return q, q.reviewInput(msg)
 		}
 		if q.feedback != nil {
 			return q, q.feedbackInput(msg)
@@ -1098,6 +1113,8 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 		if it.Kind == agentItem {
 			return q.openDiff(it)
 		}
+	case "r":
+		return q.openReview(it)
 	case "p":
 		if len(it.Ports) == 0 {
 			q.say("Nothing in "+it.Key+"'s session listens on a port", cOverlay)

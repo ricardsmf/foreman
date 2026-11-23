@@ -40,6 +40,10 @@ const commandsUsage = `usage: foreman agents [--json] [--prs]   every dispatched
                                           or send another answer as a message
        foreman answer KEY TEXT|-          answer the question KEY asked: read by its foreman ask while that
                                           waits, else typed into its pane as a message
+       foreman oracle [--stays-green] NAME red|green [NOTE]
+                                          from an agent: record the result of running the oracle NAME, which
+                                          my queue counts (3/5 green). --stays-green: nothing can make it
+                                          red first, as for a refactor
        foreman wait [--timeout D] KEY     block until the agent stops working or asks (default 30m); print
                                           KEY and its state, then why it stopped, by exit code:
                                           0 done (idle, done, closed): the report's first line
@@ -89,8 +93,11 @@ type agentInfo struct {
 	Left     bool      `json:"left,omitempty"`
 	// Decisions are the questions the agent went on without, taking what it recommended.
 	Decisions []Question `json:"decisions,omitempty"`
-	URL       string     `json:"url,omitempty"`    // a PR's
-	Status    string     `json:"status,omitempty"` // a PR's: approved, changes, conflict…
+	// Oracles are the checks it recorded with foreman oracle: each one's last result, and whether
+	// it was ever red.
+	Oracles []Oracle `json:"oracles,omitempty"`
+	URL     string   `json:"url,omitempty"`    // a PR's
+	Status  string   `json:"status,omitempty"` // a PR's: approved, changes, conflict…
 }
 
 // An agentPort is a TCP port the agent's session listens on, the program that holds it and where
@@ -118,6 +125,7 @@ func agentInfoOf(it queueItem, s State) agentInfo {
 		Key: it.Key, Kind: kindName(it), Group: groupNames[it.Group], State: cmp.Or(it.Agent, "closed"),
 		Title: it.Title, Session: it.Session, Pane: it.Block, WaitsFor: it.Waits, Dir: it.Dir, Report: it.Report,
 		Screenshots: it.Shots, Videos: it.Videos, Question: it.Question, Left: it.Left, Decisions: it.Decisions,
+		Oracles: it.Oracles,
 	}
 	if it.Kind == prItem {
 		a.State, a.Session, a.Pane, a.URL, a.Status, a.WaitsFor = "", "", "", it.Pr.URL, it.Pr.Status, it.Wait
@@ -219,6 +227,9 @@ func writeAgents(out io.Writer, infos []agentInfo) error {
 		note := ""
 		if a.Report != "" {
 			note = "  report"
+		}
+		if count := oracleCount(a.Oracles); count != "" {
+			note += "  " + count
 		}
 		for _, p := range a.Ports {
 			note += "  " + p.URL

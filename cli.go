@@ -20,13 +20,16 @@ import (
 
 const dispatchUsage = `usage: foreman dispatch [options] [TEXT | -]
 
-With neither --ticket nor --pr, TEXT is the task and --repo is required. With either, TEXT is
-optional extra context. "-" reads TEXT from stdin. Options go before TEXT.
+With none of --ticket, --pr and --review, TEXT is the task and --repo is required. With one, TEXT
+is optional extra context. "-" reads TEXT from stdin. Options go before TEXT.
 
   --repo NAME     a repo under ~/work/code or ~/projects, by directory name or path
                   (a ticket defaults to its project's last repo)
   --ticket KEY    work on a Jira ticket
   --pr REPO#N     review a pull request, e.g. reports-app#1185
+  --review KEY    review the work of KEY's agent before it is pushed: the commits it made since
+                  its dispatch, read by another agent in a worktree of its own. KEY is a ticket's,
+                  a task's or a fix's dispatch; the review is a task of the same repo
   --fix           with --pr: fix the PR on its own branch (its review comments, or TEXT) instead
                   of reviewing it, in the worktree that has the branch, else <repo>-fix-<n>
   --agent NAME    pi, claude, auto or yolo (default: the repo's last, else Claude where it ships skills)
@@ -38,8 +41,8 @@ optional extra context. "-" reads TEXT from stdin. Options go before TEXT.
                   started where nobody reads its output, as from Rex's command palette`
 
 type dispatchArgs struct {
-	repo, ticket, pr, agent, title, text   string
-	noWorktree, poteto, again, fix, notify bool
+	repo, ticket, pr, review, agent, title, text string
+	noWorktree, poteto, again, fix, notify       bool
 }
 
 func parseDispatchArgs(argv []string, stdin io.Reader) (dispatchArgs, error) {
@@ -49,6 +52,7 @@ func parseDispatchArgs(argv []string, stdin io.Reader) (dispatchArgs, error) {
 	fs.StringVar(&a.repo, "repo", "", "")
 	fs.StringVar(&a.ticket, "ticket", "", "")
 	fs.StringVar(&a.pr, "pr", "", "")
+	fs.StringVar(&a.review, "review", "", "")
 	fs.StringVar(&a.agent, "agent", "", "")
 	fs.StringVar(&a.title, "title", "", "")
 	fs.BoolVar(&a.notify, "notify", false, "")
@@ -69,6 +73,9 @@ func parseDispatchArgs(argv []string, stdin io.Reader) (dispatchArgs, error) {
 	}
 	a.text = strings.TrimSpace(a.text)
 	switch {
+	case a.review != "" && (a.ticket != "" || a.pr != "" || a.fix || a.repo != "" || a.noWorktree || a.poteto || a.title != ""):
+		return a, errors.New("--review takes only --agent and TEXT")
+	case a.review != "":
 	case a.ticket != "" && a.pr != "":
 		return a, errors.New("--ticket and --pr don't go together")
 	case a.ticket == "" && a.pr == "" && a.text == "":
@@ -218,7 +225,13 @@ func dispatchFrom(a dispatchArgs) (string, error) {
 	var key string
 	var issue Issue
 	var pr Pr
+	reviewed := ""
 	switch {
+	case a.review != "":
+		if reviewed, err = reviewedDispatch(state, a.review); err != nil {
+			return "", err
+		}
+		repo = workRepo(state.Dispatched[reviewed].Dir)
 	case a.pr != "":
 		if pr, err = findPr(a.pr); err != nil {
 			return "", err
@@ -260,6 +273,8 @@ func dispatchFrom(a dispatchArgs) (string, error) {
 
 	var text string
 	switch {
+	case reviewed != "":
+		text, err = dispatchWorkReview(ctx, jira, WorkReview{Key: reviewed, Agent: agent, Context: a.text}, progress)
 	case a.pr != "":
 		text, err = dispatchPr(ctx, jira, PrDispatch{Pr: pr, Agent: agent, Context: a.text, Fix: a.fix, Title: a.title}, progress)
 	case a.ticket != "":
@@ -268,7 +283,7 @@ func dispatchFrom(a dispatchArgs) (string, error) {
 		text, err = dispatchTask(TaskDispatch{Repo: repo, Agent: agent, Worktree: !a.noWorktree, Poteto: a.poteto, Title: a.title, Task: a.text}, progress)
 	}
 	if err != nil {
-		return "", fmt.Errorf("%s: %w", cmp.Or(key, "task"), err)
+		return "", fmt.Errorf("%s: %w", cmp.Or(key, reviewed, "task"), err)
 	}
 	return text, nil
 }

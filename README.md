@@ -174,6 +174,7 @@ foreman dispatch --repo foreman [--agent pi|claude|auto|yolo] [--no-worktree] [-
 foreman dispatch --ticket FLD-1700 [--repo reports-app] [...] ['extra context']
 foreman dispatch --pr reports-app#1185 [--agent claude] ['what to focus on']
 foreman dispatch --pr reports-app#1185 --fix [--agent claude] [--title T] ['what to fix']
+foreman dispatch --review FLD-1700 [--agent claude] ['what to focus on']
 foreman repos [--json] [--in DIR]
 ```
 
@@ -228,6 +229,8 @@ foreman cleanup [--dry-run] [KEY…]  list finished dispatches and remove what ^
 foreman ask [--timeout D] [--option CHOICE]… [--recommend CHOICE] [--proceed] TEXT|-
                                     from an agent: put a question to me in the queue, print the answer
 foreman answer KEY TEXT|-           answer the question KEY asked
+foreman oracle [--stays-green] NAME red|green [NOTE]
+                                    from an agent: record the result of running an oracle
 foreman today [--json]              the dispatches in progress, my tickets no agent is on yet, what got done
 foreman stats [--days N] [--by ticket|repo] [--json]
                                     what the agents used today, or over the last N days
@@ -241,8 +244,9 @@ foreman stats [--days N] [--by ticket|repo] [--json]
   programs in its session [listen on](#ports), each with its `port`, `process` and `url`), `dir`,
   `report` and `reportAt`, evidence counts, `seen`, the seen token of an agent whose session
   is open, `question`, the one it asked and I haven't answered (its `text`, `options` and
-  `recommended`; `left` says nothing waits on it any more), and `decisions`, the questions it
-  [went on without](#going-on-without-an-answer). The plain listing ends a row with those URLs.
+  `recommended`; `left` says nothing waits on it any more), `decisions`, the questions it
+  [went on without](#going-on-without-an-answer), and `oracles`, the [checks it recorded](#oracles),
+  each with its `name`, last `result` and `note`, `wasRed` and `staysGreen`. The plain listing ends a row with those URLs.
 - `reply` refuses a closed session, and a working agent unless `--now`: pi and Claude Code each
   handle text typed mid-turn their own way. To an agent waiting in `foreman ask`, it is the answer.
 - A seen token, printed by `screen` under the pane and by `agents --json` as `seen`, stands for
@@ -409,6 +413,27 @@ context names.
 - In the queue, `enter` on one of your PRs goes to its fix agent when there is one, before the
   ticket's.
 
+### Reviewing work before its PR
+
+An agent commits on its branch and stops there, so its work has no PR to review yet. Two ways to
+review it first:
+
+- `r` on its row in the queue shows the diff `d` shows, from the commit its dispatch started on,
+  in the queue's own pane. `↑↓` pick a line (`^u`/`^d` move ten, `n`/`p` to the next or the
+  previous hunk, `g`/`G` to the ends); `c` or `enter` writes a comment on it, or changes the one
+  it has, and `x` drops it. A commented line is marked `●`, with the comment under it. `s` sends
+  them as one reply: they are written to `review.md` beside the agent's report, each with its file
+  and line and the line itself, and the agent is told to read that file and address each one, in
+  its pane, or for a closed agent as the first turn of its resumed session. `esc` goes back to
+  the queue, and asks once more while comments are unsent.
+- `foreman dispatch --review KEY` puts another agent on it: a read-only review of the commits
+  KEY's agent made since its dispatch, so of at least one. KEY is a ticket's, a task's or a fix's
+  dispatch. The reviewer is a task of the same repo, `task:<repo>-<n>`, titled `Review KEY: …`,
+  in a worktree `<repo>-task-<n>` detached at the head of that work, so apart from the agent's
+  own conversation. It gets the diff to read, the prompt the agent started with and its report,
+  the Jira ticket when KEY is one, and your extra text. It reports findings and changes nothing.
+  Its row stays until its session is closed and `^x` cleans it up, as a task's does.
+
 ## Queue
 
 The queue lists every dispatched agent, whatever its state, and every open PR of yours, by what
@@ -482,7 +507,7 @@ the ticket its title or branch names; with no agent, to the board's dispatch for
 with no ticket, the browser), `f` type a reply that is sent to the agent's pane, or the answer to its question, `1`–`9` or `a` answer a question with one of its [choices](#choices) or the recommended one, `y` or `n` answer the prompt an agent waits on (see [Answering a
 prompt](#answering-a-prompt)), `v` show its videos, screenshots and captures in a browser beside the board (see [Reports and
 evidence](#reports-and-evidence)), `d` the worktree's diff in git's
-pager, `o` the ticket or PR in a browser [beside the board](#pages-beside-the-board), `O` in the system browser (either way a PR's news is then read), `p` a [port](#ports) its session listens on, `x` mark reviewed (the agent moves to idle or closed
+pager, `r` that diff in the queue, to [comment on its lines](#reviewing-work-before-its-pr), `o` the ticket or PR in a browser [beside the board](#pages-beside-the-board), `O` in the system browser (either way a PR's news is then read), `p` a [port](#ports) its session listens on, `x` mark reviewed (the agent moves to idle or closed
 until it writes a new report, what it went on with is confirmed, and a question it left is set aside; a PR moves to **waiting** until what it waits on changes or someone writes on it), `K` twice close the agent's Rex
 session, or on a closed one drop it from the queue (its worktree and report stay), `c` list or fold
 the closed agents, `^u`/`^d` scroll, `^r` reload, `?` every key, `q` close the queue, leaving the board alone at full width (`^z` there brings the
@@ -601,6 +626,28 @@ writes. With nothing to show, `v` says so and writes nothing.
 The page opens [beside the board](#pages-beside-the-board). Outside Rex, or without
 `terminal-browser` on `PATH`, `v` opens the screenshots and videos in their default apps (Preview,
 the video player) instead; captures alone have nothing to open.
+
+### Oracles
+
+An agent on a task or a ticket names an oracle for its change, a check that shows it done, and
+is told to see it red before it changes code. It records each run with `foreman oracle`:
+
+```
+foreman oracle "login test" red "expected 200, got 500"
+foreman oracle "login test" green
+foreman oracle --stays-green "lint" green
+```
+
+- The agent's row counts them, `3/5 green`: those whose last run is green, of all it recorded.
+  The count is green once every oracle is and each was seen red, and yellow until then.
+- `, 1 never red` counts the green ones never recorded red: a check that could not fail before
+  the change may have been written to fit it. `--stays-green` is for the one nothing can make red
+  first, as the check a refactor must keep, which isn't counted so. The command tells the agent
+  when the green it records was never red.
+- The detail lists them under the report, each with its last result and the note it came with.
+- The runs are kept in `oracles.jsonl` beside the report, a line each, so a new dispatch starts
+  with none. A name is one oracle whatever its case.
+- Claude Code runs `foreman oracle` without a permission prompt, as it does `foreman ask`.
 
 ### Pages beside the board
 
@@ -824,8 +871,9 @@ see [Waking a watcher](#waking-a-watcher). `at` is optional too, with `prs` or w
   `orchestrator`, `me` or `foreman`, for what foreman saw itself. `kind` is one of:
   - `dispatched`, with `title`, `agent`, `dir` (where the agent works), `repo` (its main checkout)
     and `startedFrom`.
-  - `question`, `decision` (one it went on without), `answer`, `confirm`, `aside`, `reply` and
-    `expired`: what the queue lists under **Questions**.
+  - `question`, `decision` (one it went on without), `answer`, `confirm`, `aside`, `reply`,
+    `expired` and `review` (my comments on its diff, sent): what the queue lists under
+    **Questions**.
   - `reported` the first time the queue or `foreman watch` sees its `report.md`, and
     `report-rewritten` each time it changes after; `at` is the report's time and `text` its first
     line.

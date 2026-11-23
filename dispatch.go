@@ -611,6 +611,7 @@ func taskPrompt(key, title, task, agent, cwd, branch string, worktree bool, skil
 		"6. **Commit** a change on this branch. Do not push, open a PR, or post to GitHub or Jira.",
 		"7. **Report**: write the report below (for a change, with the oracle's result before and after), then finish with the same summary in your final message.",
 	)
+	lines = append(lines, oracleSection()...)
 	lines = append(lines, askSection()...)
 	lines = append(lines, reportSection(key, true)...)
 	return strings.Join(lines, "\n")
@@ -690,6 +691,7 @@ func ticketPrompt(d Dispatch, cwd, branch, ticket, skill string) string {
 		"6. **Commit** on this branch. Do not push, open a PR, or change the Jira ticket.",
 		"7. **Report**: write the report below, with each oracle's result before and after the change, then finish with the same summary in your final message.",
 	)
+	lines = append(lines, oracleSection()...)
 	lines = append(lines, askSection()...)
 	lines = append(lines, reportSection(issue.Key, true)...)
 	return strings.Join(lines, "\n")
@@ -962,8 +964,9 @@ func agentArgs(agent string) []string {
 	case "Claude (yolo)":
 		cmd = append(cmd, "--dangerously-skip-permissions")
 	}
-	// foreman ask without a permission prompt: a prompt would park the question on me.
-	cmd = append(cmd, "--allowedTools", "Bash(foreman ask:*)")
+	// foreman ask and foreman oracle without a permission prompt: a prompt would park the
+	// question, or a result, on me.
+	cmd = append(cmd, "--allowedTools", "Bash(foreman ask:*)", "Bash(foreman oracle:*)")
 	// The report and evidence go outside the working directory.
 	return append(cmd, "--add-dir", evidenceRoot)
 }

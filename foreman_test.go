@@ -2639,7 +2639,7 @@ func TestAgentsAsk(t *testing.T) {
 	}
 	cmd := agentArgs(agentClaude)
 	at, add := slices.Index(cmd, "--allowedTools"), slices.Index(cmd, "--add-dir")
-	if at < 0 || cmd[at+1] != "Bash(foreman ask:*)" || add != at+2 {
+	if at < 0 || cmd[at+1] != "Bash(foreman ask:*)" || cmd[at+2] != "Bash(foreman oracle:*)" || add != at+3 {
 		t.Errorf("claude's args = %q", cmd)
 	}
 	if strings.Contains(orchestratorGuide, "§") || !strings.Contains(orchestratorGuide, "`foreman answer KEY`") {

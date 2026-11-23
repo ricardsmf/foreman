@@ -47,7 +47,7 @@ const (
 )
 
 // questionKinds are the entries the queue's Questions section lists.
-var questionKinds = []string{"question", "decision", "answer", "confirm", "aside", "reply", "expired"}
+var questionKinds = []string{"question", "decision", "answer", "confirm", "aside", "reply", "expired", "review"}
 
 // endedKinds name the event for each of finished's reasons.
 var endedKinds = map[string]string{"merged": "pr-merged", "closed": "pr-closed", "done": "ticket-done"}

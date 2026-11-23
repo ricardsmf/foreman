@@ -157,6 +157,9 @@ func portsLine(ports []rexPort) string {
 }
 
 func (q *queueModel) render(width, h int) []string {
+	if q.review != nil {
+		return q.renderReview(width, h)
+	}
 	switch q.tab {
 	case todayTab:
 		return q.renderToday(width, h)
@@ -289,6 +292,9 @@ func (q *queueModel) render(width, h int) []string {
 			ev = append(ev, "▶ video")
 		}
 		meta := what
+		if mark := oracleMark(it.Oracles); mark != "" {
+			meta += "  " + mark
+		}
 		if len(ev) > 0 {
 			meta += "  " + fg(cBlue, strings.Join(ev, " "))
 		}

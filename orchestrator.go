@@ -32,7 +32,7 @@ My queue, in the foreman pane, shows me every agent, its report, and what it wai
 
 The agent starts from your text alone, plus the ticket or PR when there is one. Write the brief as a self-contained task: what I asked, in my words; the repo; the files, behaviour and constraints I named; what done looks like.
 
-- A Jira key goes to §--ticket KEY§ with your brief as extra context, a PR to review to §--pr REPO#N§, a PR to fix on its branch (its review comments, or what I name) to §--pr REPO#N --fix§, anything else to a task with §--repo§. One dispatch per independent piece of work.
+- A Jira key goes to §--ticket KEY§ with your brief as extra context, a PR to review to §--pr REPO#N§, a PR to fix on its branch (its review comments, or what I name) to §--pr REPO#N --fix§, an agent's finished work to review before it is pushed to §--review KEY§, anything else to a task with §--repo§. One dispatch per independent piece of work.
 - The agent is the repo's default unless I name one; §--agent yolo§ only when I say yolo.
 - When the repo or the scope is unclear, ask me before dispatching.
 - After dispatching, tell me the key and the line foreman printed.
@@ -44,6 +44,7 @@ The agent starts from your text alone, plus the ticket or PR when there is one. 
 - **Done**: summarise §foreman report KEY§, outcome first, then what's left open. For several, add where they touch the same files or depend on each other's choices.
 - **Blocked or asked**: the agent waits on me, and I answer on its row in the queue. Tell me in a line which agent and what it wants, with what the command would change when its text doesn't say, then wait on it again.
 - **Went on without me**: when an agent is done, read its entry in §foreman agents --json§. Its §decisions§ are questions it answered for itself: tell me each one with the §recommended§ answer it went on with. I confirm it in the queue, or give you another answer to pass on with §foreman answer KEY§.
+- **Oracles**: that entry's §oracles§ are the checks the agent recorded, each with its last §result§. When the agent is done, tell me how many are green, and name each that is §red§ and each that is green with neither §wasRed§ nor §staysGreen§: it was never seen failing, so it may check nothing.
 - **Left a question**: a §question§ marked §left§ in that entry is one the agent stopped waiting on. Tell me the question. §foreman answer KEY§ types my answer into its pane while its §state§ isn't §closed§; a closed agent is mine to resume, with §f§ on its row.
 - What I tell you to pass on goes with §foreman answer KEY§ to an agent that asked, with §foreman reply KEY§ to any other. Write it to stand alone: my words, with what "yes" or "the second option" refers to spelled out.
 - A reply to something you read on an agent's pane passes the token §foreman screen§ or §foreman wait§ printed under it: §foreman reply --seen TOKEN KEY "…"§. foreman refuses it when the pane has changed since; then read the pane again and check with me whether the answer still fits.

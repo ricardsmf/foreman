@@ -541,7 +541,7 @@ func logLines(entries []logEntry) []string {
 	if len(entries) == 0 {
 		return nil
 	}
-	verbs := map[string]string{"question": "asks", "decision": "asks, and goes on", "answer": "answers", "confirm": "confirms", "reply": "sends", "expired": "gave up", "aside": "sets the question aside"}
+	verbs := map[string]string{"question": "asks", "decision": "asks, and goes on", "answer": "answers", "confirm": "confirms", "reply": "sends", "expired": "gave up", "aside": "sets the question aside", "review": "sends"}
 	out := []string{"## Questions", ""}
 	for _, e := range entries {
 		line := fmt.Sprintf("- %s **%s %s**", e.At.Local().Format("15:04"), e.By, verbs[e.Kind])
