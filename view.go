@@ -457,6 +457,7 @@ var queueHelp = []helpKey{
 	{"d", "the worktree's diff"},
 	{"r", "review that diff: comment on its lines, and send the comments to the agent"},
 	{"m", "on a PR that conflicts: have its agent merge the base in, or open the form for a fix that does"},
+	{"t", "on a PR with review threads to answer: have its agent address them, or open the form for a fix that does"},
 	{"v", "show the evidence in a browser beside the board"},
 	{"p", "open a port the agent's session listens on in a browser beside the board; again for the next"},
 	{"o", "open the ticket or PR in a browser beside the board"},

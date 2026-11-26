@@ -472,6 +472,21 @@ context names.
 - The agent doesn't push, so the PR conflicts until you do. Its row comes back under **review**
   once it has written that report, the merge commit not yet in the PR.
 
+### A PR with review threads
+
+`t` on a PR of yours with review threads to answer (`threads`), in the queue, has an agent address
+them.
+
+- It goes to the agent on the PR's branch, as `m` does: the one fixing the PR, else its ticket's,
+  while its worktree is on that branch; a closed agent is resumed, and one that waits on a prompt is
+  told nothing.
+- The PR's reviews, unresolved threads and conversation, as a fix's prompt has them, are written
+  to `threads.md` beside the agent's report, and the agent is told to read it, address each
+  unresolved thread and each review comment that asks for a change, commit, and say in its report
+  what it did about each. It doesn't push, reply or resolve.
+- With no agent on the branch, the board's dispatch form opens on the PR with `fix it` on, and
+  `enter` dispatches the fix, which works from the threads.
+
 ### Reviewing work before its PR
 
 An agent commits on its branch and stops there, so its work has no PR to review yet. Two ways to
@@ -576,7 +591,7 @@ the ticket its title or branch names; with no agent, to the board's dispatch for
 with no ticket, the browser), `f` type a reply that is sent to the agent's pane, or the answer to its question, `1`–`9` or `a` answer a question with one of its [choices](#choices) or the recommended one, `y` or `n` answer the prompt an agent waits on (see [Answering a
 prompt](#answering-a-prompt)), `v` show its videos, screenshots and captures in a browser beside the board (see [Reports and
 evidence](#reports-and-evidence)), `d` the worktree's diff in git's
-pager, `r` that diff in the queue, to [comment on its lines](#reviewing-work-before-its-pr), `m` have the agent on a PR that [conflicts](#a-pr-that-conflicts) merge its base in, `o` the ticket or PR in a browser [beside the board](#pages-beside-the-board), `O` in the system browser (either way a PR's news is then read), `p` a [port](#ports) its session listens on, `x` mark reviewed (the agent moves to idle or closed
+pager, `r` that diff in the queue, to [comment on its lines](#reviewing-work-before-its-pr), `m` have the agent on a PR that [conflicts](#a-pr-that-conflicts) merge its base in, `t` have the agent on a PR with [review threads](#a-pr-with-review-threads) address them, `o` the ticket or PR in a browser [beside the board](#pages-beside-the-board), `O` in the system browser (either way a PR's news is then read), `p` a [port](#ports) its session listens on, `x` mark reviewed (the agent moves to idle or closed
 until it writes a new report, what it went on with is confirmed, and a question it left is set aside; a PR moves to **waiting** until what it waits on changes or someone writes on it), `K` twice close the agent's Rex
 session, or on a closed one drop it from the queue (its worktree and report stay), `c` list or fold
 the closed agents, `space` or `→` read the row (again for its whole text, which `space` then

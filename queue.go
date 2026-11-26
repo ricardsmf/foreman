@@ -1150,6 +1150,8 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 		return q.openReview(it)
 	case "m":
 		return q.mergeBase(it)
+	case "t":
+		return q.fixThreads(it)
 	case "p":
 		if len(it.Ports) == 0 {
 			q.say("Nothing in "+it.Key+"'s session listens on a port", cOverlay)
@@ -1314,8 +1316,8 @@ func (q *queueModel) mergeBase(it queueItem) tea.Cmd {
 		return nil
 	}
 	p := *it.Pr
-	agent, ok := q.prAgent(p)
-	if branch, _ := worktreeHead(agent.Dir); !ok || branch != p.Branch {
+	agent, ok := q.branchAgent(p)
+	if !ok {
 		return func() tea.Msg { return openFormMsg{pr: &p, context: conflictAsk(p)} }
 	}
 	// What is typed into a prompt answers it, or picks one of its choices.
@@ -1334,9 +1336,80 @@ func (q *queueModel) mergeBase(it queueItem) tea.Cmd {
 	}, pollQueue)
 }
 
-// deliverConflict types the ask into the agent's pane, or resumes a closed agent on it.
+// fixThreads has the agent on my PR's branch address the PR's open review threads, which it
+// reads from a file beside its report. With none there, the board's dispatch form opens on the PR
+// as a fix, whose prompt carries the threads.
+func (q *queueModel) fixThreads(it queueItem) tea.Cmd {
+	if it.Kind != prItem || it.Pr.Threads == 0 {
+		q.say("t is for a PR of yours with review threads to answer; "+cmp.Or(it.Key, "this row")+" isn't one", cOverlay)
+		return nil
+	}
+	p := *it.Pr
+	agent, ok := q.branchAgent(p)
+	if !ok {
+		return func() tea.Msg { return openFormMsg{pr: &p} }
+	}
+	if agent.Agent == "blocked" {
+		q.say(agent.Key+" "+waitsFor(agent.Waits)+"; answer it first, then t again", cYellow)
+		return nil
+	}
+	state := q.state
+	q.say(fmt.Sprintf("Telling %s to address #%d's review threads…", agent.Key, p.Number), cSubtext)
+	return tea.Sequence(func() tea.Msg {
+		said, err := deliverThreads(state, agent, p)
+		if err != nil {
+			return queueStatusMsg{text: fmt.Sprintf("Review threads of #%d: %s", p.Number, firstLine(err.Error())), color: cRed}
+		}
+		return queueStatusMsg{text: said, color: cGreen}
+	}, pollQueue)
+}
+
+// branchAgent is the agent on the PR's branch: the one fixing the PR, else its ticket's, while its
+// worktree is on that branch.
+func (q *queueModel) branchAgent(p Pr) (queueItem, bool) {
+	agent, ok := q.prAgent(p)
+	if branch, _ := worktreeHead(agent.Dir); !ok || branch != p.Branch {
+		return queueItem{}, false
+	}
+	return agent, true
+}
+
 func deliverConflict(s State, agent queueItem, p Pr) (string, error) {
-	ask, what := conflictAsk(p), fmt.Sprintf("merge %s into #%d", p.Base, p.Number)
+	return tellAgent(s, agent, conflictAsk(p), fmt.Sprintf("merge %s into #%d", p.Base, p.Number))
+}
+
+// threadsFile is where a PR's review threads are written for the agent on its branch to read.
+func threadsFile(key string) string { return filepath.Join(evidenceDir(key), "threads.md") }
+
+// threadsAsk is what the agent on a PR's branch is told when the PR has review threads to answer,
+// which file holds. One line, as a pane takes it.
+func threadsAsk(p Pr, file string) string {
+	return fmt.Sprintf("PR #%d, on this branch, has review threads to answer: they are in %s, with the PR's reviews and conversation. "+
+		"Address each unresolved thread, and each review comment that asks for a change, keeping to the PR's scope; one you think is wrong or already handled, leave the code as it is and say why. "+
+		"Then build, run the tests and linters that cover what you touched, and commit. Don't push, reply to or resolve comments. Say in your report what you did about each thread.", p.Number, file)
+}
+
+// deliverThreads writes the PR's discussion, as a fix's prompt has it, beside the agent's report,
+// and tells the agent to address its threads.
+func deliverThreads(s State, agent queueItem, p Pr) (string, error) {
+	d, err := prDiscussion(p)
+	if err != nil {
+		return "", err
+	}
+	file := threadsFile(agent.Key)
+	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+		return "", err
+	}
+	text := fmt.Sprintf("# Review threads on %s#%d\n\n%s", p.Repo, p.Number, discussionMarkdown(d))
+	if err := os.WriteFile(file, []byte(text), 0o644); err != nil {
+		return "", err
+	}
+	return tellAgent(s, agent, threadsAsk(p, file), fmt.Sprintf("address #%d's review threads", p.Number))
+}
+
+// tellAgent types the ask into the agent's pane, or resumes a closed agent on it, and logs what it
+// was told.
+func tellAgent(s State, agent queueItem, ask, what string) (string, error) {
 	said := "✓ Told " + agent.Key + " to " + what
 	if agent.Agent == "" {
 		if _, err := resumeAgent(s, agent.Key, agent.Title, agent.Dir, ask); err != nil {
