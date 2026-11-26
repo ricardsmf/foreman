@@ -613,8 +613,13 @@ type (
 	}
 	// closeQueueMsg asks the app to put the queue away and show the board alone.
 	closeQueueMsg struct{}
-	// openFormMsg asks the board to open its dispatch form on a ticket.
-	openFormMsg    struct{ key string }
+	// openFormMsg asks the board to open its dispatch form on a ticket, or, with pr, on that PR as
+	// a fix whose context says what to fix.
+	openFormMsg struct {
+		key     string
+		pr      *Pr
+		context string
+	}
 	queueDetailMsg struct {
 		sig   string
 		lines []string
@@ -1142,6 +1147,8 @@ func (q *queueModel) input(msg tea.KeyPressMsg) tea.Cmd {
 		}
 	case "r":
 		return q.openReview(it)
+	case "m":
+		return q.mergeBase(it)
 	case "p":
 		if len(it.Ports) == 0 {
 			q.say("Nothing in "+it.Key+"'s session listens on a port", cOverlay)
@@ -1289,6 +1296,59 @@ func (q *queueModel) prAgent(p Pr) (queueItem, bool) {
 	return queueItem{Kind: agentItem, Key: key, Title: d.Title, Session: d.Session, Dir: d.Dir}, true
 }
 
+// conflictAsk is what the agent on a conflicting PR's branch is told: merge the PR's base in. A
+// merge and not a rebase, which I would have to push with force. One line, as a pane takes it.
+func conflictAsk(p Pr) string {
+	return fmt.Sprintf("PR #%[1]d, on this branch, conflicts with its base, `%[2]s`. Fetch origin and merge `origin/%[2]s` into the branch: a merge, not a rebase, since I push without force. "+
+		"Resolve each conflict so that what both sides changed still holds; where it is with commits of this branch that `%[2]s` already has under another commit (a PR this one was stacked on, squash-merged), take `%[2]s`'s side. "+
+		"Then build, run the tests and linters that cover the files that conflicted, and commit the merge. Don't push. Say in your report what conflicted and how you resolved each.", p.Number, p.Base)
+}
+
+// mergeBase has the agent on a conflicting PR's branch merge the PR's base in: the one fixing the
+// PR, else its ticket's, while its worktree is on that branch. With none there, the board's
+// dispatch form opens on the PR as a fix that asks the same.
+func (q *queueModel) mergeBase(it queueItem) tea.Cmd {
+	if it.Kind != prItem || !it.Pr.Conflict {
+		q.say("m has the agent on a PR that conflicts with its base merge the base in; "+cmp.Or(it.Key, "this row")+" isn't one", cOverlay)
+		return nil
+	}
+	p := *it.Pr
+	agent, ok := q.prAgent(p)
+	if branch, _ := worktreeHead(agent.Dir); !ok || branch != p.Branch {
+		return func() tea.Msg { return openFormMsg{pr: &p, context: conflictAsk(p)} }
+	}
+	// What is typed into a prompt answers it, or picks one of its choices.
+	if agent.Agent == "blocked" {
+		q.say(agent.Key+" "+waitsFor(agent.Waits)+"; answer it first, then m again", cYellow)
+		return nil
+	}
+	state := q.state
+	q.say(fmt.Sprintf("Telling %s to merge %s into #%d…", agent.Key, p.Base, p.Number), cSubtext)
+	return tea.Sequence(func() tea.Msg {
+		said, err := deliverConflict(state, agent, p)
+		if err != nil {
+			return queueStatusMsg{text: fmt.Sprintf("Merging %s into #%d: %s", p.Base, p.Number, firstLine(err.Error())), color: cRed}
+		}
+		return queueStatusMsg{text: said, color: cGreen}
+	}, pollQueue)
+}
+
+// deliverConflict types the ask into the agent's pane, or resumes a closed agent on it.
+func deliverConflict(s State, agent queueItem, p Pr) (string, error) {
+	ask, what := conflictAsk(p), fmt.Sprintf("merge %s into #%d", p.Base, p.Number)
+	said := "✓ Told " + agent.Key + " to " + what
+	if agent.Agent == "" {
+		if _, err := resumeAgent(s, agent.Key, agent.Title, agent.Dir, ask); err != nil {
+			return "", err
+		}
+		said = "✓ Resumed " + agent.Key + " to " + what
+	} else if err := sendToAgent(agent.Session, agent.Block, ask); err != nil {
+		return "", err
+	}
+	_ = appendLog(agent.Key, logEntry{By: byMe, Kind: "reply", Text: what})
+	return said, nil
+}
+
 // requestForm asks the board to open its dispatch form on the PR's ticket. A PR that names no
 // ticket opens in the browser.
 func (q *queueModel) requestForm(p Pr) tea.Cmd {
@@ -1296,7 +1356,7 @@ func (q *queueModel) requestForm(p Pr) tea.Cmd {
 	if key == "" {
 		return q.browse(p.URL)
 	}
-	return func() tea.Msg { return openFormMsg{key} }
+	return func() tea.Msg { return openFormMsg{key: key} }
 }
 
 // browse opens the URL beside the board, and says so when it can't.

@@ -442,6 +442,19 @@ func (m *model) openRequested(row Row) {
 	m.say("Dispatch "+row.Key+" from the queue", cSubtext)
 }
 
+// requestFix opens the dispatch form on a PR the queue asked a fix of, with what to fix written
+// in, unless a dispatch is running from the form.
+func (m *model) requestFix(p Pr, context string) {
+	if m.form != nil && m.form.busy {
+		m.say("A dispatch is running; "+p.Key+" waits until it ends, then press m on it again", cYellow)
+		return
+	}
+	m.cleanup = nil
+	m.openForm(prRow(p))
+	m.form.fix, m.form.context = true, context
+	m.say("No agent is on "+p.Branch+": enter dispatches a fix of "+p.Key, cSubtext)
+}
+
 var prog *tea.Program
 
 func (m *model) submit() tea.Cmd {

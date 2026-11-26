@@ -437,6 +437,24 @@ context names.
 - In the queue, `enter` on one of your PRs goes to its fix agent when there is one, before the
   ticket's.
 
+### A PR that conflicts
+
+`m` on a PR of yours that conflicts with its base, in the queue, has an agent merge the base in.
+
+- It goes to the agent on the PR's branch: the one fixing the PR, else its ticket's, while its
+  worktree is on that branch. The ask is typed into its pane, and a closed agent is resumed on
+  it. An agent that waits on a prompt is told nothing, since the prompt would take the text as
+  its answer: answer it first.
+- With no agent on the branch, the board's dispatch form opens on the PR with `fix it` on and
+  the ask as its context, and `enter` dispatches the fix.
+- The ask is to merge `origin/<base>`, not to rebase, which would need a push with force; to
+  take the base's side where the conflict is with commits the base already has under another
+  commit (a PR this one was stacked on, squash-merged); then to build, run the tests and linters
+  that cover the files that conflicted, commit the merge, and say in its report what conflicted
+  and how each was resolved.
+- The agent doesn't push, so the PR conflicts until you do. Its row comes back under **review**
+  once it has written that report, the merge commit not yet in the PR.
+
 ### Reviewing work before its PR
 
 An agent commits on its branch and stops there, so its work has no PR to review yet. Two ways to
@@ -541,7 +559,7 @@ the ticket its title or branch names; with no agent, to the board's dispatch for
 with no ticket, the browser), `f` type a reply that is sent to the agent's pane, or the answer to its question, `1`–`9` or `a` answer a question with one of its [choices](#choices) or the recommended one, `y` or `n` answer the prompt an agent waits on (see [Answering a
 prompt](#answering-a-prompt)), `v` show its videos, screenshots and captures in a browser beside the board (see [Reports and
 evidence](#reports-and-evidence)), `d` the worktree's diff in git's
-pager, `r` that diff in the queue, to [comment on its lines](#reviewing-work-before-its-pr), `o` the ticket or PR in a browser [beside the board](#pages-beside-the-board), `O` in the system browser (either way a PR's news is then read), `p` a [port](#ports) its session listens on, `x` mark reviewed (the agent moves to idle or closed
+pager, `r` that diff in the queue, to [comment on its lines](#reviewing-work-before-its-pr), `m` have the agent on a PR that [conflicts](#a-pr-that-conflicts) merge its base in, `o` the ticket or PR in a browser [beside the board](#pages-beside-the-board), `O` in the system browser (either way a PR's news is then read), `p` a [port](#ports) its session listens on, `x` mark reviewed (the agent moves to idle or closed
 until it writes a new report, what it went on with is confirmed, and a question it left is set aside; a PR moves to **waiting** until what it waits on changes or someone writes on it), `K` twice close the agent's Rex
 session, or on a closed one drop it from the queue (its worktree and report stay), `c` list or fold
 the closed agents, `space` or `→` read the row (again for its whole text, which `space` then

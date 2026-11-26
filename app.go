@@ -106,6 +106,10 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.resize()
 	case openFormMsg:
 		a.focus = boardSide
+		if msg.pr != nil {
+			a.board.requestFix(*msg.pr, msg.context)
+			return a, a.resize()
+		}
 		return a, tea.Batch(a.resize(), a.board.requestForm(msg.key))
 	case loadedMsg:
 		cmd := a.to(boardSide, msg)

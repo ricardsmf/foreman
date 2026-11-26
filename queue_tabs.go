@@ -122,7 +122,7 @@ func (q *queueModel) todayInput(key string) tea.Cmd {
 					return q.open(it)
 				}
 			case 1:
-				return func() tea.Msg { return openFormMsg{p.row.Key} }
+				return func() tea.Msg { return openFormMsg{key: p.row.Key} }
 			}
 		}
 		if p.row.URL == "" {

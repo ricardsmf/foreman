@@ -568,6 +568,9 @@ func (q *queueModel) rowKeys(it queueItem) []string {
 		keys = []string{"y press enter", "n press esc", "space read", "enter go to it", "f reply"}
 	case it.Kind == prItem:
 		keys = []string{"enter go to its agent", "o open the PR", "space read"}
+		if it.Pr.Conflict {
+			keys = slices.Insert(keys, 0, "m merge "+it.Pr.Base+" in")
+		}
 		if it.pending() {
 			keys = append(keys, "x seen")
 		}
