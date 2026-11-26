@@ -55,7 +55,6 @@ func TestPageOpensBesideItsPane(t *testing.T) {
 	rex := useFakeRex(t)
 	tempState(t)
 	b := useFakeBrowsers(t, "block:2", `{"browsers": []}`, nil)
-	t.Setenv("REX_SESSION", "")
 	asked := fakePrs(t, map[string]string{"app-fld-1": "https://github.com/o/app/pull/7"})
 	if _, err := updateState(func(s *State) {
 		s.Dispatched["FLD-1"] = Dispatched{Dir: "/w/app-fld-1", Session: "s2"}

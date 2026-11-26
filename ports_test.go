@@ -75,7 +75,6 @@ func TestPictureAppliesPorts(t *testing.T) {
 // outside Rex, in the system browser.
 func TestQueueOpensPorts(t *testing.T) {
 	tempState(t)
-	t.Setenv("REX_SESSION", "")
 	t.Setenv("REX_BLOCK", "")
 	var opened []string
 	oldOpen := openURL
@@ -131,7 +130,7 @@ func TestQueueOpensPorts(t *testing.T) {
 // A prompt stays at the top of a blocked agent's detail, over its ports.
 func TestQueuePortsUnderAPrompt(t *testing.T) {
 	tempState(t)
-	t.Setenv("REX_SESSION", "")
+	t.Setenv("REX_BLOCK", "")
 	q := &queueModel{details: map[string][]string{}, width: 100, height: 30,
 		state:    State{Dispatched: map[string]Dispatched{"FLD-1": {Dir: "/w/1", Session: "s1"}}},
 		sessions: []rexSession{{ID: "s1", Label: "fld-1", State: "blocked", Ports: []rexPort{{Port: 5173, Addr: "::1"}}}}}

@@ -122,12 +122,13 @@ func role() string {
 	return byMe
 }
 
-// askerKey is the dispatch asking: the one whose recorded session is session, else the one whose
-// directory holds cwd.
-func askerKey(s State, session, cwd string) (string, error) {
-	if session != "" {
+// askerKey is the dispatch asking from the pane block, which Rex names in REX_BLOCK: the one whose
+// agent runs in that pane, else the one whose directory holds cwd. By the pane first: a ticket's
+// agent and the one fixing its PR may share a worktree.
+func askerKey(s State, block, cwd string) (string, error) {
+	if block != "" {
 		for key, d := range s.Dispatched {
-			if d.Session == session {
+			if d.Session != "" && s.Panes[d.Session] == block {
 				return key, nil
 			}
 		}
@@ -171,7 +172,7 @@ func runAsk(argv []string, stdin io.Reader, out io.Writer) error {
 	s := loadState()
 	if *key == "" {
 		cwd, _ := os.Getwd()
-		if *key, err = askerKey(s, os.Getenv("REX_SESSION"), cwd); err != nil {
+		if *key, err = askerKey(s, os.Getenv("REX_BLOCK"), cwd); err != nil {
 			return err
 		}
 	}

@@ -91,7 +91,6 @@ func TestBrowse(t *testing.T) {
 func TestQueueOpensBesideTheBoard(t *testing.T) {
 	tempState(t)
 	useFakeRex(t)
-	t.Setenv("REX_SESSION", "")
 	b := useFakeBrowsers(t, "b0", browserInTab, nil)
 	pr := Pr{Key: "app#10", Number: 10, Repo: "o/app", Summary: "fix: The gate", Branch: "rf/gate", Base: "develop",
 		Mine: true, CI: "passed", Needs: "needs 1 approval, has 0", URL: "https://github.com/o/app/pull/10"}
@@ -121,8 +120,10 @@ func TestQueueOpensBesideTheBoard(t *testing.T) {
 		if batch, ok := msg.(tea.BatchMsg); ok {
 			msg = batch[0]()
 		}
-		if msg != nil {
-			t.Errorf("%s on %s: %+v", text, key, msg)
+		// A page that didn't open is a status line. In a Rex pane the queue also tells Rex what
+		// waits on me, which marking a PR's news read changes.
+		if status, failed := msg.(queueStatusMsg); failed {
+			t.Errorf("%s on %s: %+v", text, key, status)
 		}
 	}
 	tab := func(url string) []string { return []string{"new-tab", "--browser", "53782-1", url} }

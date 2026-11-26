@@ -111,15 +111,14 @@ func TestStatusLineFindsItsDispatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, tc := range []struct{ session, block, dir, want string }{
-		{"", "block:2", dir, "fix:app#7"},
-		{"", "block:1", dir, "FLD-1"},
-		{"s2", "block:1", dir, "fix:app#7"},
-		{"", "block:9", filepath.Join(other, "sub"), "FLD-5"},
-		{"", "", "/elsewhere", ""},
+	for _, tc := range []struct{ block, dir, want string }{
+		{"block:2", dir, "fix:app#7"},
+		{"block:1", dir, "FLD-1"},
+		{"block:9", filepath.Join(other, "sub"), "FLD-5"},
+		{"", "/elsewhere", ""},
 	} {
-		if got := paneDispatch(s, tc.session, tc.block, tc.dir); got != tc.want {
-			t.Errorf("session %q, pane %q in %s: %q, want %q", tc.session, tc.block, tc.dir, got, tc.want)
+		if got, _ := askerKey(s, tc.block, tc.dir); got != tc.want {
+			t.Errorf("pane %q in %s: %q, want %q", tc.block, tc.dir, got, tc.want)
 		}
 	}
 
@@ -128,7 +127,6 @@ func TestStatusLineFindsItsDispatch(t *testing.T) {
 	if err := os.WriteFile(glanceFile(), b, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("REX_SESSION", "")
 	t.Setenv("REX_BLOCK", "block:9")
 	in := `{"cwd":"/moved/to","workspace":{"current_dir":"/moved/to","project_dir":"` + other + `"}}`
 	var out bytes.Buffer

@@ -114,21 +114,6 @@ func readGlance() *glance {
 	return &g
 }
 
-// paneDispatch is the dispatch whose agent runs in a pane: the one whose session is session, or
-// the session block is the agent's pane of, else the one that works in dir. "" for none.
-func paneDispatch(s State, session, block, dir string) string {
-	if session == "" && block != "" {
-		for id, b := range s.Panes {
-			if b == block {
-				session = id
-				break
-			}
-		}
-	}
-	key, _ := askerKey(s, session, dir)
-	return key
-}
-
 // statusLine is the line: the dispatch, the PR on its branch with what that waits on, and how
 // much else waits on me. Red and green mean what they do in the queue.
 func statusLine(key string, g *glance) string {
@@ -193,7 +178,8 @@ func runStatusline(stdin io.Reader, out io.Writer) error {
 	if dir == "" {
 		dir, _ = os.Getwd()
 	}
-	key := paneDispatch(loadState(), os.Getenv("REX_SESSION"), os.Getenv("REX_BLOCK"), dir)
+	// No dispatch is no error: the line then says only what waits on me.
+	key, _ := askerKey(loadState(), os.Getenv("REX_BLOCK"), dir)
 	if line := statusLine(key, readGlance()); line != "" {
 		fmt.Fprintln(out, line)
 	}

@@ -1092,7 +1092,7 @@ func TestAgentsResultDoesNotReschedule(t *testing.T) {
 		t.Errorf("state = %+v, agents = %v", m.state, m.agents)
 	}
 	// Outside Rex: in it, the queue's first state is also reported to Rex.
-	t.Setenv("REX_SESSION", "")
+	t.Setenv("REX_BLOCK", "")
 	q := &queueModel{details: map[string][]string{}}
 	if _, cmd := q.Update(queueStateMsg{State{}, nil, true, true}); cmd != nil {
 		t.Error("queueStateMsg with no items returned a command")
@@ -2434,17 +2434,39 @@ func TestOrchestratorCommand(t *testing.T) {
 	}
 }
 
+// The orchestrator's session is the one that holds the pane it starts in, which is all Rex names.
+func TestOrchestratorRecordsItsSession(t *testing.T) {
+	useFakeRex(t, rexSession{ID: "s1", Label: "shell", Panes: []rexPane{pane("block:1", true)}},
+		rexSession{ID: "s2", Label: "foreman", Panes: []rexPane{pane("block:2", true), pane("block:3", true)}})
+	if err := recordOrchestrator("block:3"); err != nil {
+		t.Fatal(err)
+	}
+	if s := loadState(); s.Orchestrator != "s2" || s.Panes["s2"] != "block:3" {
+		t.Errorf("recorded session %q, panes %v; want s2 answering in block:3", s.Orchestrator, s.Panes)
+	}
+	// Outside Rex, or in a pane Rex doesn't list, the record stays.
+	for _, block := range []string{"", "block:9"} {
+		if err := recordOrchestrator(block); err != nil || loadState().Orchestrator != "s2" {
+			t.Errorf("pane %q: %v, recorded %q", block, err, loadState().Orchestrator)
+		}
+	}
+}
+
 func TestAskerKey(t *testing.T) {
 	s := State{
-		Dispatched: map[string]Dispatched{"FLD-1": {Dir: "/w/app-fld-1", Session: "session:a"}, "task:app-2": {Dir: "/w/app-task-2"}},
+		Dispatched: map[string]Dispatched{"FLD-1": {Dir: "/w/app-fld-1", Session: "session:a"}, "fix:app#7": {Dir: "/w/app-fld-1", Session: "session:b"},
+			"task:app-2": {Dir: "/w/app-task-2"}},
+		Panes: map[string]string{"session:a": "block:a", "session:b": "block:b"},
 	}
-	for _, tc := range []struct{ session, cwd, want string }{
-		{"session:a", "/elsewhere", "FLD-1"},
+	for _, tc := range []struct{ block, cwd, want string }{
+		{"block:a", "/elsewhere", "FLD-1"},
+		// Two dispatches in one worktree: the pane says which.
+		{"block:b", "/w/app-fld-1", "fix:app#7"},
 		{"", "/w/app-task-2/src/lib", "task:app-2"},
-		{"session:z", "/w/app-task-2", "task:app-2"},
+		{"block:z", "/w/app-task-2", "task:app-2"},
 	} {
-		if got, err := askerKey(s, tc.session, tc.cwd); got != tc.want || err != nil {
-			t.Errorf("askerKey(%q, %q) = %q, %v; want %q", tc.session, tc.cwd, got, err, tc.want)
+		if got, err := askerKey(s, tc.block, tc.cwd); got != tc.want || err != nil {
+			t.Errorf("askerKey(%q, %q) = %q, %v; want %q", tc.block, tc.cwd, got, err, tc.want)
 		}
 	}
 	// A sibling directory sharing the worktree's prefix isn't in it.
@@ -3004,7 +3026,7 @@ func TestQueueFoldKeys(t *testing.T) {
 	old := evidenceRoot
 	evidenceRoot = t.TempDir()
 	t.Cleanup(func() { evidenceRoot = old })
-	t.Setenv("REX_SESSION", "")
+	t.Setenv("REX_BLOCK", "")
 	q := &queueModel{details: map[string][]string{}, state: State{Dispatched: map[string]Dispatched{"FLD-1": {Dir: "/w/1"}, "FLD-2": {Dir: "/w/2"}}}}
 	q.rebuild()
 	if len(q.items) != 1 || q.items[0].Fold != 2 || q.count(closed) != 2 {
@@ -3043,7 +3065,7 @@ func TestItemRecords(t *testing.T) {
 
 // An item that stops waiting on me has its record cleared, and nothing is sent when nothing changed.
 func TestReportClearsRecords(t *testing.T) {
-	t.Setenv("REX_SESSION", "session:x")
+	t.Setenv("REX_BLOCK", "block:x")
 	q := &queueModel{all: []queueItem{{Key: "FLD-1", Group: toReview, Agent: "idle"}}}
 	if q.report() == nil || q.records["FLD-1"] == "" {
 		t.Fatalf("first report: records %q", q.records)
@@ -3272,7 +3294,7 @@ func TestQueueRowShowsWhatAgentDoes(t *testing.T) {
 	old := evidenceRoot
 	evidenceRoot = t.TempDir()
 	t.Cleanup(func() { evidenceRoot = old })
-	t.Setenv("REX_SESSION", "")
+	t.Setenv("REX_BLOCK", "")
 	q := &queueModel{details: map[string][]string{}, width: 100, height: 30,
 		state:    State{Dispatched: map[string]Dispatched{"FLD-1": {Dir: "/w/1", Session: "s1"}}},
 		sessions: []rexSession{{ID: "s1", Label: "fld-1", State: "working", Msg: "Running the tests"}}}

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 )
@@ -109,18 +110,8 @@ func runOrchestrator(argv []string) error {
 	if err := os.WriteFile(filepath.Join(orchestratorDir, "CLAUDE.md"), []byte(orchestratorGuide), 0o644); err != nil {
 		return err
 	}
-	// Wherever it was started, by ^g or by hand, its session is the one to go back to, and this
-	// pane the one it answers in.
-	if id := os.Getenv("REX_SESSION"); id != "" {
-		block := os.Getenv("REX_BLOCK")
-		if _, err := updateState(func(s *State) {
-			s.Orchestrator = id
-			if block != "" {
-				s.Panes[id] = block
-			}
-		}); err != nil {
-			return err
-		}
+	if err := recordOrchestrator(os.Getenv("REX_BLOCK")); err != nil {
+		return err
 	}
 	conversations, _ := filepath.Glob(filepath.Join(claudeProjectDir(orchestratorDir), "*.jsonl"))
 	cmd := orchestratorCommand(!fresh && len(conversations) > 0)
@@ -129,6 +120,27 @@ func runOrchestrator(argv []string) error {
 	}
 	// Its commands message agents as the orchestrator: foreman refuses to type into a blocked one.
 	return syscall.Exec(cmd[0], cmd, append(os.Environ(), roleEnv+"="+byOrchestrator))
+}
+
+// recordOrchestrator records the session the orchestrator starts in, and block as the pane it
+// answers in: wherever it was started, by ^g or by hand, that session is the one to go back to.
+// Rex names a program its pane alone, so the session is the open one that holds it; with none
+// found, findOrchestrator's other ways still find it.
+func recordOrchestrator(block string) error {
+	if block == "" {
+		return nil
+	}
+	sessions, err := openSessions()
+	if err != nil {
+		return nil
+	}
+	for _, o := range sessions {
+		if slices.ContainsFunc(o.Panes, func(p rexPane) bool { return p.ID == block }) {
+			_, err := updateState(func(s *State) { s.Orchestrator, s.Panes[o.ID] = o.ID, block })
+			return err
+		}
+	}
+	return nil
 }
 
 // findOrchestrator is the orchestrator's open session: the recorded one, else one labelled

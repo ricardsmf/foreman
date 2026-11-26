@@ -67,7 +67,6 @@ func TestQueueShowsEvidence(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			tempState(t)
 			f := useFakeRex(t)
-			t.Setenv("REX_SESSION", "")
 			t.Setenv("REX_BLOCK", tc.block)
 			var browserCalls [][]string
 			var opened []string

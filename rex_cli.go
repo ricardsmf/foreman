@@ -85,7 +85,7 @@ return out
 `
 
 func (rexCLI) sessions() ([]rexSession, error) {
-	// --all: otherwise rex do hears only the session REX_SESSION names, and listing another
+	// --all: otherwise rex do hears only the session this pane is in, and listing another
 	// session's blocks fails.
 	out, err := sh("", "rex", "do", "--all", "-e", sessionsScript, "--json")
 	if err != nil {

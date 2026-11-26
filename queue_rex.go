@@ -95,7 +95,7 @@ func itemRecords(items []queueItem) map[string]string {
 
 // report tells Rex what changed: the queue's status, and the record of each item that waits on me.
 func (q *queueModel) report() tea.Cmd {
-	if os.Getenv("REX_SESSION") == "" {
+	if os.Getenv("REX_BLOCK") == "" {
 		return nil
 	}
 	var out strings.Builder

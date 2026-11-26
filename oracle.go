@@ -192,7 +192,7 @@ func runOracle(argv []string, out io.Writer) error {
 	}
 	if *key == "" {
 		cwd, _ := os.Getwd()
-		if *key, err = askerKey(loadState(), os.Getenv("REX_SESSION"), cwd); err != nil {
+		if *key, err = askerKey(loadState(), os.Getenv("REX_BLOCK"), cwd); err != nil {
 			return err
 		}
 	}

@@ -58,7 +58,8 @@ func runPage(argv []string, out io.Writer) error {
 		dir, _ = os.Getwd()
 	}
 	s := loadState()
-	key := paneDispatch(s, os.Getenv("REX_SESSION"), os.Getenv("REX_BLOCK"), dir)
+	// No dispatch here leaves the PR of dir's branch.
+	key, _ := askerKey(s, os.Getenv("REX_BLOCK"), dir)
 	// The dispatch's own directory: the pane's program may have moved out of the worktree.
 	url, err := pageOf(key, cmp.Or(s.Dispatched[key].Dir, dir))
 	if err != nil {

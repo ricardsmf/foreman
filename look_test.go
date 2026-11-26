@@ -79,7 +79,7 @@ func TestParseDoc(t *testing.T) {
 // What waits on me is a card with what it asks or found; what moves without me is a row.
 func TestQueueSizeFollowsUrgency(t *testing.T) {
 	tempState(t)
-	t.Setenv("REX_SESSION", "")
+	t.Setenv("REX_BLOCK", "")
 	dispatched(t, "FLD-1", "/w/1")
 	dispatched(t, "FLD-2", "/w/2")
 	if err := os.WriteFile(filepath.Join(evidenceDir("FLD-2"), "report.md"), []byte(sampleReport), 0o644); err != nil {
