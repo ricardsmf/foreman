@@ -727,6 +727,28 @@ the port of `p` and the evidence page of `v`.
   80x24 never starts it. A page that already kept a wrong zoom keeps it until `ctrl+0` in the
   browser.
 
+### An agent's status line
+
+A dispatched Claude Code shows a line of foreman's under its prompt, so what waits elsewhere is
+seen from inside an agent's session:
+
+```
+FLD-1704 · #1395 conflicts with develop · elsewhere 2 need you, 1 to review
+```
+
+- It names the dispatch; the open PR of yours on the branch its worktree is on, with what that
+  PR's row in the queue says, red when it needs you and green when it is ready to merge or
+  someone wrote on it; then how many other items sit under **needs you** and **review**. Its own
+  row and its PR's aren't counted: the session shows those.
+- The dispatch passes `--settings '{"statusLine":…}'`, which outranks a status line of your own
+  settings in that session, and has Claude Code run `foreman statusline` after each turn and
+  every 10 seconds. pi has no such line.
+- The command calls neither Rex nor GitHub. It reads the dispatch from `state.json`, by the pane
+  it runs in (`REX_BLOCK`), else by the directory Claude Code started in, and the rest from
+  `glance.json` beside it, which the board rewrites when its queue changes. With no board
+  running, the line is the dispatch alone.
+- An agent dispatched before this has no line until the queue resumes it.
+
 ## Watchers
 
 A watcher is a Claude Code session that runs one of a repo's skills when there is something for it
@@ -915,6 +937,10 @@ see [Waking a watcher](#waking-a-watcher). `at` is optional too, with `prs` or w
   `~/.local/state/foreman/state.json`, written atomically. foreman and its commands (`dispatch`, `ask`, `answer`…) all write it,
   so each write holds `state.json.lock`, and foreman re-reads it every few seconds. An unreadable
   file is moved to `state.json.corrupt` rather than overwritten.
+- `~/.local/state/foreman/glance.json` is what [an agent's status line](#an-agents-status-line)
+  reads of the queue: the keys under **needs you** and **review**, and for each dispatch the PR on
+  its branch with what it waits on. The board writes it, with its own pid, when its queue
+  changes; one whose pid no longer runs is read as none.
 - What happens in each dispatch is appended to `~/.local/state/foreman/events.jsonl`, one JSON
   line per event, which nothing rewrites or removes: a cleanup or the key's next dispatch keeps it.
 

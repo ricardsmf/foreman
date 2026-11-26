@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"slices"
@@ -797,6 +798,13 @@ func run() error {
 			return runToday(rest, os.Stdout)
 		case "stats":
 			return runStats(rest, os.Stdout)
+		case "statusline":
+			// Run by hand, there is nothing to read: a terminal would be waited on.
+			var in io.Reader = os.Stdin
+			if st, err := os.Stdin.Stat(); err == nil && st.Mode()&os.ModeCharDevice != 0 {
+				in = strings.NewReader("")
+			}
+			return runStatusline(in, os.Stdout)
 		}
 	}
 	if len(argv) > 0 && argv[0] == "--logout" {

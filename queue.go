@@ -669,6 +669,7 @@ type queueModel struct {
 	statsTop     int
 	statsLoading bool
 	statsRead    time.Time         // when the last count started
+	glanced      []byte            // the last glance written for the agents' status lines
 	reported     string            // the last status reported to Rex
 	records      map[string]string // the last record reported to Rex for each item that waits on me
 	statusAt     time.Time         // when the status line was set: it clears after statusTTL
@@ -812,7 +813,7 @@ func (q *queueModel) rebuild() tea.Cmd {
 	if q.tab == todayTab {
 		q.loadToday()
 	}
-	return tea.Batch(q.loadDetail(), q.report())
+	return tea.Batch(q.loadDetail(), q.report(), q.glance())
 }
 
 func (q *queueModel) loadDetail() tea.Cmd {

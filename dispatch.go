@@ -957,7 +957,7 @@ func agentArgs(agent string) []string {
 	if agent == agentPi {
 		return []string{which("pi")}
 	}
-	cmd := []string{which("claude"), "--mcp-config", mcpConfig}
+	cmd := []string{which("claude"), "--mcp-config", mcpConfig, "--settings", claudeSettings()}
 	switch agent {
 	case agentAuto:
 		cmd = append(cmd, "--permission-mode", "auto")
