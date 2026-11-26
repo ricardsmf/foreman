@@ -23,7 +23,7 @@ const (
 const (
 	// boardShare is the board's share of the width beside the queue, in percent.
 	boardShare = 45
-	// gapWidth is the space between the two.
+	// gapWidth is the rule between the two, with a space either side.
 	gapWidth = 3
 	// bothMinWidth is the narrowest pane that fits the two side by side; under it, only the side
 	// in focus shows.
@@ -197,7 +197,8 @@ func (a *app) content() string {
 		}
 	}
 	text, c := a.status()
-	return frame(beside(left, bw, spaces(gapWidth), right, qw, rows), footer, text, c, a.width, rows)
+	rule := " " + fg(cSurface, "│") + " "
+	return frame(beside(left, bw, rule, right, qw, rows), footer, text, c, a.width, rows)
 }
 
 // status is the newer of the two sides' status lines.

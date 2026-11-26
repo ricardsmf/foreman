@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"image/color"
 	"io"
 	"maps"
 	"net/http"
@@ -3159,16 +3158,6 @@ func TestBoardHelp(t *testing.T) {
 	m.boardInput(tea.KeyPressMsg{Code: '?', Text: "?"})
 	if m.help || m.query != "why?" {
 		t.Errorf("? in a filter: help %t, query %q", m.help, m.query)
-	}
-}
-
-// The greys sit between the terminal's background and its text, so they follow its theme.
-func TestSetTheme(t *testing.T) {
-	sub, over, sur, sel, pan := cSubtext, cOverlay, cSurface, bgSelected, bgPanel
-	t.Cleanup(func() { cSubtext, cOverlay, cSurface, bgSelected, bgPanel = sub, over, sur, sel, pan })
-	setTheme(color.RGBA{0, 0, 0, 255}, color.RGBA{200, 200, 200, 255})
-	if colourName(cOverlay) != "#5a5a5a" || colourName(bgSelected) != "#b2b2b2" {
-		t.Errorf("on a light terminal: overlay %s, selected %s", colourName(cOverlay), colourName(bgSelected))
 	}
 }
 

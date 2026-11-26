@@ -211,7 +211,7 @@ func (q *queueModel) renderToday(width, h int) []string {
 			if sel {
 				text = bold(fg(cText, title))
 			}
-			entries[n] = listEntry{todaySections[r.section], cOverlay, []string{row(sel, mark, text, right, width)}}
+			entries[n] = listEntry{todaySections[r.section], cText, []string{row(sel, mark, text, right, width)}}
 		}
 		out = append(out, groupedList(entries, q.todayCursor, &q.todayTop, listRows)...)
 	}

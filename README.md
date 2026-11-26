@@ -22,7 +22,7 @@ foreman stats --days 7      # what the agents used: cost, tokens and time worked
 
 foreman is one program in one pane: the board on the left and the [queue](#queue) on the right.
 `^l` moves between them, and the side in focus gets the keys; the other is drawn faint, without
-its cursor. The board takes 45% of the width. `^z` shows the side in focus alone, full width, and
+its cursor. A rule parts the two sides. The board takes 45% of the width. `^z` shows the side in focus alone, full width, and
 `^z` again both; `^l` while one is alone shows the other alone. A pane under 110 columns shows
 only the side in focus. `foreman queue` opens on the queue alone.
 
@@ -73,8 +73,8 @@ The footer, under both sides, names at most five keys, those of the moment and o
 the cursor on the side in focus, then `? keys`; `?`, while the filter is empty, lists them all,
 and `↑↓` scroll that list in a short pane.
 
-The board groups its rows under quiet lowercase headings, a ticket's status (`blocked` in red)
-or, for PRs, `review requested`, `yours` and `others`, so a ticket's row has no status of its
+The board groups its rows under bold headings that count their rows, a ticket's status (`Blocked` in
+red) or, for PRs, `Review requested`, `Yours` and `Others`, so a ticket's row has no status of its
 own; a PR's row keeps its state. A row is one line, its title first, without the bracketed tags it
 starts with (`[Reports App][Tests]`) or a conventional commit's type and tag (`fix: [FLD-1885]`),
 then the assignee and the key, quiet, at the right edge. The tags show as the brief's `area`. The
@@ -104,10 +104,12 @@ stats views' detail.
 Colours follow the terminal's theme: the hues are its palette's, and the greys and the selected
 row's background are shades between its background and its text, which the board asks it for when
 it starts, when the pane takes the focus, and when the terminal reports a switch between light and
-dark (mode 2031).
-Colour stands for a state alone: red needs you or failed, green to review or passed, yellow
-working; everything else is in the greys, headings and code included. A
-terminal that doesn't answer gets Catppuccin Macchiato's greys.
+dark (mode 2031). Each shade's contrast against the background sits where Catppuccin Macchiato's
+grey's does below its text, so a light theme's greys read as well as a dark one's, and a soft
+theme's (Pierre's) keep their steps below its text. Colour stands for a state alone: red needs you
+or failed, green to review or passed, yellow working; everything else is in the greys, code
+included, and headings are bold in the text's colour. A terminal that doesn't answer gets
+Catppuccin Macchiato's greys. Lip Gloss draws the styles.
 
 A status line clears by itself: after ten seconds, a warning after twenty, an error after a minute.
 On the board, one about work under way (`…`) stays until its result replaces it.
@@ -609,7 +611,7 @@ scrolls; `←` back, `esc` closes it), `^u`/`^d` scroll the whole text, `^r` rel
 queue back beside it; `^c` quits foreman).
 
 `tab` turns the queue to its two other views, [today](#today) and the [stats](#stats), and back to
-the list. Each is a list under quiet headings over the detail of the row picked, which `space`,
+the list. Each is a list under bold headings with counts over the detail of the row picked, which `space`,
 `^u` and `^d` scroll.
 
 ### Today

@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"fmt"
 	"image/color"
+	"math"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -39,17 +40,54 @@ var (
 	bgPanel color.Color = lipgloss.Color("#2b2e42")
 )
 
-// setTheme derives the greys from the terminal's own background and text colours: each sits a
-// share of the way from the background to the text, the shares Catppuccin's greys have.
-func setTheme(text, background color.Color) {
-	fr, fgc, fb, _ := text.RGBA()
-	br, bgc, bb, _ := background.RGBA()
-	shade := func(share float64) color.Color {
-		mix := func(b, f uint32) uint8 { return uint8((float64(b)+(float64(f)-float64(b))*share)/257 + 0.5) }
-		return color.RGBA{mix(br, fr), mix(bgc, fgc), mix(bb, fb), 0xff}
+// greyShare is where each grey sits between Catppuccin Macchiato's background and its text, in the
+// order setTheme sets them: its contrast against the background as a power of the text's.
+var greyShare = func() []float64 {
+	base := lipgloss.Color("#24273a")
+	top := math.Log(contrast(lipgloss.Color("#cad3f5"), base))
+	var out []float64
+	for _, c := range []color.Color{cSubtext, cOverlay, cSurface, bgSelected, bgPanel} {
+		out = append(out, math.Log(contrast(c, base))/top)
 	}
-	cSubtext, cOverlay, cSurface = shade(0.78), shade(0.55), shade(0.22)
-	bgSelected, bgPanel = shade(0.11), shade(0.045)
+	return out
+}()
+
+// setTheme derives the greys from the terminal's own background and text colours: each is the
+// first shade on the way from the background to the text whose contrast sits where Catppuccin's
+// grey's does below its text. Measured in contrast rather than mixed by share of RGB, a light
+// theme's greys read as well as a dark one's, and a soft theme's keep their steps below its text.
+func setTheme(text, background color.Color) {
+	shades := lipgloss.Blend1D(256, background, text)
+	greys := make([]color.Color, len(greyShare))
+	for n, share := range greyShare {
+		want := math.Pow(contrast(text, background), share)
+		greys[n] = text
+		for _, s := range shades {
+			if contrast(s, background) >= want {
+				greys[n] = s
+				break
+			}
+		}
+	}
+	cSubtext, cOverlay, cSurface, bgSelected, bgPanel = greys[0], greys[1], greys[2], greys[3], greys[4]
+}
+
+// contrast is WCAG's contrast ratio between two colours, from 1 for the same to 21 for black and
+// white.
+func contrast(a, b color.Color) float64 {
+	lum := func(c color.Color) float64 {
+		r, g, b, _ := c.RGBA()
+		lin := func(v uint32) float64 {
+			s := float64(v) / 0xffff
+			if s <= 0.03928 {
+				return s / 12.92
+			}
+			return math.Pow((s+0.055)/1.055, 2.4)
+		}
+		return 0.2126*lin(r) + 0.7152*lin(g) + 0.0722*lin(b)
+	}
+	la, lb := lum(a), lum(b)
+	return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
 }
 
 // A theme collects the terminal's answers about its colours; the greys follow once both are in.
@@ -490,13 +528,13 @@ func boardGroup(r Row) (string, color.Color) {
 	if p := r.Pr; p != nil {
 		switch {
 		case p.Requested:
-			return "review requested", cOverlay
+			return "review requested", cText
 		case p.Mine:
-			return "yours", cOverlay
+			return "yours", cText
 		}
-		return "others", cOverlay
+		return "others", cText
 	}
-	tone := cOverlay
+	tone := cText
 	if r.Category == "Blocked" || strings.Contains(strings.ToLower(r.Status), "blocked") {
 		tone = cRed
 	}

@@ -1,16 +1,20 @@
- Tickets  FLD · everyone                                        1 of 1     Your move
+ Tickets  FLD · everyone                                        1 of 1  │  Your move
     1-7 bold
     8-23 fg=#8087a2
     64-69 fg=#8087a2
+    72-72 fg=#494d64
     74-74 faint
     75-83 bold faint
     84-160 faint
-
- no status                                                                   Nothing waits on you.
-    1-9 fg=#8087a2
+                                                                        │
+    72-72 fg=#494d64
+ No status  1                                                           │    Nothing waits on you.
+    1-9 bold
+    10-12 fg=#8087a2
+    72-72 fg=#494d64
     74-76 faint
     77-97 fg=#8087a2 faint
-▌  Seven                                           unassigned  FLD-7
+▌  Seven                                           unassigned  FLD-7    │
     0-0 fg=ansi5 bg=#363a4f
     1-2 bg=#363a4f
     3-7 bg=#363a4f bold
@@ -19,32 +23,57 @@
     61-62 bg=#363a4f
     63-69 fg=#8087a2 bg=#363a4f
     70-70 bg=#363a4f
-                                                                             no agents dispatched
+    72-72 fg=#494d64
+                                                                        │    no agents dispatched
+    72-72 fg=#494d64
     74-76 faint
     77-96 fg=#8087a2 faint
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+                                                                        │
+    72-72 fg=#494d64
+                                                                        │
+    72-72 fg=#494d64
+                                                                        │
+    72-72 fg=#494d64
+                                                                        │
+    72-72 fg=#494d64
+                                                                        │
+    72-72 fg=#494d64
+                                                                        │
+    72-72 fg=#494d64
+                                                                        │
+    72-72 fg=#494d64
+                                                                        │
+    72-72 fg=#494d64
+                                                                        │
+    72-72 fg=#494d64
+                                                                        │
+    72-72 fg=#494d64
+                                                                        │
+    72-72 fg=#494d64
+                                                                        │
+    72-72 fg=#494d64
+                                                                        │
+    72-72 fg=#494d64
+                                                                        │
+    72-72 fg=#494d64
+                                                                        │
+    72-72 fg=#494d64
+                                                                        │
+    72-72 fg=#494d64
+                                                                        │
+    72-72 fg=#494d64
+                                                                        │
+    72-72 fg=#494d64
+                                                                        │
+    72-72 fg=#494d64
+                                                                        │
+    72-72 fg=#494d64
+                                                                        │
+    72-72 fg=#494d64
+                                                                        │
+    72-72 fg=#494d64
+                                                                        │
+    72-72 fg=#494d64
  enter dispatch   → read   ^o mine   ^t task   ? keys
     1-5 fg=#a5adcb
     7-14 fg=#8087a2

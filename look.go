@@ -4,6 +4,7 @@ package main
 // under quiet headings, the reading pane's surface, and titles without their tags.
 
 import (
+	"fmt"
 	"image/color"
 	"regexp"
 	"strings"
@@ -39,6 +40,15 @@ func lr(left, right string, width int) string {
 // paint is line on the background bg across width columns.
 func paint(bg color.Color, line string, width int) string {
 	return styled(plainStyle.Background(bg), fit(line, width))
+}
+
+// capitalize is s with its first letter a capital.
+func capitalize(s string) string {
+	r := []rune(s)
+	if len(r) > 0 {
+		r[0] = unicode.ToUpper(r[0])
+	}
+	return string(r)
 }
 
 // tall pads or cuts lines to h rows.
@@ -93,7 +103,8 @@ type listEntry struct {
 }
 
 // groupedList lays out the entries under a heading wherever their group changes, rows lines of
-// them from *top, which it moves to show the cursor's entry and the heading over it.
+// them from *top, which it moves to show the cursor's entry and the heading over it. A heading
+// says how many entries it holds.
 func groupedList(entries []listEntry, cursor int, top *int, rows int) []string {
 	var lines []string
 	from, to := 0, 0
@@ -104,7 +115,11 @@ func groupedList(entries []listEntry, cursor int, top *int, rows int) []string {
 				lines = append(lines, "")
 			}
 			if e.group != "" {
-				lines = append(lines, " "+fg(e.tone, e.group))
+				count := 1
+				for count < len(entries)-n && entries[n+count].group == e.group {
+					count++
+				}
+				lines = append(lines, " "+bold(fg(e.tone, capitalize(e.group)))+fg(cOverlay, fmt.Sprintf("  %d", count)))
 			}
 		}
 		lines = append(lines, e.lines...)

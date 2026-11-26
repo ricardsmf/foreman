@@ -157,7 +157,7 @@ func TestBoardGroupsByStatus(t *testing.T) {
 			{Key: "FLD-3", Summary: "Three", Status: "Blocked", Category: "Blocked", Issue: &Issue{}},
 		}}
 	board := ansi.Strip(strings.Join(m.renderBoard(80, 20), "\n"))
-	if strings.Count(board, "in progress") != 1 || strings.Count(board, "blocked") != 1 || strings.Contains(board, "[Reports App]") {
+	if strings.Count(board, "In progress  2") != 1 || strings.Count(board, "Blocked  1") != 1 || strings.Contains(board, "[Reports App]") {
 		t.Errorf("the board:\n%s", board)
 	}
 	if !strings.Contains(board, "The first ticket's description.") {

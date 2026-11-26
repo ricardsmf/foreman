@@ -8,8 +8,9 @@
     46-48 fg=#494d64
     49-70 fg=#a5adcb
 
-  progress
-    2-9 fg=#8087a2
+  Progress  2
+    2-9 bold
+    10-12 fg=#8087a2
  ▌✓ FLD-2                                                                  done (closed)  FLD-2
     1-1 fg=ansi5 bg=#363a4f
     2-2 fg=ansi2 bg=#363a4f

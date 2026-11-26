@@ -74,12 +74,12 @@ func TestAppLayouts(t *testing.T) {
 			t.Fatalf("line %d is %d wide; want 161: %q", n, w, ansi.Strip(l))
 		}
 	}
-	if top := ansi.Strip(lines[0]); !strings.HasPrefix(top, " Tickets") || !strings.Contains(top, "   Your move") {
+	if top := ansi.Strip(lines[0]); !strings.HasPrefix(top, " Tickets") || !strings.Contains(top, " │  Your move") {
 		t.Errorf("the first line lacks the board or the queue: %q", top)
 	}
 	// The queue isn't in focus: its side is faint, the board's isn't.
-	board, queue, faint := strings.Cut(lines[0], spaces(gapWidth)+"\x1b[2m")
-	if strings.Contains(board, "\x1b[2m") || !faint {
+	board, queue, _ := strings.Cut(lines[0], "│")
+	if strings.Contains(looks(board), "faint") || !strings.Contains(looks(queue), "faint") {
 		t.Errorf("faint is on the wrong side: %q │ %q", board, queue)
 	}
 
