@@ -1,0 +1,88 @@
+ Your move                                                                                        1
+    1-9 bold
+    98-98 fg=#8087a2
+
+▌
+    0-0 fg=ansi5
+    1-99 bg=#363a4f
+▌  ✓ FLD-2 done (closed)                                                                    now
+    0-0 fg=ansi5
+    1-2 bg=#363a4f
+    3-3 fg=ansi2 bg=#363a4f
+    4-4 bg=#363a4f
+    5-9 bg=#363a4f bold
+    10-10 bg=#363a4f
+    11-14 fg=ansi2 bg=#363a4f
+    15-23 fg=#8087a2 bg=#363a4f
+    24-91 bg=#363a4f
+    92-94 fg=#8087a2 bg=#363a4f
+    95-99 bg=#363a4f
+▌  FLD-2
+    0-0 fg=ansi5
+    1-2 bg=#363a4f
+    3-7 fg=#a5adcb bg=#363a4f
+    8-99 bg=#363a4f
+▌
+    0-0 fg=ansi5
+    1-99 bg=#363a4f
+▌  The log outlives cleanup, in events.jsonl.
+    0-0 fg=ansi5
+    1-99 bg=#363a4f
+▌
+    0-0 fg=ansi5
+    1-99 bg=#363a4f
+▌  2 left open
+    0-0 fg=ansi5
+    1-2 bg=#363a4f
+    3-13 fg=ansi3 bg=#363a4f
+    14-99 bg=#363a4f
+▌
+    0-0 fg=ansi5
+    1-99 bg=#363a4f
+
+ Agents at work
+    1-14 fg=#a5adcb
+ ● Three
+    1-1 fg=ansi3
+    3-7 fg=#a5adcb
+   FLD-3 · Running the tests
+    3-10 fg=#8087a2
+    11-27 fg=ansi3
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ space read   x reviewed   d diff   r review it   enter go to it   ? keys
+    1-5 fg=#a5adcb
+    7-10 fg=#8087a2
+    14-14 fg=#a5adcb
+    16-23 fg=#8087a2
+    27-27 fg=#a5adcb
+    29-32 fg=#8087a2
+    36-36 fg=#a5adcb
+    38-46 fg=#8087a2
+    50-54 fg=#a5adcb
+    56-63 fg=#8087a2
+    67-67 fg=#a5adcb
+    69-72 fg=#8087a2
+

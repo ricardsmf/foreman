@@ -1,6 +1,7 @@
 package main
 
 import (
+	"image/color"
 	"os"
 	"path/filepath"
 	"slices"
@@ -18,7 +19,7 @@ func testLoop(t *testing.T) (l *watchLoop, notes, told *[]string) {
 	rexWait = 0
 	t.Cleanup(func() { notify, rexWait, watchers = oldNotify, oldWait, nil })
 	return &watchLoop{
-		note:    func(text string, _ Color) { *notes = append(*notes, text) },
+		note:    func(text string, _ color.Color) { *notes = append(*notes, text) },
 		lastErr: map[string]string{}, alerted: map[string]string{},
 	}, notes, told
 }

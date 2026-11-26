@@ -1,0 +1,78 @@
+ Today  Thu 26 Nov · 2 in progress · 0 up next · 0 done since yesterday
+    1-5 bold
+    8-17 fg=#8087a2
+    18-20 fg=#494d64
+    21-33 fg=#a5adcb
+    34-36 fg=#494d64
+    37-45 fg=#a5adcb
+    46-48 fg=#494d64
+    49-70 fg=#a5adcb
+
+  progress
+    2-9 fg=#8087a2
+ ▌✓ FLD-2                                                                  done (closed)  FLD-2
+    1-1 fg=ansi5 bg=#363a4f
+    2-2 fg=ansi2 bg=#363a4f
+    3-3 bg=#363a4f
+    4-8 bg=#363a4f bold
+    9-74 bg=#363a4f
+    75-78 fg=ansi2 bg=#363a4f
+    79-87 fg=#8087a2 bg=#363a4f
+    88-89 bg=#363a4f
+    90-97 fg=#8087a2 bg=#363a4f
+    98-98 bg=#363a4f
+  ● Three                                                                        working  FLD-3
+    2-2 fg=ansi3
+    4-8 fg=#a5adcb
+    81-87 fg=ansi3
+    90-97 fg=#8087a2
+
+ ──────────────────────────────────────────────────────────────────────────────────────────────────
+    1-98 fg=#494d64
+ FLD-2: FLD-2
+    1-12 bold
+
+ Now: done (closed)
+    1-4 bold
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ ↑↓ pick   enter go to it, dispatch or open   o open   space scroll   tab stats   ? keys
+    1-2 fg=#a5adcb
+    4-7 fg=#8087a2
+    11-15 fg=#a5adcb
+    17-42 fg=#8087a2
+    46-46 fg=#a5adcb
+    48-51 fg=#8087a2
+    55-59 fg=#a5adcb
+    61-66 fg=#8087a2
+    70-72 fg=#a5adcb
+    74-78 fg=#8087a2
+    82-82 fg=#a5adcb
+    84-87 fg=#8087a2
+

@@ -95,7 +95,7 @@ func cursorText(text string, back int) string {
 	under := string(r[pos])
 	if under == "\n" {
 		// A line's end has no character to reverse: a space stands for it.
-		under = " \x1b[27m\n\x1b[7m"
+		return string(r[:pos]) + styled(plainStyle.Reverse(true), " ") + "\n" + string(r[pos+1:])
 	}
-	return string(r[:pos]) + "\x1b[7m" + under + "\x1b[27m" + string(r[pos+1:])
+	return string(r[:pos]) + styled(plainStyle.Reverse(true), under) + string(r[pos+1:])
 }

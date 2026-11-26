@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"image/color"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -189,7 +190,7 @@ func TestReportLoggedOnce(t *testing.T) {
 	useFakeRex(t)
 	tempState(t)
 	dispatched(t, "FLD-1", t.TempDir())
-	watch := &watchLoop{note: func(string, Color) {}, lastErr: map[string]string{}, alerted: map[string]string{}}
+	watch := &watchLoop{note: func(string, color.Color) {}, lastErr: map[string]string{}, alerted: map[string]string{}}
 	pollQueue()
 	watch.tick()
 	pollQueue()

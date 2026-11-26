@@ -1,0 +1,59 @@
+ Tickets  FLD · everyone                                        1 of 1     Your move
+    1-7 bold
+    8-23 fg=#8087a2
+    64-69 fg=#8087a2
+    74-74 faint
+    75-83 bold faint
+    84-160 faint
+
+ no status                                                                   Nothing waits on you.
+    1-9 fg=#8087a2
+    74-76 faint
+    77-97 fg=#8087a2 faint
+▌  Seven                                           unassigned  FLD-7
+    0-0 fg=ansi5 bg=#363a4f
+    1-2 bg=#363a4f
+    3-7 bg=#363a4f bold
+    8-50 bg=#363a4f
+    51-60 fg=#8087a2 bg=#363a4f
+    61-62 bg=#363a4f
+    63-69 fg=#8087a2 bg=#363a4f
+    70-70 bg=#363a4f
+                                                                             no agents dispatched
+    74-76 faint
+    77-96 fg=#8087a2 faint
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ enter dispatch   → read   ^o mine   ^t task   ? keys
+    1-5 fg=#a5adcb
+    7-14 fg=#8087a2
+    18-18 fg=#a5adcb
+    20-23 fg=#8087a2
+    27-28 fg=#a5adcb
+    30-33 fg=#8087a2
+    37-38 fg=#a5adcb
+    40-43 fg=#8087a2
+    47-47 fg=#a5adcb
+    49-52 fg=#8087a2
+

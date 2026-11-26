@@ -1,0 +1,90 @@
+
+    0-119 bg=#2b2e42
+   FLD-2
+    0-2 bg=#2b2e42
+    3-7 fg=#8087a2 bg=#2b2e42
+    8-119 bg=#2b2e42
+
+    0-119 bg=#2b2e42
+   Investigate discrepancy
+    0-2 bg=#2b2e42
+    3-25 bg=#2b2e42 bold
+    26-119 bg=#2b2e42
+
+    0-119 bg=#2b2e42
+   There are significant discrepancies between the DeBloq and P&I numbers.
+    0-12 bg=#2b2e42
+    13-23 bg=#2b2e42 bold
+    24-50 bg=#2b2e42
+    51-56 fg=#a5adcb bg=#2b2e42
+    57-119 bg=#2b2e42
+
+    0-119 bg=#2b2e42
+   Context
+    0-2 bg=#2b2e42
+    3-9 fg=#a5adcb bg=#2b2e42 bold
+    10-119 bg=#2b2e42
+
+    0-119 bg=#2b2e42
+   · Large differences detected
+    0-2 bg=#2b2e42
+    3-4 fg=#8087a2 bg=#2b2e42
+    5-119 bg=#2b2e42
+   · Airtable comparison views:
+    0-2 bg=#2b2e42
+    3-4 fg=#8087a2 bg=#2b2e42
+    5-119 bg=#2b2e42
+     · Less records
+    0-2 bg=#2b2e42
+    3-6 fg=#8087a2 bg=#2b2e42
+    7-119 bg=#2b2e42
+
+    0-119 bg=#2b2e42
+   ```
+    0-2 bg=#2b2e42
+    3-5 fg=#8087a2 bg=#2b2e42
+    6-119 bg=#2b2e42
+   select * from consumption
+    0-2 bg=#2b2e42
+    3-27 fg=#a5adcb bg=#2b2e42
+    28-119 bg=#2b2e42
+   ```
+    0-2 bg=#2b2e42
+    3-5 fg=#8087a2 bg=#2b2e42
+    6-119 bg=#2b2e42
+
+    0-119 bg=#2b2e42
+
+    0-119 bg=#2b2e42
+
+    0-119 bg=#2b2e42
+
+    0-119 bg=#2b2e42
+
+    0-119 bg=#2b2e42
+
+    0-119 bg=#2b2e42
+
+    0-119 bg=#2b2e42
+
+    0-119 bg=#2b2e42
+
+    0-119 bg=#2b2e42
+
+    0-119 bg=#2b2e42
+
+    0-119 bg=#2b2e42
+
+    0-119 bg=#2b2e42
+ ^u ^d scroll   ← back   ↑↓ the next one   enter dispatch   ? keys
+    1-2 fg=#a5adcb
+    4-12 fg=#8087a2
+    16-16 fg=#a5adcb
+    18-21 fg=#8087a2
+    25-26 fg=#a5adcb
+    28-39 fg=#8087a2
+    43-47 fg=#a5adcb
+    49-56 fg=#8087a2
+    60-60 fg=#a5adcb
+    62-65 fg=#8087a2
+

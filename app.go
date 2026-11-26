@@ -6,7 +6,7 @@ package main
 
 import (
 	"fmt"
-	"strings"
+	"image/color"
 
 	tea "charm.land/bubbletea/v2"
 	uv "github.com/charmbracelet/ultraviolet"
@@ -150,11 +150,8 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return a, tea.Batch(a.to(boardSide, msg), a.to(queueSide, msg))
 }
 
-// dim is a line in faint text, for the side that isn't in focus. Bold's end ends faint too, so it
-// is put back after each.
-func dim(line string) string {
-	return "\x1b[2m" + strings.ReplaceAll(line, "\x1b[22m", "\x1b[22;2m") + "\x1b[22m"
-}
+// dim is a line in faint text, for the side that isn't in focus.
+func dim(line string) string { return styled(plainStyle.Faint(true), line) }
 
 func (a *app) View() tea.View {
 	v := tea.NewView("")
@@ -204,7 +201,7 @@ func (a *app) content() string {
 }
 
 // status is the newer of the two sides' status lines.
-func (a *app) status() (string, Color) {
+func (a *app) status() (string, color.Color) {
 	bt, bc, bat := a.board.statusLine()
 	qt, qc, qat := a.queue.statusLine()
 	if qt != "" && (bt == "" || qat.After(bat)) {

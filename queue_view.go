@@ -7,6 +7,7 @@ package main
 import (
 	"cmp"
 	"fmt"
+	"image/color"
 	"os"
 	"slices"
 	"strconv"
@@ -51,7 +52,7 @@ func (q *queueModel) body(width, h int) []string {
 	return q.render(width, h)
 }
 
-func (q *queueModel) statusLine() (string, Color, time.Time) {
+func (q *queueModel) statusLine() (string, color.Color, time.Time) {
 	return q.status, q.statusColor, q.statusAt
 }
 
@@ -285,7 +286,7 @@ func (q *queueModel) render(width, h int) []string {
 
 // listLines are the list's lines, and the first and last of the item under the cursor.
 func (q *queueModel) listLines(width int) (lines []string, from, to int) {
-	heading := func(name string, c Color) {
+	heading := func(name string, c color.Color) {
 		lines = append(lines, "", " "+fg(c, name))
 	}
 	count := ""

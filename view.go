@@ -1,6 +1,7 @@
 package main
 
 import (
+	"charm.land/lipgloss/v2"
 	"cmp"
 	"fmt"
 	"image/color"
@@ -14,30 +15,28 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// A Color is an SGR foreground: the terminal's palette for hues, so the board follows its theme,
-// and for the greys, which a palette of sixteen doesn't hold, shades between the terminal's
-// background and its text (see setTheme).
-type Color string
-
-const (
-	cText   Color = "39"
-	cMauve  Color = "35"
-	cBlue   Color = "34"
-	cYellow Color = "33"
-	cGreen  Color = "32"
-	cRed    Color = "31"
-	cCode   Color = "36"
+// The palette: the terminal's own hues, so the board follows its theme, and for the greys, which
+// a palette of sixteen doesn't hold, shades between the terminal's background and its text (see
+// setTheme). cText is the terminal's text colour.
+var (
+	cText   color.Color = lipgloss.NoColor{}
+	cMauve  color.Color = lipgloss.Magenta
+	cBlue   color.Color = lipgloss.Blue
+	cYellow color.Color = lipgloss.Yellow
+	cGreen  color.Color = lipgloss.Green
+	cRed    color.Color = lipgloss.Red
+	cCode   color.Color = lipgloss.Cyan
 )
 
 // The greys, and the selected row's background, until the terminal says what its colours are:
 // Catppuccin Macchiato's.
 var (
-	cSubtext   Color = "38;2;165;173;203"
-	cOverlay   Color = "38;2;128;135;162"
-	cSurface   Color = "38;2;73;77;100"
-	bgSelected       = "48;2;54;58;79"
+	cSubtext   color.Color = lipgloss.Color("#a5adcb")
+	cOverlay   color.Color = lipgloss.Color("#8087a2")
+	cSurface   color.Color = lipgloss.Color("#494d64")
+	bgSelected color.Color = lipgloss.Color("#363a4f")
 	// bgPanel is the reading pane's surface and a card's, a shade off the background.
-	bgPanel = "48;2;43;46;66"
+	bgPanel color.Color = lipgloss.Color("#2b2e42")
 )
 
 // setTheme derives the greys from the terminal's own background and text colours: each sits a
@@ -45,12 +44,12 @@ var (
 func setTheme(text, background color.Color) {
 	fr, fgc, fb, _ := text.RGBA()
 	br, bgc, bb, _ := background.RGBA()
-	shade := func(share float64) string {
-		mix := func(b, f uint32) int { return int((float64(b)+(float64(f)-float64(b))*share)/257 + 0.5) }
-		return fmt.Sprintf("%d;%d;%d", mix(br, fr), mix(bgc, fgc), mix(bb, fb))
+	shade := func(share float64) color.Color {
+		mix := func(b, f uint32) uint8 { return uint8((float64(b)+(float64(f)-float64(b))*share)/257 + 0.5) }
+		return color.RGBA{mix(br, fr), mix(bgc, fgc), mix(bb, fb), 0xff}
 	}
-	cSubtext, cOverlay, cSurface = Color("38;2;"+shade(0.78)), Color("38;2;"+shade(0.55)), Color("38;2;"+shade(0.22))
-	bgSelected, bgPanel = "48;2;"+shade(0.11), "48;2;"+shade(0.045)
+	cSubtext, cOverlay, cSurface = shade(0.78), shade(0.55), shade(0.22)
+	bgSelected, bgPanel = shade(0.11), shade(0.045)
 }
 
 // A theme collects the terminal's answers about its colours; the greys follow once both are in.
@@ -77,8 +76,20 @@ func (t *theme) take(msg tea.Msg) bool {
 	return true
 }
 
-func fg(c Color, s string) string { return "\x1b[" + string(c) + "m" + s + "\x1b[39m" }
-func bold(s string) string        { return "\x1b[1m" + s + "\x1b[22m" }
+// styled is s in style, which carries on past the styles s holds: Lip Gloss ends each with a reset
+// of every attribute, so style opens again after each one.
+func styled(style lipgloss.Style, s string) string {
+	open, _, _ := strings.Cut(style.Render("x"), "x")
+	if open == "" {
+		return s
+	}
+	return style.Render(strings.ReplaceAll(s, ansi.ResetStyle, ansi.ResetStyle+open))
+}
+
+var plainStyle = lipgloss.NewStyle().TabWidth(lipgloss.NoTabConversion)
+
+func fg(c color.Color, s string) string { return styled(plainStyle.Foreground(c), s) }
+func bold(s string) string              { return styled(plainStyle.Bold(true), s) }
 
 func fit(text string, width int) string {
 	if width <= 0 {
@@ -90,7 +101,7 @@ func fit(text string, width int) string {
 
 // selected is a list's row under the cursor, on a background across the whole width.
 func selected(line string, width int) string {
-	return "\x1b[" + bgSelected + "m" + fit(line, width) + "\x1b[49m"
+	return paint(bgSelected, line, width)
 }
 
 // hints lays out a footer's keys, "key what · key what", on as many lines as width needs, breaking
@@ -155,42 +166,10 @@ func inline(l string) string {
 	return codeRe.ReplaceAllStringFunc(l, func(m string) string { return fg(cSubtext, m[1:len(m)-1]) })
 }
 
-var sgrRe = regexp.MustCompile("\x1b\\[([0-9;]*)m")
-
-// wrap breaks s into lines width wide. A colour or bold that runs past a line's end is closed
-// there and opened again on the next, so a line can sit beside another column.
+// wrap breaks s into lines width wide. A style that runs past a line's end is closed there and
+// opened again on the next, so a line can sit beside another column.
 func wrap(s string, width int) []string {
-	lines := strings.Split(ansi.Wrap(s, max(1, width), ""), "\n")
-	isBold, colour := false, ""
-	for n, l := range lines {
-		lead := ""
-		if isBold {
-			lead += "\x1b[1m"
-		}
-		if colour != "" {
-			lead += "\x1b[" + colour + "m"
-		}
-		for _, m := range sgrRe.FindAllStringSubmatch(l, -1) {
-			switch code := m[1]; {
-			case code == "1":
-				isBold = true
-			case code == "22":
-				isBold = false
-			case code == "39":
-				colour = ""
-			case strings.HasPrefix(code, "3"):
-				colour = code
-			}
-		}
-		if isBold {
-			l += "\x1b[22m"
-		}
-		if colour != "" {
-			l += "\x1b[39m"
-		}
-		lines[n] = lead + l
-	}
-	return lines
+	return strings.Split(lipgloss.Wrap(s, max(1, width), ""), "\n")
 }
 
 // wrapN wraps s to at most n lines, the last one ending in an ellipsis when there was more.
@@ -266,7 +245,7 @@ func window(lines []string, scroll *int, rows int) []string {
 }
 
 // frame is the screen: rows lines of the body, then the footer's keys and the status line.
-func frame(body, footer []string, status string, statusColor Color, width, rows int) string {
+func frame(body, footer []string, status string, statusColor color.Color, width, rows int) string {
 	lines := make([]string, 0, rows+len(footer)+1)
 	for _, l := range tall(body, rows) {
 		lines = append(lines, fit(l, width))
@@ -351,7 +330,9 @@ func (m *model) reader(width, h int) []string {
 	return panel(readAllOf(r.Key, renderMarkdown(detail, tw), &m.detailScroll, tw, h-2), width, h)
 }
 
-func (m *model) statusLine() (string, Color, time.Time) { return m.status, m.statusColor, m.statusAt }
+func (m *model) statusLine() (string, color.Color, time.Time) {
+	return m.status, m.statusColor, m.statusAt
+}
 
 // keys are the footer's: at most five for the moment and the row under the cursor, then ?.
 func (m *model) keys() string {
@@ -505,7 +486,7 @@ func renderHelp(title string, keys []helpKey, width, h int, scroll *int) []strin
 }
 
 // boardGroup is the heading a row sits under: a ticket's status, or which of the PRs it is.
-func boardGroup(r Row) (string, Color) {
+func boardGroup(r Row) (string, color.Color) {
 	if p := r.Pr; p != nil {
 		switch {
 		case p.Requested:

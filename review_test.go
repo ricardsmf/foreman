@@ -69,10 +69,10 @@ func TestOracleCountsAndFlagsNeverRed(t *testing.T) {
 		t.Errorf("agents --json: %+v", info.Oracles)
 	}
 	// Every oracle green and seen red reads green; any other count stands out.
-	if mark := oracleMark(oracles[:1]); !strings.Contains(mark, string(cGreen)) {
+	if mark := oracleMark(oracles[:1]); !strings.Contains(looks(mark), "fg=ansi2") {
 		t.Errorf("all green: %q", mark)
 	}
-	if mark := oracleMark(oracles); !strings.Contains(mark, string(cYellow)) {
+	if mark := oracleMark(oracles); !strings.Contains(looks(mark), "fg=ansi3") {
 		t.Errorf("some not green: %q", mark)
 	}
 	if !strings.Contains(orchestratorGuide, "neither `wasRed` nor `staysGreen`") || !strings.Contains(orchestratorGuide, "`--review KEY`") {

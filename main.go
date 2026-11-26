@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image/color"
 	"io"
 	"os"
 	"regexp"
@@ -120,7 +121,7 @@ type (
 	}
 	statusMsg struct {
 		text  string
-		color Color
+		color color.Color
 		// progress lines come from a running dispatch; a load finishing doesn't clear other text.
 		sticky bool
 	}
@@ -176,7 +177,7 @@ type model struct {
 	inFlight     map[viewKind]bool
 	lastLoad     map[viewKind]time.Time
 	status       string
-	statusColor  Color
+	statusColor  color.Color
 	statusSticky bool
 	statusAt     time.Time // when the status line was set: it clears after statusTTL
 	help         bool      // the list of keys is showing
@@ -201,13 +202,13 @@ type model struct {
 
 func (m *model) loading() bool { return m.inFlight[m.view] }
 
-func (m *model) say(text string, c Color) {
+func (m *model) say(text string, c color.Color) {
 	m.status, m.statusColor, m.statusSticky, m.statusAt = text, c, false, time.Now()
 }
 
 // statusTTL is how long a status line stays: an error long enough to be seen on coming back to
 // the pane, a warning long enough to act on, anything else a glance.
-func statusTTL(c Color) time.Duration {
+func statusTTL(c color.Color) time.Duration {
 	switch c {
 	case cRed:
 		return time.Minute

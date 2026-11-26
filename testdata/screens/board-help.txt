@@ -1,0 +1,84 @@
+ foreman  keys
+    1-7 bold
+    8-13 fg=#8087a2
+ ──────────────────────────────────────────────────────────────────────────────────────────────────────── 1–26 of 30 ──
+    1-104 fg=#494d64
+    105-116 fg=#8087a2
+    117-118 fg=#494d64
+ The list
+    1-8 fg=#a5adcb
+   ↑↓  ^p ^n    pick a row; pgup and pgdn move ten
+    3-13 fg=#a5adcb
+    16-49 fg=#8087a2
+   type, paste  filter: every word must match
+    3-13 fg=#a5adcb
+    16-44 fg=#8087a2
+   esc          close the reading pane, clear the filter, then quit
+    3-13 fg=#a5adcb
+    16-66 fg=#8087a2
+   tab          tickets or open PRs
+    3-13 fg=#a5adcb
+    16-34 fg=#8087a2
+   ^o           mine (PRs: review requested, mine, everyone)
+    3-13 fg=#a5adcb
+    16-59 fg=#8087a2
+   ^a           cycle the assignee (PRs: the author)
+    3-13 fg=#a5adcb
+    16-51 fg=#8087a2
+   →            read the row: its brief, then its whole text (where the filter has nothing to the cursor's right)
+    3-13 fg=#a5adcb
+    16-112 fg=#8087a2
+   ←            back from the whole text to the brief, then to the list
+    3-13 fg=#a5adcb
+    16-70 fg=#8087a2
+   ^u  ^d       scroll the description's whole text
+    3-13 fg=#a5adcb
+    16-50 fg=#8087a2
+   ^r           reload
+    3-13 fg=#a5adcb
+    16-21 fg=#8087a2
+
+ The row
+    1-7 fg=#a5adcb
+   enter        dispatch an agent on it (PRs: a review, or a fix)
+    3-13 fg=#a5adcb
+    16-64 fg=#8087a2
+   ^s           go to its agent's Rex session
+    3-13 fg=#a5adcb
+    16-44 fg=#8087a2
+   ^b           open it in a browser beside the board
+    3-13 fg=#a5adcb
+    16-52 fg=#8087a2
+   ^w           set the ticket's status
+    3-13 fg=#a5adcb
+    16-38 fg=#8087a2
+   ^y           set the ticket's assignee
+    3-13 fg=#a5adcb
+    16-40 fg=#8087a2
+
+ Anywhere
+    1-8 fg=#a5adcb
+   ^t           a task: work with no ticket or PR
+    3-13 fg=#a5adcb
+    16-48 fg=#8087a2
+   ^g           the orchestrator
+    3-13 fg=#a5adcb
+    16-31 fg=#8087a2
+   ^x           clean up the worktrees of finished work
+    3-13 fg=#a5adcb
+    16-54 fg=#8087a2
+   ?            this list, while the filter is empty
+    3-13 fg=#a5adcb
+    16-51 fg=#8087a2
+   ^l           the queue
+    3-13 fg=#a5adcb
+    16-24 fg=#8087a2
+   ^z           the board alone, or beside the queue
+    3-13 fg=#a5adcb
+    16-51 fg=#8087a2
+ ↑↓ scroll   any other key back
+    1-2 fg=#a5adcb
+    4-9 fg=#8087a2
+    13-15 fg=#a5adcb
+    17-30 fg=#8087a2
+

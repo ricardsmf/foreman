@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image/color"
 	"io"
 	"maps"
 	"os"
@@ -75,7 +76,7 @@ func shellQuote(s string) string {
 
 // A watchLoop is what foreman watch remembers between polls, so it says each thing once.
 type watchLoop struct {
-	note    func(text string, c Color)
+	note    func(text string, c color.Color)
 	lastErr map[string]string // each watcher's last failure, and the last one starting them
 	rexDown string            // why Rex didn't answer, while it doesn't
 	alerted map[string]string // what each watcher and dispatched agent waited on when it last told me
@@ -127,7 +128,7 @@ func runWatch(out io.Writer) error {
 	}
 	defer release()
 	l := &watchLoop{
-		note:    func(text string, _ Color) { fmt.Fprintln(out, time.Now().Format("2006-01-02 15:04:05"), text) },
+		note:    func(text string, _ color.Color) { fmt.Fprintln(out, time.Now().Format("2006-01-02 15:04:05"), text) },
 		lastErr: map[string]string{}, alerted: map[string]string{},
 	}
 	for {
@@ -207,7 +208,7 @@ func (l *watchLoop) alert(name string, s rexSession) {
 }
 
 // tell notes the line and shows it as a notification, whose click shows the session.
-func (l *watchLoop) tell(text, session string, c Color) {
+func (l *watchLoop) tell(text, session string, c color.Color) {
 	l.note(text, c)
 	if err := notify("foreman", text, session); err != nil {
 		l.note("Showing that as a notification: "+firstLine(err.Error()), cRed)

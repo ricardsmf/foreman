@@ -6,6 +6,7 @@ package main
 import (
 	"cmp"
 	"fmt"
+	"image/color"
 	"regexp"
 	"strings"
 )
@@ -175,7 +176,7 @@ func descriptionOf(lines []string) []string {
 // A fact is a line of the brief's small print: a label and what it is, in tone when it is a state.
 type fact struct {
 	label, text string
-	tone        Color
+	tone        color.Color
 }
 
 // factsLine sets the facts in a row, wrapped to width.
@@ -296,7 +297,7 @@ func (q *queueModel) itemKicker(it queueItem) (left, right string) {
 func itemFacts(it queueItem) []fact {
 	var out []fact
 	if _, n, ok := strings.Cut(it.InPr, "#"); ok {
-		out = append(out, fact{"pull", "#" + n, ""})
+		out = append(out, fact{"pull", "#" + n, nil})
 	}
 	if len(it.Oracles) > 0 {
 		tone := cGreen
@@ -305,9 +306,9 @@ func itemFacts(it queueItem) []fact {
 		}
 		out = append(out, fact{"oracles", oracleCount(it.Oracles), tone})
 	}
-	out = append(out, fact{"evidence", evidenceMark(it), ""}, fact{"listening", portsMark(it.Ports), ""})
+	out = append(out, fact{"evidence", evidenceMark(it), nil}, fact{"listening", portsMark(it.Ports), nil})
 	if it.Agent == "" && it.Kind == agentItem {
-		out = append(out, fact{"session", "closed", ""})
+		out = append(out, fact{"session", "closed", nil})
 	}
 	return out
 }
@@ -319,7 +320,7 @@ func prFacts(it queueItem) []fact {
 	if p.CI == "failed" {
 		checks = "failed: " + listed(p.Failing, 2)
 	}
-	tone := Color("")
+	tone := color.Color(nil)
 	switch p.CI {
 	case "failed":
 		tone = cRed
@@ -330,7 +331,7 @@ func prFacts(it queueItem) []fact {
 	if review == "" && len(p.Reviewers) > 0 {
 		review = "asked of " + listed(p.Reviewers, 2)
 	}
-	return []fact{{"new", it.News, ""}, {"checks", checks, tone}, {"review", review, ""}, {"stacked on", it.On, ""}}
+	return []fact{{"new", it.News, nil}, {"checks", checks, tone}, {"review", review, nil}, {"stacked on", it.On, nil}}
 }
 
 // evidenceMark counts the item's screenshots and videos.
@@ -486,18 +487,18 @@ func (q *queueModel) itemBrief(it queueItem, width, h int) []string {
 func (m *model) rowFacts(r Row) []fact {
 	var out []fact
 	if tags := titleTags(r.Summary); len(tags) > 0 {
-		out = append(out, fact{"area", strings.Join(tags, ", "), ""})
+		out = append(out, fact{"area", strings.Join(tags, ", "), nil})
 	}
 	if p := r.Pr; p != nil {
-		checks, tone := p.CI, Color("")
+		checks, tone := p.CI, color.Color(nil)
 		if p.CI == "failed" {
 			checks, tone = "failed: "+listed(p.Failing, 2), cRed
 		}
-		out = append(out, fact{"checks", checks, tone}, fact{"review", p.Review, ""}, fact{"new", p.News, ""})
+		out = append(out, fact{"checks", checks, tone}, fact{"review", p.Review, nil}, fact{"new", p.News, nil})
 	}
 	key := m.agentKey(r.Key)
 	if d := m.state.Dispatched[key]; d.Dir != "" {
-		what, tone := "session closed", Color("")
+		what, tone := "session closed", color.Color(nil)
 		switch m.agents[d.Session] {
 		case "blocked", "error":
 			what, tone = "waits on you", cRed

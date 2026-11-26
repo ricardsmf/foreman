@@ -8,6 +8,7 @@ package main
 import (
 	"cmp"
 	"fmt"
+	"image/color"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -609,7 +610,7 @@ type (
 	// queueStatusMsg is a line for the queue's status bar; the board's own is statusMsg.
 	queueStatusMsg struct {
 		text  string
-		color Color
+		color color.Color
 	}
 	// closeQueueMsg asks the app to put the queue away and show the board alone.
 	closeQueueMsg struct{}
@@ -677,7 +678,7 @@ type queueModel struct {
 	helpScroll   int
 	theme        theme
 	status       string
-	statusColor  Color
+	statusColor  color.Color
 }
 
 // A reply names its agent itself: the list is rebuilt on every poll, and by the time enter is
@@ -721,7 +722,7 @@ func (q *queueModel) count(g group) int {
 // needYou counts the items that wait on me: those that ask and the reports to read.
 func (q *queueModel) needYou() int { return q.count(needsYou) + q.count(toReview) }
 
-func (q *queueModel) say(text string, c Color) {
+func (q *queueModel) say(text string, c color.Color) {
 	q.status, q.statusColor, q.statusAt = text, c, time.Now()
 }
 

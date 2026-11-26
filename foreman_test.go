@@ -3164,11 +3164,11 @@ func TestBoardHelp(t *testing.T) {
 
 // The greys sit between the terminal's background and its text, so they follow its theme.
 func TestSetTheme(t *testing.T) {
-	sub, over, sur, sel := cSubtext, cOverlay, cSurface, bgSelected
-	t.Cleanup(func() { cSubtext, cOverlay, cSurface, bgSelected = sub, over, sur, sel })
+	sub, over, sur, sel, pan := cSubtext, cOverlay, cSurface, bgSelected, bgPanel
+	t.Cleanup(func() { cSubtext, cOverlay, cSurface, bgSelected, bgPanel = sub, over, sur, sel, pan })
 	setTheme(color.RGBA{0, 0, 0, 255}, color.RGBA{200, 200, 200, 255})
-	if cOverlay != "38;2;90;90;90" || bgSelected != "48;2;178;178;178" {
-		t.Errorf("on a light terminal: overlay %q, selected %q", cOverlay, bgSelected)
+	if colourName(cOverlay) != "#5a5a5a" || colourName(bgSelected) != "#b2b2b2" {
+		t.Errorf("on a light terminal: overlay %s, selected %s", colourName(cOverlay), colourName(bgSelected))
 	}
 }
 
@@ -3240,7 +3240,7 @@ func TestEditText(t *testing.T) {
 	if got := insertText("ac", 1, "b"); got != "abc" {
 		t.Errorf("insertText: %q", got)
 	}
-	if got := cursorText("ab", 1); got != "a\x1b[7mb\x1b[27m" {
+	if got := looks(cursorText("ab", 1)); got != "ab\n    1-1 reverse\n" {
 		t.Errorf("cursorText: %q", got)
 	}
 }

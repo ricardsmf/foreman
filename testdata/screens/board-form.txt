@@ -1,0 +1,68 @@
+ Tickets  FLD · everyone · dispatch FLD-2
+    1-7 bold
+    8-40 fg=#8087a2
+
+ FLD-2 Investigate discrepancy in spare parts consumption between DeBloq and P&I
+    1-5 bold
+    7-79 fg=#a5adcb
+ ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+    1-118 fg=#494d64
+   Agent
+    3-7 bold
+     ● pi              pi, default tools
+    5-5 fg=ansi2
+    7-8 bold
+    23-39 fg=#8087a2
+     ○ Claude          claude, default permission prompts
+    5-5 fg=#8087a2
+    23-56 fg=#8087a2
+     ○ Claude (auto)   claude --permission-mode auto
+    5-5 fg=#8087a2
+    23-51 fg=#8087a2
+     ○ Claude (yolo)   claude --dangerously-skip-permissions
+    5-5 fg=#8087a2
+    23-59 fg=#8087a2
+
+   Options
+    3-9 bold
+     [x] git worktree (isolated checkout, parallel-safe)
+    5-7 fg=ansi2
+    22-55 fg=#8087a2
+     [ ] poteto-mode (pstack playbooks and subagents: slower, more tokens)
+    21-73 fg=#8087a2
+
+   Repo type to filter
+    3-6 bold
+    8-21 fg=#8087a2
+     no repo matches
+    1-19 fg=ansi1
+
+ › Extra context (optional)
+    1-2 fg=ansi5
+    3-15 fg=ansi5 bold
+    16-16 fg=ansi5
+    17-26 fg=#8087a2
+     Look at the Airtable automation
+    36-36 reverse
+     first
+
+
+
+
+
+
+
+
+ tab/↑↓ field   type   alt+enter newline   ^e editor   enter dispatch   esc back
+    1-6 fg=#a5adcb
+    8-12 fg=#8087a2
+    16-19 fg=#a5adcb
+    23-31 fg=#a5adcb
+    33-39 fg=#8087a2
+    43-44 fg=#a5adcb
+    46-51 fg=#8087a2
+    55-59 fg=#a5adcb
+    61-68 fg=#8087a2
+    72-74 fg=#a5adcb
+    76-79 fg=#8087a2
+

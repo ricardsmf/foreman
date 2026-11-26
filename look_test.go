@@ -108,11 +108,11 @@ func TestQueueSizeFollowsUrgency(t *testing.T) {
 	for _, l := range lines {
 		plain := ansi.Strip(l)
 		if strings.Contains(plain, "Which store?") || strings.Contains(plain, "The log outlives") {
-			if !strings.Contains(l, bgPanel) && !strings.Contains(l, bgSelected) {
+			if !onBackground(l, bgPanel) && !onBackground(l, bgSelected) {
 				t.Errorf("a card's line has no surface: %q", l)
 			}
 		}
-		if strings.Contains(plain, "Running the tests") && strings.Contains(l, bgPanel) {
+		if strings.Contains(plain, "Running the tests") && onBackground(l, bgPanel) {
 			t.Errorf("the working row is a card: %q", l)
 		}
 	}

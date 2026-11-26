@@ -4,6 +4,7 @@ package main
 // under quiet headings, the reading pane's surface, and titles without their tags.
 
 import (
+	"image/color"
 	"regexp"
 	"strings"
 	"time"
@@ -36,8 +37,8 @@ func lr(left, right string, width int) string {
 }
 
 // paint is line on the background bg across width columns.
-func paint(bg, line string, width int) string {
-	return "\x1b[" + bg + "m" + fit(line, width) + "\x1b[49m"
+func paint(bg color.Color, line string, width int) string {
+	return styled(plainStyle.Background(bg), fit(line, width))
 }
 
 // tall pads or cuts lines to h rows.
@@ -87,7 +88,7 @@ func scrollSpan(top, from, to, rows, total int) int {
 // A listEntry is a row of a list and the lines it takes, in the group its heading names.
 type listEntry struct {
 	group string
-	tone  Color // the heading's colour
+	tone  color.Color // the heading's colour
 	lines []string
 }
 
@@ -159,7 +160,7 @@ type sidePane interface {
 	reader(width, h int) []string
 	// keys are the footer's: those of the moment, and those of the row under the cursor.
 	keys() string
-	statusLine() (text string, c Color, at time.Time)
+	statusLine() (text string, c color.Color, at time.Time)
 }
 
 // screen is a pane alone, height lines of width columns: what it has open to read takes the

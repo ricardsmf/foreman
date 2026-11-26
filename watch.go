@@ -6,6 +6,7 @@ import (
 	"cmp"
 	"encoding/json"
 	"fmt"
+	"image/color"
 	"maps"
 	"os"
 	"path/filepath"
@@ -240,7 +241,7 @@ func (w Watcher) woken() bool { return len(w.PRs) > 0 || w.At != "" }
 // wakeWatchers polls each watcher foreman watch wakes, once, and notes the wakes and the failures.
 // lastErr holds each watcher's last failure: the same one every two minutes would bury whatever
 // else its log says.
-func wakeWatchers(sessions []rexSession, recorded map[string]string, note func(text string, c Color), lastErr map[string]string) {
+func wakeWatchers(sessions []rexSession, recorded map[string]string, note func(text string, c color.Color), lastErr map[string]string) {
 	for _, w := range watchers {
 		if !w.woken() {
 			continue

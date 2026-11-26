@@ -1,0 +1,72 @@
+ Tickets  FLD · everyone                                                                                         5 of 5
+    1-7 bold
+    8-23 fg=#8087a2
+    113-118 fg=#8087a2
+
+ in progress
+    1-11 fg=#8087a2
+ ◆ Removal report PDFs: show the totals                                                         Ricardo Ferre…  FLD-1
+    1-1 fg=ansi3
+    3-38 fg=#a5adcb
+    96-109 fg=#a5adcb
+    112-118 fg=#8087a2
+▌  Investigate discrepancy in spare parts consumption between DeBloq and P&I                    Álvaro Fontaí…  FLD-2
+    0-0 fg=ansi5 bg=#363a4f
+    1-2 bg=#363a4f
+    3-75 bg=#363a4f bold
+    76-95 bg=#363a4f
+    96-109 fg=#8087a2 bg=#363a4f
+    110-111 bg=#363a4f
+    112-118 fg=#8087a2 bg=#363a4f
+    119-119 bg=#363a4f
+▌  Large differences detected  Airtable comparison views: Less records
+    0-0 fg=ansi5 bg=#363a4f
+    1-2 bg=#363a4f
+    3-69 fg=#a5adcb bg=#363a4f
+    70-119 bg=#363a4f
+
+ blocked
+    1-7 fg=ansi1
+   Sync manufacturer SKU to Airtable                                                            unassigned      FLD-3
+    3-35 fg=#a5adcb
+    96-109 fg=#8087a2
+    112-118 fg=#8087a2
+
+ in review
+    1-9 fg=#8087a2
+   Odoo: one retrofit block per visit                                                           ivan.zarro      FLD-4
+    3-36 fg=#a5adcb
+    96-109 fg=#8087a2
+    112-118 fg=#8087a2
+
+ to do
+    1-5 fg=#8087a2
+   Daily Slack retrofit report                                                                  ivan.zarro      FLD-5
+    3-29 fg=#a5adcb
+    96-109 fg=#8087a2
+    112-118 fg=#8087a2
+
+
+
+
+
+
+
+
+
+
+
+
+
+ enter dispatch   → read   ^o mine   ^t task   ? keys
+    1-5 fg=#a5adcb
+    7-14 fg=#8087a2
+    18-18 fg=#a5adcb
+    20-23 fg=#8087a2
+    27-28 fg=#a5adcb
+    30-33 fg=#8087a2
+    37-38 fg=#a5adcb
+    40-43 fg=#8087a2
+    47-47 fg=#a5adcb
+    49-52 fg=#8087a2
+

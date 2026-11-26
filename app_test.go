@@ -207,7 +207,7 @@ func TestAppQClosesTheQueueOnly(t *testing.T) {
 }
 
 func TestDim(t *testing.T) {
-	if got, want := dim("a"+bold("b")+"c"), "\x1b[2ma\x1b[1mb\x1b[22;2mc\x1b[22m"; got != want {
+	if got, want := looks(dim("a"+bold("b")+"c")), "abc\n    0-0 faint\n    1-1 bold faint\n    2-2 faint\n"; got != want {
 		t.Errorf("dim = %q; want %q", got, want)
 	}
 }
