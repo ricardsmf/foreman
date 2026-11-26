@@ -1948,8 +1948,11 @@ func TestDispatchNotifies(t *testing.T) {
 	root := t.TempDir()
 	oldRoots, oldNotify := repoRoots, notify
 	repoRoots = []string{root}
-	var told [][2]string
-	notify = func(title, text string) error { told = append(told, [2]string{title, text}); return nil }
+	var told [][3]string
+	notify = func(title, text, session string) error {
+		told = append(told, [3]string{title, text, session})
+		return nil
+	}
 	t.Cleanup(func() { repoRoots, notify, evidenceRoot = oldRoots, oldNotify, oldEvidence })
 	origin, repo := filepath.Join(root, "origin.git"), filepath.Join(root, "tool")
 	git(t, root, "init", "-q", "--bare", "-b", "main", origin)
@@ -1961,7 +1964,7 @@ func TestDispatchNotifies(t *testing.T) {
 	if err := runDispatch([]string{"--notify", "--repo", "nope", "--agent", "pi", "do it"}); err == nil {
 		t.Error("dispatched to a repo that isn't there")
 	}
-	if len(told) != 1 || told[0][0] != "foreman didn't dispatch" || !strings.Contains(told[0][1], `no repo "nope"`) {
+	if len(told) != 1 || told[0][0] != "foreman didn't dispatch" || !strings.Contains(told[0][1], `no repo "nope"`) || told[0][2] != "" {
 		t.Errorf("a failed dispatch told %q", told)
 	}
 	if err := runDispatch([]string{"--notify", "--repo", "tool", "--agent", "pi", "--", "Add a flag"}); err != nil {
@@ -1969,6 +1972,10 @@ func TestDispatchNotifies(t *testing.T) {
 	}
 	if len(told) != 2 || told[1][0] != "foreman" || !strings.Contains(told[1][1], "pi is working on task:tool-1") {
 		t.Errorf("a dispatch told %q", told)
+	}
+	// A click on it shows the agent's session.
+	if session := loadState().Dispatched["task:tool-1"].Session; session == "" || told[1][2] != session {
+		t.Errorf("a dispatch's notification shows session %q, want %q", told[1][2], session)
 	}
 	if err := runDispatch([]string{"--repo", "nope", "do it"}); err == nil || len(told) != 2 {
 		t.Errorf("without --notify: %v, told %q", err, told)
@@ -3175,7 +3182,7 @@ func TestMain(m *testing.M) {
 		}
 		stateFile = filepath.Join(dir, "state.json")
 		// Nor shows a notification on this Mac, unless it puts its own in notify's place.
-		notify = func(string, string) error { return nil }
+		notify = func(string, string, string) error { return nil }
 		code := m.Run()
 		_ = os.RemoveAll(dir)
 		os.Exit(code)

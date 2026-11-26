@@ -14,7 +14,7 @@ func testLoop(t *testing.T) (l *watchLoop, notes, told *[]string) {
 	t.Helper()
 	notes, told = &[]string{}, &[]string{}
 	oldNotify, oldWait := notify, rexWait
-	notify = func(_, text string) error { *told = append(*told, text); return nil }
+	notify = func(_, text, _ string) error { *told = append(*told, text); return nil }
 	rexWait = 0
 	t.Cleanup(func() { notify, rexWait, watchers = oldNotify, oldWait, nil })
 	return &watchLoop{
@@ -163,6 +163,20 @@ func TestTickAlerts(t *testing.T) {
 	in("error", "", "")
 	if len(*told) != 3 || (*told)[2] != "looper failed" {
 		t.Fatalf("a failure: %q", *told)
+	}
+}
+
+// A click on what foreman watch tells shows the session that waits on me.
+func TestTickAlertShowsItsSession(t *testing.T) {
+	f := useFakeRex(t)
+	l, _, _ := testLoop(t)
+	var shown []string
+	notify = func(_, _, session string) error { shown = append(shown, session); return nil }
+	watchers = []Watcher{{Name: "looper", Dir: t.TempDir(), Prompt: "/loop 10m /sweep"}}
+	f.open = []rexSession{{ID: "s1", Label: "looper", Panes: []rexPane{pane("block:1", true, rexRecord{State: "blocked", Kind: "permission", Msg: "Bash: x"})}}}
+	l.tick()
+	if !slices.Equal(shown, []string{"s1"}) {
+		t.Errorf("the notification shows %q, want s1", shown)
 	}
 }
 

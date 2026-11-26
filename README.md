@@ -46,6 +46,14 @@ project or a search, so a misspelt command fails there, named, with the list of 
 prints the session's ID instead of showing it, and selects that session in the app the key was
 pressed in.
 
+foreman's macOS notifications (a dispatch's `--notify`, an agent's question, what `foreman watch`
+tells) go through `terminal-notifier` (`brew install terminal-notifier`), found on `PATH`, whose
+notifications System Settings › Notifications must allow. A click brings Rex forward on the
+session the notification is about, the agent's, or foreman's own for a dispatch that didn't start,
+by running `foreman open SESSION`; a session closed since shows foreman's. Without
+terminal-notifier they go through osascript, which macOS files under Script Editor, so a click
+opens Script Editor.
+
 ## Jira access
 
 It talks to Atlassian's remote MCP (`mcp.atlassian.com/v2/mcp`) with its own OAuth client. The

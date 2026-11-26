@@ -6,11 +6,13 @@ package main
 
 import (
 	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -23,14 +25,52 @@ var (
 	rexWait = 15 * time.Second
 )
 
-// notify shows a notification on this Mac. The text travels as an argument, never inside the
-// script: a watcher's status can carry what the author of a PR wrote.
-var notify = func(title, text string) error {
-	_, err := sh("", "osascript",
-		"-e", "on run argv",
-		"-e", "display notification (item 2 of argv) with title (item 1 of argv)",
-		"-e", "end run", title, text)
-	return err
+// notify shows a notification on this Mac. A click on it shows the Rex session, by ID or label, or
+// foreman's own when session is "".
+var notify = func(title, text, session string) error {
+	notifier, _ := exec.LookPath("terminal-notifier")
+	exe, _ := os.Executable()
+	name, args, stdin := notifyCommand(notifier, exe, os.Getenv("PATH"), title, text, session)
+	ctx, cancel := context.WithTimeout(context.Background(), shTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdin = strings.NewReader(stdin)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("%s: %w: %s", name, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// rexBundle is the Rex app's bundle ID, which a click on a notification brings forward.
+const rexBundle = "com.superlogical.rex"
+
+// notifyCommand is how notify raises one: through terminal-notifier, at the path given, whose click
+// runs `foreman open` on the session with the PATH foreman has, since the click's shell has
+// launchd's. One osascript raises belongs to Script Editor, which a click opens; it is the fallback
+// while terminal-notifier isn't installed. The text travels on stdin or as an argument, never
+// inside a command or a script: a watcher's status can carry what the author of a PR wrote, and
+// terminal-notifier reads an argument starting with [ or ( as something other than text.
+func notifyCommand(notifier, exe, path, title, text, session string) (name string, args []string, stdin string) {
+	if notifier == "" {
+		return "osascript", []string{
+			"-e", "on run argv",
+			"-e", "display notification (item 2 of argv) with title (item 1 of argv)",
+			"-e", "end run", title, text}, ""
+	}
+	args = []string{"-title", title, "-activate", rexBundle}
+	if exe != "" {
+		click := "PATH=" + shellQuote(path) + " " + shellQuote(exe) + " open"
+		if session != "" {
+			click += " " + shellQuote(session)
+		}
+		args = append(args, "-execute", click)
+	}
+	return notifier, args, text
+}
+
+// shellQuote is s as one word to sh.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // A watchLoop is what foreman watch remembers between polls, so it says each thing once.
@@ -162,14 +202,14 @@ func (l *watchLoop) alert(name string, s rexSession) {
 	}
 	l.alerted[name] = what
 	if what != "" {
-		l.tell(what, cRed)
+		l.tell(what, s.ID, cRed)
 	}
 }
 
-// tell notes the line and shows it as a notification.
-func (l *watchLoop) tell(text string, c Color) {
+// tell notes the line and shows it as a notification, whose click shows the session.
+func (l *watchLoop) tell(text, session string, c Color) {
 	l.note(text, c)
-	if err := notify("foreman", text); err != nil {
+	if err := notify("foreman", text, session); err != nil {
 		l.note("Showing that as a notification: "+firstLine(err.Error()), cRed)
 	}
 }

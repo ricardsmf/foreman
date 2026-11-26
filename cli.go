@@ -184,12 +184,16 @@ func runDispatch(argv []string) error {
 	if err != nil {
 		return fmt.Errorf("%w\n\n%s", err, dispatchUsage)
 	}
+	var before map[string]Dispatched
+	if a.notify {
+		before = loadState().Dispatched
+	}
 	text, err := dispatchFrom(a)
 	if a.notify {
 		if err != nil {
-			_ = notify("foreman didn't dispatch", err.Error())
+			_ = notify("foreman didn't dispatch", err.Error(), "")
 		} else {
-			_ = notify("foreman", text)
+			_ = notify("foreman", text, startedSession(before, loadState().Dispatched))
 		}
 	}
 	if err != nil {
@@ -200,6 +204,17 @@ func runDispatch(argv []string) error {
 }
 
 // dispatchFrom starts the agent the arguments ask for and returns the result line.
+// startedSession is the session a dispatch started: the one a dispatch's entry names now and didn't
+// before. "" when none does.
+func startedSession(before, after map[string]Dispatched) string {
+	for key, d := range after {
+		if d.Session != "" && d.Session != before[key].Session {
+			return d.Session
+		}
+	}
+	return ""
+}
+
 func dispatchFrom(a dispatchArgs) (string, error) {
 	var err error
 	agent := ""

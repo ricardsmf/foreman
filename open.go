@@ -9,16 +9,18 @@ import (
 	"io"
 	"os"
 	"slices"
+	"strings"
 )
 
 // homeSession is the label of foreman's own Rex session, and of its pane.
 const homeSession = "foreman"
 
-const openUsage = `usage: foreman open [--print]
+const openUsage = `usage: foreman open [--print | SESSION]
 
 Go to the foreman Rex session, starting it when it isn't running: one pane with the board and the
 queue. --print prints the session's ID instead of showing it in the Rex app, for a key binding
-that selects it in the app the key was pressed in.`
+that selects it in the app the key was pressed in. SESSION, an ID or a label, goes to that session
+instead, or to foreman's while it isn't open: what a click on foreman's notification runs.`
 
 func runOpen(argv []string, out io.Writer) error {
 	if len(argv) == 1 && (argv[0] == "--help" || argv[0] == "-h") {
@@ -26,8 +28,11 @@ func runOpen(argv []string, out io.Writer) error {
 		return nil
 	}
 	print := len(argv) == 1 && argv[0] == "--print"
-	if len(argv) > 1 || (len(argv) == 1 && !print) {
+	if len(argv) > 1 || (len(argv) == 1 && !print && strings.HasPrefix(argv[0], "-")) {
 		return errors.New(openUsage)
+	}
+	if len(argv) == 1 && !print && rex.show(argv[0]) == nil {
+		return nil
 	}
 	exe, err := os.Executable()
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -16,13 +17,15 @@ import (
 
 // fakeRex is a Rex that holds sessions in memory and notes what it was asked to do.
 type fakeRex struct {
-	mu     sync.Mutex
-	open   []rexSession
-	lists  int
-	calls  []string
-	cmds   map[string][]string // the command each new session was started with, by label
-	down   int                 // how many more listings fail, as while Rex isn't running
-	stream chan rexEvent
+	mu    sync.Mutex
+	open  []rexSession
+	lists int
+	calls []string
+	cmds  map[string][]string // the command each new session was started with, by label
+	down  int                 // how many more listings fail, as while Rex isn't running
+	// showFails is a session show fails on, as on one that closed.
+	showFails string
+	stream    chan rexEvent
 }
 
 func (f *fakeRex) note(format string, args ...any) {
@@ -70,7 +73,13 @@ func (f *fakeRex) move(session, after string) error {
 	f.note("move %s after %s", session, after)
 	return nil
 }
-func (f *fakeRex) show(session string) error { f.note("show %s", session); return nil }
+func (f *fakeRex) show(session string) error {
+	f.note("show %s", session)
+	if session == f.showFails {
+		return errors.New("no session " + session)
+	}
+	return nil
+}
 func (f *fakeRex) capture(session, block string, unwrap bool) (string, error) {
 	f.note("capture %s %s", session, block)
 	return "screen of " + block, nil
@@ -460,6 +469,39 @@ func TestOpenPrintsOrShows(t *testing.T) {
 	}
 	if err := runOpen([]string{"--nope"}, &out); err == nil {
 		t.Error("open --nope: want a usage error")
+	}
+}
+
+// foreman open SESSION, what a click on a notification runs, shows that session, or foreman's own
+// once it is closed.
+func TestOpenShowsASession(t *testing.T) {
+	f := useFakeRex(t, rexSession{ID: "s1", Label: "foreman"}, rexSession{ID: "s2", Label: "fld-1"})
+	if err := runOpen([]string{"s2"}, io.Discard); err != nil || !slices.Equal(f.calls, []string{"show s2"}) {
+		t.Errorf("open s2: %v, calls %v", err, f.calls)
+	}
+	f.calls, f.showFails = nil, "gone"
+	if err := runOpen([]string{"gone"}, io.Discard); err != nil || !slices.Equal(f.calls, []string{"show gone", "show s1"}) {
+		t.Errorf("open on a closed session: %v, calls %v; want foreman's shown", err, f.calls)
+	}
+}
+
+// A notification goes through terminal-notifier, whose click runs foreman open on its session with
+// foreman's PATH; osascript's would open Script Editor, so it is only the fallback.
+func TestNotifyCommand(t *testing.T) {
+	name, args, stdin := notifyCommand("/opt/homebrew/bin/terminal-notifier", "/Users/me/bin/foreman", "/a b:/c", "foreman", "[FLD-1] asks: it's?", "session:1")
+	want := []string{"-title", "foreman", "-activate", "com.superlogical.rex", "-execute", `PATH='/a b:/c' '/Users/me/bin/foreman' open 'session:1'`}
+	if name != "/opt/homebrew/bin/terminal-notifier" || !slices.Equal(args, want) || stdin != "[FLD-1] asks: it's?" {
+		t.Errorf("terminal-notifier: %s %q, stdin %q", name, args, stdin)
+	}
+	if _, args, _ := notifyCommand("tn", "/f", "/p", "t", "x", ""); args[len(args)-1] != `PATH='/p' '/f' open` {
+		t.Errorf("no session: %q; want foreman's own opened", args)
+	}
+	if got := shellQuote("it's"); got != `'it'\''s'` {
+		t.Errorf("shellQuote = %s", got)
+	}
+	name, args, _ = notifyCommand("", "/f", "/p", "foreman", "x", "s1")
+	if name != "osascript" || args[len(args)-1] != "x" || args[len(args)-2] != "foreman" {
+		t.Errorf("without terminal-notifier: %s %q", name, args)
 	}
 }
 

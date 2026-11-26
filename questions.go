@@ -180,11 +180,11 @@ func runAsk(argv []string, stdin io.Reader, out io.Writer) error {
 		if err := decide(*key, q); err != nil {
 			return err
 		}
-		_ = notify("foreman", askNotice(*key, q, true))
+		_ = notify("foreman", askNotice(*key, q, true), s.Dispatched[*key].Session)
 		fmt.Fprintf(out, "Go on with “%s”. The question is in my queue; if I decide otherwise, my answer comes as a message.\n", q.Recommended)
 		return nil
 	}
-	_ = notify("foreman", askNotice(*key, q, false))
+	_ = notify("foreman", askNotice(*key, q, false), s.Dispatched[*key].Session)
 	answer, err := ask(*key, q, *wait, time.Second, time.Sleep, typedInto(s.Dispatched[*key].Dir))
 	if err != nil {
 		return err

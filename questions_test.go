@@ -13,7 +13,7 @@ import (
 func toldIn(t *testing.T) *[]string {
 	t.Helper()
 	told, old := &[]string{}, notify
-	notify = func(_, text string) error { *told = append(*told, text); return nil }
+	notify = func(_, text, _ string) error { *told = append(*told, text); return nil }
 	t.Cleanup(func() { notify = old })
 	return told
 }
@@ -67,6 +67,25 @@ func TestAskNotifies(t *testing.T) {
 	}
 	if want := []string{"FLD-1 asks: Which endpoint?"}; !slices.Equal(*told, want) {
 		t.Errorf("told %q, want %q", *told, want)
+	}
+}
+
+// A click on a question's notification shows the session of the agent asking.
+func TestAskShowsTheAgentsSession(t *testing.T) {
+	tempState(t)
+	dispatched(t, "FLD-1", "/w/app-fld-1")
+	if _, err := updateState(func(s *State) { d := s.Dispatched["FLD-1"]; d.Session = "s1"; s.Dispatched["FLD-1"] = d }); err != nil {
+		t.Fatal(err)
+	}
+	toldIn(t)
+	var shown []string
+	notify = func(_, _, session string) error { shown = append(shown, session); return nil }
+	var out strings.Builder
+	if err := runAsk([]string{"--key", "FLD-1", "--recommend", "yes", "--proceed", "Flag it?"}, strings.NewReader(""), &out); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(shown, []string{"s1"}) {
+		t.Errorf("the notification shows %q, want s1", shown)
 	}
 }
 
