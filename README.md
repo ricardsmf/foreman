@@ -102,7 +102,9 @@ of the whole text shown (`1–24 of 88`) when there are more; so does the rule o
 stats views' detail.
 
 Colours follow the terminal's theme: the hues are its palette's, and the greys and the selected
-row's background are shades between its background and its text, which the board asks it for.
+row's background are shades between its background and its text, which the board asks it for when
+it starts, when the pane takes the focus, and when the terminal reports a switch between light and
+dark (mode 2031).
 Colour stands for a state alone: red needs you or failed, green to review or passed, yellow
 working; everything else is in the greys, headings and code included. A
 terminal that doesn't answer gets Catppuccin Macchiato's greys.

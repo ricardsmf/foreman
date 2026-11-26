@@ -16,6 +16,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/term"
 )
 
@@ -852,6 +853,7 @@ func run() error {
 	defer cancel()
 	go followRex(ctx, func() { prog.Send(rexEventMsg{}) })
 	_, err := prog.Run()
+	fmt.Print(ansi.ResetModeLightDark)
 	if q.reported != "" {
 		// A done record outlives the program: without this the session and its items would stay marked.
 		fmt.Print("\x1b]7501;state=clear\x1b\\")

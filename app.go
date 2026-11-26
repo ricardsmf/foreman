@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/charmbracelet/x/ansi"
 )
 
 type side int
@@ -46,7 +48,10 @@ func newApp(board *model, queue *queueModel, queueOnly bool) *app {
 	return a
 }
 
-func (a *app) Init() tea.Cmd { return tea.Batch(a.board.Init(), a.queue.Init()) }
+// Init also has the terminal say when the system switches between light and dark (run resets it).
+func (a *app) Init() tea.Cmd {
+	return tea.Batch(a.board.Init(), a.queue.Init(), tea.Raw(ansi.SetModeLightDark))
+}
 
 // to hands msg to one side and returns what it asks for.
 func (a *app) to(s side, msg tea.Msg) tea.Cmd {
@@ -101,6 +106,13 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.to(a.focus, msg)
 	case tea.PasteMsg:
 		return a, a.to(a.focus, msg)
+	case uv.LightColorSchemeEvent, uv.DarkColorSchemeEvent:
+		// The terminal's colours changed with the system's: both sides take its new answers.
+		return a, requestTheme()
+	case tea.FocusMsg:
+		// The system may have switched between light and dark while the pane was away, and a
+		// terminal that doesn't report the switch still answers for its colours now.
+		return a, tea.Batch(requestTheme(), a.to(boardSide, msg), a.to(queueSide, msg))
 	case closeQueueMsg:
 		a.focus, a.zoomed = boardSide, true
 		return a, a.resize()

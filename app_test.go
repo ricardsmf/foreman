@@ -2,11 +2,14 @@ package main
 
 import (
 	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -22,6 +25,35 @@ func testApp(t *testing.T, queueOnly bool) *app {
 	a := newApp(m, q, queueOnly)
 	a.Update(tea.WindowSizeMsg{Width: 161, Height: 30})
 	return a
+}
+
+// A switch between light and dark, or coming back to the pane, asks the terminal for its colours
+// again, so the greys and the panels' backgrounds follow it.
+func TestAppAsksForColoursOnSchemeChange(t *testing.T) {
+	want := []string{fmt.Sprintf("%T", tea.RequestForegroundColor()), fmt.Sprintf("%T", tea.RequestBackgroundColor())}
+	for _, msg := range []tea.Msg{uv.LightColorSchemeEvent{}, uv.DarkColorSchemeEvent{}, tea.FocusMsg{}} {
+		a := testApp(t, false)
+		_, cmd := a.Update(msg)
+		if cmd == nil {
+			t.Fatalf("%T: no command; want the colour requests", msg)
+		}
+		// The requests come first; what follows are the sides' own, which would reach Jira.
+		batch, _ := cmd().(tea.BatchMsg)
+		if len(batch) > 0 {
+			if inner, ok := batch[0]().(tea.BatchMsg); ok {
+				batch = inner
+			}
+		}
+		var got []string
+		for _, c := range batch {
+			got = append(got, fmt.Sprintf("%T", c()))
+		}
+		for _, w := range want {
+			if !slices.Contains(got, w) {
+				t.Errorf("%T: sends %v; want %s among them", msg, got, w)
+			}
+		}
+	}
 }
 
 func keyOf(code rune, mod tea.KeyMod, text string) tea.KeyPressMsg {
