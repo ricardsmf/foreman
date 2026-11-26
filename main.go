@@ -798,6 +798,8 @@ func run() error {
 			return runToday(rest, os.Stdout)
 		case "stats":
 			return runStats(rest, os.Stdout)
+		case "page":
+			return runPage(rest, os.Stdout)
 		case "statusline":
 			// Run by hand, there is nothing to read: a terminal would be waited on.
 			var in io.Reader = os.Stdin

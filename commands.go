@@ -53,6 +53,8 @@ const commandsUsage = `usage: foreman agents [--json] [--prs]   every dispatched
                                           4 timeout: still working after D, on stderr
                                           1 wait failed, as for an unknown KEY
        foreman cleanup [--dry-run] [KEY…] remove finished worktrees, as ^x on the board
+       foreman page [--in DIR]            open the PR of the dispatch that runs in this pane (else its ticket;
+                                          with no dispatch, the PR of DIR's branch) in a browser beside the pane
        foreman today [--json]             the dispatches in progress, my tickets no agent is on yet, and
                                           what got done since yesterday: tickets done, PRs of mine merged
        foreman stats [--days N] [--by ticket|repo] [--json]

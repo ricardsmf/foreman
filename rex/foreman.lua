@@ -1,13 +1,18 @@
--- foreman in Rex's command palette: New Foreman Task… hands an agent a task from whatever session I
--- am in, without a trip to the board. It asks for the repo (the focused pane's first), the agent
--- (the repo's usual one first) and the task, then runs `foreman dispatch`, whose result comes as a
--- notification.
+-- foreman in Rex's command palette, from whatever session I am in, without a trip to the board.
+--
+-- New Foreman Task… hands an agent a task. It asks for the repo (the focused pane's first), the
+-- agent (the repo's usual one first) and the task, then runs `foreman dispatch`, whose result
+-- comes as a notification.
+--
+-- Show Foreman Page opens the PR of the agent in the focused pane, else its ticket, in a browser
+-- split beside that pane.
 --
 -- In ~/.config/rex/init.lua:
 --
 --     package.path = os.getenv("HOME") .. "/projects/foreman/rex/?.lua;" .. package.path
 --     require("foreman")
 --     rex.bind("cmd+alt+t", "foreman_task")
+--     rex.bind("cmd+alt+b", "foreman_page")
 
 local terminal = "com.superlogical.terminal"
 
@@ -100,6 +105,29 @@ local function run(ctx)
   if not started then error(err, 0) end
   return { repo = repo, agent = agent }
 end
+
+-- foreman page finds the dispatch by the pane and opens the page beside it: REX_BLOCK is the pane
+-- it takes itself to be in. It asks GitHub for the PR, so it gets most of the 30 seconds an
+-- action has.
+local function page(ctx)
+  if ctx.server then error("Show Foreman Page: the pane is on " .. tostring(ctx.server) .. ", and foreman's dispatches are on this host", 0) end
+  if not ctx.block_id then error("Show Foreman Page: no pane is in focus", 0) end
+  local r, err = rex.exec(shell('foreman page --in "$FOREMAN_DIR"'),
+    { env = { FOREMAN_DIR = pane_dir(ctx) or "", REX_BLOCK = ctx.block_id }, timeout = 25 })
+  if not r then error(err, 0) end
+  if not r.ok then
+    local why = r.stderr:gsub("%s+$", "")
+    error(why ~= "" and why or "foreman page failed", 0)
+  end
+end
+
+rex.action{
+  name        = "foreman_page",
+  title       = "Show Foreman Page",
+  description = "Open the PR of the agent in this pane, or else its ticket, in a browser beside it",
+  keywords    = "pr pull request ticket jira browser agent open",
+  run         = page,
+}
 
 rex.action{
   name        = "foreman_task",

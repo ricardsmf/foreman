@@ -214,15 +214,19 @@ ticket or PR whose agent session is still open needs `--again`, like the board's
 
 ### From Rex's command palette
 
-`rex/foreman.lua` adds **New Foreman Task…** to Rex: a task handed to an agent from whatever
-session you are in, without a trip to the board. After @almonk's rex-projects.
+`rex/foreman.lua` adds two actions to Rex, for whatever session you are in, without a trip to
+the board: **New Foreman Task…**, a task handed to an agent, and **Show Foreman Page**, an
+agent's PR beside its pane. After @almonk's rex-projects.
 
 ```lua
 -- ~/.config/rex/init.lua
 package.path = os.getenv("HOME") .. "/projects/foreman/rex/?.lua;" .. package.path
 require("foreman")
 rex.bind("cmd+alt+t", "foreman_task")
+rex.bind("cmd+alt+b", "foreman_page")
 ```
+
+New Foreman Task…:
 
 - It asks three things in the palette: the repo, with the one the focused pane's program is in
   first (`here`; a worktree counts as its repo); the agent, with the one a dispatch in that repo
@@ -234,6 +238,19 @@ rex.bind("cmd+alt+t", "foreman_task")
   travel in the environment, so the shell reads nothing you typed.
 - A pane on a remote host puts no repo first: its directory is that host's.
 - A longer brief, a ticket or a PR goes through the board's form, which has the editor (`^e`).
+
+Show Foreman Page opens the PR of the agent in the focused pane in a browser split beside that
+pane, so the PR sits next to the conversation about it:
+
+- It runs `foreman page` with the focused pane as its `REX_BLOCK`. That finds the dispatch whose
+  agent runs in the pane, else the one working in the directory of the pane's program, and asks
+  `gh` for the PR of the branch its worktree is on. A review or a fix opens the PR it is about.
+- A ticket with no PR yet opens in Jira. A task with no PR has nothing to open, and the action
+  fails saying so.
+- In a pane with no dispatch, it opens the PR of the branch checked out there, when it has one.
+- The page opens as one [beside the board](#pages-beside-the-board) does: in a new tab of the
+  browser already in that Rex tab, else in a browser split right of the pane.
+- A pane on a remote host fails: the dispatches are on this host.
 
 ### Reading and steering agents
 

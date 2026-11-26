@@ -323,3 +323,44 @@ func TestPaletteTaskRemoteAndFailure(t *testing.T) {
 		t.Errorf("a failing foreman: %v", err)
 	}
 }
+
+// The palette's page: foreman page runs for the focused pane, which it is told as REX_BLOCK, in
+// the directory of the pane's program; what it fails with is the action's error.
+func TestPalettePage(t *testing.T) {
+	h := newRexHost(t)
+	h.cwd = "/w/app-fld-1"
+	var ran []string
+	var env map[string]string
+	h.run = func(argv []string, e map[string]string) (string, string, bool) {
+		ran, env = argv, e
+		return "✓ Opened https://github.com/o/app/pull/7\n", "", true
+	}
+	if err := h.do("foreman_page", map[string]string{"block_id": "block:2"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(ran) != 3 || ran[0] != "/bin/login-shell" || ran[2] != `foreman page --in "$FOREMAN_DIR"` || env["FOREMAN_DIR"] != "/w/app-fld-1" || env["REX_BLOCK"] != "block:2" {
+		t.Errorf("ran %q with %q", ran, env)
+	}
+	// What the shell hands foreman once it has put the variable in.
+	fs := newFlags("page")
+	in := fs.String("in", "", "")
+	if _, err := parseFlags(fs, []string{"--in", env["FOREMAN_DIR"]}, 0); err != nil || *in != "/w/app-fld-1" {
+		t.Errorf("foreman page reads --in %q, %v", *in, err)
+	}
+
+	h.run = func([]string, map[string]string) (string, string, bool) {
+		return "", "task:app-3 has no PR yet, and no ticket\n", false
+	}
+	if err := h.do("foreman_page", map[string]string{"block_id": "block:2"}); err == nil || !strings.Contains(err.Error(), "task:app-3 has no PR yet, and no ticket") {
+		t.Errorf("a pane with no page: %v", err)
+	}
+
+	// A remote host's pane, or no pane at all, runs nothing.
+	ran = nil
+	h.run = func(argv []string, _ map[string]string) (string, string, bool) { ran = argv; return "", "", true }
+	for _, ctx := range []map[string]string{{"block_id": "block:2", "server": "devbox"}, nil} {
+		if err := h.do("foreman_page", ctx); err == nil || !strings.Contains(err.Error(), "Show Foreman Page: ") || ran != nil {
+			t.Errorf("ctx %v: err %v, ran %q", ctx, err, ran)
+		}
+	}
+}
