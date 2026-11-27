@@ -73,6 +73,16 @@ func TestTaskWithoutARepo(t *testing.T) {
 	}
 }
 
+// A task with no repo starts on Claude until an agent is picked for it, whatever pi is to the repos.
+func TestNoRepoAgentIsClaude(t *testing.T) {
+	if got := defaultAgent(State{AgentByRepo: map[string]string{}}, ""); got != agentClaude {
+		t.Errorf("defaultAgent with no repo = %q, want %q", got, agentClaude)
+	}
+	if got := defaultAgent(State{AgentByRepo: map[string]string{"": agentPi}}, ""); got != agentPi {
+		t.Errorf("a picked agent for no repo: %q", got)
+	}
+}
+
 // A task with no repo is a cleanup candidate once its session closes; cleaning it up removes its
 // scratch directory with whatever the agent left there.
 func TestCleanupRemovesATasksScratchDirectory(t *testing.T) {

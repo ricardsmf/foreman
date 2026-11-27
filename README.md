@@ -213,7 +213,7 @@ one without `--repo`.
 - The agent is told to answer in its report, saying what the answer rests on, and to change
   nothing outside its directory unless the task asks. It has no branch to commit on and gets no
   oracles.
-- Its agent is remembered apart from every repo's, and starts on pi until one is picked.
+- Its agent is remembered apart from every repo's, and starts on Claude until one is picked.
 - In the queue it is a task like the others: `d` has no diff to show, `r` no commits to review,
   and `^x` lists it once its session is closed and removes its scratch directory with the rest.
 

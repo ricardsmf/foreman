@@ -50,12 +50,12 @@ func hasSkills(repo string) bool {
 }
 
 // defaultAgent is the agent the form starts on for a repo: the one last dispatched there, else
-// Claude where the repo ships Claude Code skills, else pi.
+// Claude where the repo ships Claude Code skills or for a task with no repo (repo ""), else pi.
 func defaultAgent(s State, repo string) string {
 	if last := s.AgentByRepo[repo]; slices.ContainsFunc(agents, func(a Agent) bool { return a.Label == last }) {
 		return last
 	}
-	if hasSkills(repo) {
+	if repo == "" || hasSkills(repo) {
 		return agentClaude
 	}
 	return agentPi
