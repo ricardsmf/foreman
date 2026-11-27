@@ -20,11 +20,12 @@ import (
 
 const dispatchUsage = `usage: foreman dispatch [options] [TEXT | -]
 
-With none of --ticket, --pr and --review, TEXT is the task and --repo is required. With one, TEXT
-is optional extra context. "-" reads TEXT from stdin. Options go before TEXT.
+With none of --ticket, --pr and --review, TEXT is the task. With one, TEXT is optional extra
+context. "-" reads TEXT from stdin. Options go before TEXT.
 
   --repo NAME     a repo under ~/work/code or ~/projects, by directory name or path
-                  (a ticket defaults to its project's last repo)
+                  (a ticket defaults to its project's last repo; a task without one has no repo,
+                  and runs in a scratch directory of its own)
   --ticket KEY    work on a Jira ticket
   --pr REPO#N     review a pull request, e.g. reports-app#1185
   --review KEY    review the work of KEY's agent before it is pushed: the commits it made since
@@ -80,8 +81,8 @@ func parseDispatchArgs(argv []string, stdin io.Reader) (dispatchArgs, error) {
 		return a, errors.New("--ticket and --pr don't go together")
 	case a.ticket == "" && a.pr == "" && a.text == "":
 		return a, errors.New("a task needs TEXT saying what to do")
-	case a.ticket == "" && a.pr == "" && a.repo == "":
-		return a, errors.New("a task needs --repo")
+	case a.ticket == "" && a.pr == "" && a.repo == "" && a.noWorktree:
+		return a, errors.New("--no-worktree needs --repo: a task with no repo runs in a scratch directory")
 	case a.fix && a.pr == "":
 		return a, errors.New("--fix goes with --pr")
 	case a.fix && (a.repo != "" || a.noWorktree || a.poteto):
@@ -339,7 +340,9 @@ func runRepos(argv []string, out io.Writer) error {
 		return enc.Encode(struct {
 			Repos  []repoInfo `json:"repos"`
 			Agents []Agent    `json:"agents"`
-		}{infos, agents})
+			// NoRepoAgent is the agent a task with no repo starts on.
+			NoRepoAgent string `json:"noRepoAgent"`
+		}{infos, agents, defaultAgent(s, "")})
 	}
 	for _, r := range infos {
 		note := ""

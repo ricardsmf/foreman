@@ -15,6 +15,7 @@ foreman --logout            # forget the Atlassian sign-in
 foreman open                # go to the foreman Rex session, starting it when it isn't running
 foreman watch               # start the watchers and wake them, for launchd
 foreman dispatch --repo foreman 'Add a --verbose flag'   # a task, no ticket
+foreman dispatch 'What does Rex do on cmd+k?'             # a task with no repo
 foreman repos               # the repos a dispatch takes, each with the agent it starts on
 foreman today               # what is in progress, up next and done since yesterday
 foreman stats --days 7      # what the agents used: cost, tokens and time worked
@@ -200,6 +201,22 @@ A task is work with no ticket or PR behind it: `^t` on the board opens the dispa
 - Picking the agent remembers it for the repo; a task doesn't change the repo a Jira project
   starts on.
 
+### A task with no repo
+
+A question, or work outside every repo, needs no checkout: the task form's repos end with **no
+repo** (typing `no` filters to it), the palette's with **No repo**, and `foreman dispatch` takes
+one without `--repo`.
+
+- Its key is `task:<n>`, numbered apart from the repos' tasks and never reused. The agent runs in
+  a new, empty scratch directory, `~/.local/state/foreman/tasks/task-<n>`, on no branch; the
+  worktree option means nothing here, and `--no-worktree` is refused.
+- The agent is told to answer in its report, saying what the answer rests on, and to change
+  nothing outside its directory unless the task asks. It has no branch to commit on and gets no
+  oracles.
+- Its agent is remembered apart from every repo's, and starts on pi until one is picked.
+- In the queue it is a task like the others: `d` has no diff to show, `r` no commits to review,
+  and `^x` lists it once its session is closed and removes its scratch directory with the rest.
+
 ### `foreman dispatch`
 
 The board's dispatch from the command line, for scripts and agents. Progress goes to stderr, the
@@ -207,6 +224,7 @@ result line to stdout.
 
 ```
 foreman dispatch --repo foreman [--agent pi|claude|auto|yolo] [--no-worktree] [--poteto] [--title T] 'what to do'
+foreman dispatch [--agent pi|claude|auto|yolo] [--poteto] [--title T] 'what to ask or do'   # no repo
 foreman dispatch --ticket FLD-1700 [--repo reports-app] [...] ['extra context']
 foreman dispatch --pr reports-app#1185 [--agent claude] ['what to focus on']
 foreman dispatch --pr reports-app#1185 --fix [--agent claude] [--title T] ['what to fix']
@@ -221,8 +239,8 @@ ticket or PR whose agent session is still open needs `--again`, like the board's
   well: for a dispatch started where nobody reads its output, as [the palette's](#from-rexs-command-palette) is.
 - `foreman repos` lists the repos `--repo` takes, each with the agent a dispatch there starts on.
   The one the current directory is in, or `--in DIR`, reads `here`, from inside a worktree too.
-  `--json` gives `repos` (each one's `name`, `path`, `agent` and `here`) and `agents` (each
-  one's `label` and `note`).
+  `--json` gives `repos` (each one's `name`, `path`, `agent` and `here`), `agents` (each
+  one's `label` and `note`) and `noRepoAgent`, the agent a task with no repo starts on.
 
 ### From Rex's command palette
 
@@ -241,7 +259,8 @@ rex.bind("cmd+alt+b", "foreman_page")
 New Foreman Task…:
 
 - It asks three things in the palette: the repo, with the one the focused pane's program is in
-  first (`here`; a worktree counts as its repo); the agent, with the one a dispatch in that repo
+  first (`here`; a worktree counts as its repo) and **No repo** last, for [a task with no
+  repo](#a-task-with-no-repo); the agent, with the one a dispatch in that repo
   starts on first; and the task, in one line. Closing any of them dispatches nothing.
 - It then runs `foreman dispatch --notify` and doesn't wait for it: a dispatch fetches origin
   first, and Rex gives an action 30 seconds. The result line, or why nothing was dispatched, comes
@@ -939,6 +958,7 @@ ticked ones (never `--force`, so changes stop it); branches and their commits st
 reports, evidence and the agent's Rex session go.
 
 - A task has nothing outside to say it's done: it is listed once its agent's session is closed.
+  One with no repo is listed as `no repo: its scratch directory`, which goes whatever it holds.
 - A dispatch that ran without a worktree is listed as `checkout stays`: only its record, reports and
   session go.
 - A dispatch whose worktree was removed by hand is dropped, with its reports, as soon as `^x` runs.

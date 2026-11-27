@@ -225,7 +225,7 @@ func TestPaletteTask(t *testing.T) {
 	task := `fix the "quoted" $HOME 'thing'`
 	h.answers = []func(*lua.LTable) (lua.LValue, string){
 		func(spec *lua.LTable) (lua.LValue, string) {
-			if got, want := items(spec), []string{tool + "|tool|here", app + "|app|"}; strings.Join(got, "\n") != strings.Join(want, "\n") {
+			if got, want := items(spec), []string{tool + "|tool|here", app + "|app|", "none|No repo|"}; strings.Join(got, "\n") != strings.Join(want, "\n") {
 				t.Errorf("repos offered:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 			}
 			return lua.LString(tool), ""

@@ -20,6 +20,7 @@ type cleanupCandidate struct {
 	Dir     string
 	Repo    string // the main checkout that owns the worktree
 	Main    bool   // dispatched without a worktree: Dir is the main checkout, which stays
+	Scratch bool   // a task with no repo: Dir is its scratch directory, removed whatever it holds
 	Reason  string // "done", "merged", "closed", "session closed"
 	Dirty   bool   // uncommitted changes: git refuses to remove it
 	Agent   string // the agent's reported state, if its session is still open
@@ -145,6 +146,10 @@ func checkCleanup(ctx context.Context, jira *Jira, key, dir string, sessionOpen 
 			return c, false, nil
 		}
 		c.Reason = "session closed"
+		if noRepoTask(key) {
+			c.Scratch = true
+			return c, true, nil
+		}
 	} else {
 		reason, err := finished(ctx, jira, key, dir)
 		if err != nil || reason == "" {
@@ -323,9 +328,16 @@ func removeCandidates(picked []cleanupCandidate) cleanedMsg {
 	removed, forgotten := 0, 0
 	branches := map[string]string{}
 	for _, c := range picked {
-		if c.Main {
+		switch {
+		case c.Main:
 			forgotten++
-		} else {
+		case c.Scratch:
+			if err := os.RemoveAll(c.Dir); err != nil {
+				errs = append(errs, fmt.Sprintf("%s: %s", tilde(c.Dir), firstLine(err.Error())))
+				continue
+			}
+			removed++
+		default:
 			// A ticket may have several branches: the one its worktree is on is the one to go back to.
 			branch := ""
 			if isTicket(c.Key) {
@@ -404,6 +416,9 @@ func (m *model) renderCleanup(width, h int) []string {
 		notes = append(notes, c.Reason)
 		if c.Main {
 			notes = append(notes, "checkout stays")
+		}
+		if c.Scratch {
+			notes = append(notes, "no repo: its scratch directory")
 		}
 		if c.Dirty {
 			notes = append(notes, fg(cRed, "uncommitted changes"))

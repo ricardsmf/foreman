@@ -488,10 +488,19 @@ func workBranch(repo string) (string, error) {
 }
 
 // A task is work I describe myself, with no ticket or PR behind it. Its key, task:<repo>-<n>,
-// reads as neither a Jira key nor a PR's (`#`).
+// reads as neither a Jira key nor a PR's (`#`). A task with no repo is task:<n>.
 const taskPrefix = "task:"
 
 func isTask(key string) bool { return strings.HasPrefix(key, taskPrefix) }
+
+// noRepoTask is whether the key is a task's with no repo, whose number has no repo name before it.
+func noRepoTask(key string) bool {
+	n, ok := strings.CutPrefix(key, taskPrefix)
+	return ok && n != "" && !strings.Contains(n, "-")
+}
+
+// taskDir is the scratch directory a task with no repo works in, beside the state file.
+func taskDir(key string) string { return filepath.Join(filepath.Dir(stateFile), "tasks", keySlug(key)) }
 
 // isTicket is whether the key is a Jira ticket's: not a task's, and not a PR's or its fix's.
 func isTicket(key string) bool { return !isTask(key) && !strings.Contains(key, "#") }
@@ -505,6 +514,7 @@ func isFix(key string) bool { return strings.HasPrefix(key, fixPrefix) }
 func fixKey(prKey string) string { return fixPrefix + prKey }
 
 type TaskDispatch struct {
+	// Repo is "" for a task with no repo, which runs in a scratch directory of its own.
 	Repo     string
 	Agent    string
 	Worktree bool
@@ -523,19 +533,26 @@ func taskTitle(task string) string {
 	return string(r)
 }
 
-// newTaskKey reserves the repo's next task number. Numbers are never reused, so a new task's
-// worktree and report can't land on an old one's.
+// newTaskKey reserves the repo's next task number, or with repo "", the next of the tasks with no
+// repo. Numbers are never reused, so a new task's worktree and report can't land on an old one's.
 func newTaskKey(repo string) (key string, n int, err error) {
-	name := filepath.Base(repo)
+	name := ""
+	if repo != "" {
+		name = filepath.Base(repo)
+	}
 	_, err = updateState(func(s *State) {
 		s.TaskSeq[name]++
 		n = s.TaskSeq[name]
 	})
+	if name == "" {
+		return fmt.Sprintf("%s%d", taskPrefix, n), n, err
+	}
 	return fmt.Sprintf("%s%s-%d", taskPrefix, name, n), n, err
 }
 
 // dispatchTask starts the agent on a task in a new worktree, `<repo>-task-<n>`, or in the checkout
-// itself, in a new Rex session named after the task.
+// itself, in a new Rex session named after the task. A task with no repo runs in a new scratch
+// directory.
 func dispatchTask(d TaskDispatch, progress func(string)) (string, error) {
 	task := strings.TrimSpace(d.Task)
 	if task == "" {
@@ -548,6 +565,9 @@ func dispatchTask(d TaskDispatch, progress func(string)) (string, error) {
 		if skill, err = potetoSkill(); err != nil {
 			return "", err
 		}
+	}
+	if d.Repo == "" {
+		return dispatchNoRepoTask(d, task, title, skill, progress)
 	}
 	cwd, branch := d.Repo, ""
 	if !d.Worktree {
@@ -577,6 +597,61 @@ func dispatchTask(d TaskDispatch, progress func(string)) (string, error) {
 	}
 	markDispatched(key, title, cwd, session, d.Agent, from)
 	return fmt.Sprintf("✓ %s is working on %s in session %s · %s (%s)", d.Agent, key, name, tilde(cwd), branch), nil
+}
+
+func dispatchNoRepoTask(d TaskDispatch, task, title, skill string, progress func(string)) (string, error) {
+	key, _, err := newTaskKey("")
+	if err != nil {
+		return "", err
+	}
+	cwd := taskDir(key)
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		return "", err
+	}
+	if err := resetEvidence(key); err != nil {
+		return "", err
+	}
+	prompt := noRepoTaskPrompt(key, title, task, cwd, skill)
+	session, name, err := start(d.Agent, key, prompt, cwd, sessionLabel(key, title), progress)
+	if err != nil {
+		return "", err
+	}
+	markDispatched(key, title, cwd, session, d.Agent, "")
+	return fmt.Sprintf("✓ %s is working on %s in session %s · %s (no repo)", d.Agent, key, name, tilde(cwd)), nil
+}
+
+// noRepoTaskPrompt is what the agent on a task with no repo starts with: most are questions, so
+// the report is where the work lands, and there is no branch to commit on.
+func noRepoTaskPrompt(key, title, task, cwd, skill string) string {
+	lines := []string{
+		fmt.Sprintf("# %s: %q", key, title),
+		"",
+		"You are working on a task I'm giving you directly; there is no Jira ticket behind it, and no repo.",
+		"Working directory: " + cwd + " (an empty scratch directory for this task; cleaning the task up removes it)",
+		"",
+		"## Task",
+		"",
+		task,
+	}
+	lines = append(lines, methodSection(skill, "task")...)
+	lines = append(lines,
+		"",
+		"## Workflow",
+		"",
+		"1. **Understand** what I'm asking. If it is ambiguous, ask instead of guessing, as below.",
+		"2. **Do the task**, and only it: find the answer from the sources that hold it (files on this machine, the tools you have, the web), and say where a fact came from. Change nothing outside the working directory unless the task asks for it.",
+		"3. **Report**: write the report below, then finish with the same summary in your final message.",
+	)
+	lines = append(lines, askSection()...)
+	dir := evidenceDir(key)
+	return strings.Join(append(lines,
+		"",
+		"## Report",
+		"",
+		"My review queue reads your report from `"+dir+"/report.md`. Write it when you finish, and also before you stop to ask me something, so the question is in it. Start it with a `# ` line that gives the answer, or the outcome, in one sentence.",
+		"The report gives the answer and what it rests on: the files, pages and commands you read, with the output that matters. Save anything worth keeping beside it (screenshots, captures, files): the working directory goes when the task is cleaned up.",
+		"That directory is for me only. Never attach, upload or link these files anywhere.",
+	), "\n")
 }
 
 // taskPrompt is what the agent on a task starts with. skill is the poteto-mode skill's path, or

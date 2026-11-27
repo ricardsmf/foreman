@@ -649,6 +649,8 @@ func (m *model) renderForm(width, h int) []string {
 		header, heading = m.header("new task"), bold("New task")
 		if repo := m.formRepo(); repo != "" {
 			heading += fg(cOverlay, " in "+filepath.Base(repo))
+		} else if len(m.repoChoices()) > 0 {
+			heading += fg(cOverlay, " with "+noRepoChoice)
 		}
 	}
 	return m.renderFormFields([]string{header, "", heading, fg(cSurface, strings.Repeat("─", width))}, width, h)
@@ -738,11 +740,16 @@ func (m *model) renderFormFields(out []string, width, h int) []string {
 		start := max(0, min(f.repo-2, len(choices)-rows))
 		for n := start; n < min(len(choices), start+rows); n++ {
 			on := n == f.repo
-			name := fg(cSubtext, tilde(choices[n]))
-			if on {
-				name = bold(tilde(choices[n]))
+			name, note := tilde(choices[n]), ""
+			if choices[n] == "" {
+				name, note = noRepoChoice, " "+fg(cOverlay, "(a scratch directory, for a question or work outside the repos)")
 			}
-			out = append(out, "    "+radio(on)+" "+name)
+			if on {
+				name = bold(name)
+			} else {
+				name = fg(cSubtext, name)
+			}
+			out = append(out, "    "+radio(on)+" "+name+note)
 		}
 		if len(choices) == 0 {
 			out = append(out, fg(cRed, "    no repo matches"))

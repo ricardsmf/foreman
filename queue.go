@@ -129,6 +129,9 @@ func repoOf(key, dir string) string {
 		if i := strings.LastIndex(r, "-"); i > 0 {
 			return r[:i]
 		}
+		if noRepoTask(key) {
+			return ""
+		}
 	}
 	if r, _, ok := strings.Cut(strings.TrimPrefix(key, "fix:"), "#"); ok {
 		return r
@@ -1565,6 +1568,10 @@ func (q *queueModel) hide(it queueItem) tea.Cmd {
 // openDiff shows the worktree's changes in a pager, suspending the queue: the agent's since its
 // dispatch plus anything uncommitted, or a review's against the PR's base.
 func (q *queueModel) openDiff(it queueItem) tea.Cmd {
+	if noRepoTask(it.Key) {
+		q.say("A task with no repo has no diff", cOverlay)
+		return nil
+	}
 	if !exists(it.Dir) {
 		q.say(tilde(it.Dir)+" is gone", cOverlay)
 		return nil

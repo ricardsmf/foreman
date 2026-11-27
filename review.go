@@ -412,6 +412,8 @@ func dispatchWorkReview(ctx context.Context, jira *Jira, r WorkReview, progress 
 	switch {
 	case reviewKey(r.Key):
 		return "", fmt.Errorf("%s is a review already; --review takes the work of a ticket's, a task's or a fix's agent", r.Key)
+	case noRepoTask(r.Key):
+		return "", fmt.Errorf("%s has no repo, so no commits to review", r.Key)
 	case d.Dir == "" || repo == "":
 		return "", fmt.Errorf("%s's worktree %s is gone", r.Key, tilde(d.Dir))
 	}

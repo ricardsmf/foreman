@@ -1805,7 +1805,7 @@ func TestParseDispatchArgs(t *testing.T) {
 		t.Errorf("ticket with stdin: %+v, %v", a, err)
 	}
 	for _, argv := range [][]string{
-		{"do", "it"},                           // a task without a repo
+		{"--no-worktree", "do", "it"},          // a task without a repo has no checkout
 		{"--repo", "foreman"},                  // a task without text
 		{"--ticket", "FLD-1", "--pr", "app#1"}, // both
 		{"--pr", "app#1", "--repo", "foreman"}, // a review has its checkout

@@ -355,6 +355,10 @@ func (m *model) fetchDetail(row Row) tea.Cmd {
 	}
 }
 
+// noRepoChoice names the task form's last repo choice, "", which a query can filter to.
+const noRepoChoice = "no repo"
+
+// repoChoices are the repos the form's query matches; a task's end with "", no repo.
 func (m *model) repoChoices() []string {
 	q := ""
 	if m.form != nil {
@@ -365,6 +369,9 @@ func (m *model) repoChoices() []string {
 		if q == "" || strings.Contains(strings.ToLower(tilde(r)), q) {
 			out = append(out, r)
 		}
+	}
+	if m.form != nil && m.form.task && strings.Contains(noRepoChoice, q) {
+		out = append(out, "")
 	}
 	return out
 }
@@ -390,7 +397,8 @@ func (m *model) openTaskForm() {
 	m.followRepo()
 }
 
-// formRepo is the main checkout the form would dispatch in: the PR's, or the picked repo.
+// formRepo is the main checkout the form would dispatch in: the PR's, or the picked repo; "" for
+// a task with no repo, or no repo matching.
 func (m *model) formRepo() string {
 	f := m.form
 	if f.row.Pr != nil {
@@ -467,7 +475,7 @@ func (m *model) submit() tea.Cmd {
 	if f.repo < len(choices) {
 		repo = choices[f.repo]
 	}
-	if (repo == "" && f.row.Pr == nil) || f.busy {
+	if (f.row.Pr == nil && (f.repo >= len(choices) || repo == "" && !f.task)) || f.busy {
 		return nil
 	}
 	if f.task && strings.TrimSpace(f.context) == "" {

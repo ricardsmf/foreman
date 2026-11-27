@@ -42,6 +42,9 @@ func repoSkills(dir string) []string {
 
 // hasSkills is whether the repo ships any Claude Code skill, invocable by the agent or not.
 func hasSkills(repo string) bool {
+	if repo == "" {
+		return false
+	}
 	files, _ := filepath.Glob(filepath.Join(repo, ".claude", "skills", "*", "SKILL.md"))
 	return len(files) > 0
 }

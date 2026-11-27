@@ -1,8 +1,8 @@
 -- foreman in Rex's command palette, from whatever session I am in, without a trip to the board.
 --
--- New Foreman Task… hands an agent a task. It asks for the repo (the focused pane's first), the
--- agent (the repo's usual one first) and the task, then runs `foreman dispatch`, whose result
--- comes as a notification.
+-- New Foreman Task… hands an agent a task. It asks for the repo (the focused pane's first, and
+-- No repo last), the agent (the repo's usual one first) and the task, then runs `foreman dispatch`,
+-- whose result comes as a notification.
 --
 -- Show Foreman Page opens the PR of the agent in the focused pane, else its ticket, in a browser
 -- split beside that pane.
@@ -31,7 +31,8 @@ local function pane_dir(ctx)
   return proc and proc.foreground and proc.foreground.cwd or nil
 end
 
--- What a dispatch can take: { repos = { { name, path, agent, here } }, agents = { { label, note } } }.
+-- What a dispatch can take: { repos = { { name, path, agent, here } }, agents = { { label, note } },
+-- noRepoAgent }.
 local function listing(ctx)
   local r, err = rex.exec(shell('foreman repos --json --in "$FOREMAN_DIR"'),
     { env = { FOREMAN_DIR = pane_dir(ctx) or "" }, timeout = 15 })
@@ -63,6 +64,9 @@ local function tilde(path)
   return path
 end
 
+-- The id of the repo pick's No repo row: a repo's id is its absolute path.
+local no_repo = "none"
+
 local function run(ctx)
   local list = listing(ctx)
 
@@ -74,6 +78,11 @@ local function run(ctx)
       detail = r.here and "here" or nil,
     }, r.here)
   end
+  names[no_repo], usual[no_repo] = nil, list.noRepoAgent
+  items[#items + 1] = {
+    id = no_repo, title = "No repo", subtitle = "A scratch directory, for a question or work outside the repos",
+    icon = "questionmark.circle",
+  }
   local repo = answered(rex.ui.pick{ title = "New task", placeholder = "Repo for the agent to work in", items = items })
   if repo == nil then return end
 
@@ -81,12 +90,17 @@ local function run(ctx)
   for _, a in ipairs(list.agents or {}) do
     add(items, { id = a.label, title = a.label, subtitle = a.note, icon = "terminal" }, a.label == usual[repo])
   end
-  local agent = answered(rex.ui.pick{ title = "Agent in " .. names[repo], placeholder = "Agent to start", items = items })
+  local where = repo == no_repo and ", with no repo" or " in " .. names[repo]
+  local agent = answered(rex.ui.pick{
+    title = repo == no_repo and "Agent, with no repo" or "Agent in " .. names[repo],
+    placeholder = "Agent to start", items = items,
+  })
   if agent == nil then return end
 
   local task = answered(rex.ui.input{
-    title = "Task for " .. agent .. " in " .. names[repo],
-    placeholder = "What to do; its first words name the branch",
+    title = "Task for " .. agent .. where,
+    placeholder = repo == no_repo and "What to ask or do; its first words name it"
+      or "What to do; its first words name the branch",
     confirm = "Dispatch",
   })
   if task == nil then return end
@@ -96,10 +110,14 @@ local function run(ctx)
 
   -- A dispatch fetches origin first and may outlast the 30 seconds an action has, so it runs on by
   -- itself. Nothing reads its output: --notify shows how it ended.
+  local command = 'foreman dispatch --notify --repo "$FOREMAN_REPO" --agent "$FOREMAN_AGENT" -- "$FOREMAN_TASK"'
+  if repo == no_repo then
+    command = 'foreman dispatch --notify --agent "$FOREMAN_AGENT" -- "$FOREMAN_TASK"'
+  end
   local started, err = rex.exec.start(
-    shell('foreman dispatch --notify --repo "$FOREMAN_REPO" --agent "$FOREMAN_AGENT" -- "$FOREMAN_TASK"'),
+    shell(command),
     {
-      env = { FOREMAN_REPO = repo, FOREMAN_AGENT = agent, FOREMAN_TASK = task },
+      env = { FOREMAN_REPO = repo ~= no_repo and repo or nil, FOREMAN_AGENT = agent, FOREMAN_TASK = task },
       detach = true, stdout = false, stderr = false,
     })
   if not started then error(err, 0) end
@@ -132,7 +150,7 @@ rex.action{
 rex.action{
   name        = "foreman_task",
   title       = "New Foreman Task…",
-  description = "Choose a repo and an agent, say what to do, and foreman starts the agent on it in a worktree",
-  keywords    = "dispatch agent task repo worktree pi claude",
+  description = "Choose a repo, or none, and an agent, say what to do, and foreman starts the agent on it",
+  keywords    = "dispatch agent task repo worktree question pi claude",
   run         = run,
 }

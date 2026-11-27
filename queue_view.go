@@ -214,7 +214,7 @@ func shortKey(it queueItem) string {
 	case it.Kind == prItem && n >= 0:
 		return key[n:]
 	case isTask(key):
-		return "task " + key[strings.LastIndex(key, "-")+1:]
+		return "task " + key[strings.LastIndexAny(key, ":-")+1:]
 	case isFix(key) && n >= 0:
 		return "fix " + key[n:]
 	case it.review() && n >= 0:
