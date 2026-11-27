@@ -209,7 +209,7 @@ one without `--repo`.
 
 - Its key is `task:<n>`, numbered apart from the repos' tasks and never reused. The agent runs in
   a new, empty scratch directory, `~/.local/state/foreman/tasks/task-<n>`, on no branch; the
-  worktree option means nothing here, and `--no-worktree` is refused.
+  form hides the worktree option, and `--no-worktree` is refused.
 - The agent is told to answer in its report, saying what the answer rests on, and to change
   nothing outside its directory unless the task asks. It has no branch to commit on and gets no
   oracles.

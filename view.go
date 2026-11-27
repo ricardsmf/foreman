@@ -726,9 +726,11 @@ func (m *model) renderFormFields(out []string, width, h int) []string {
 			option(fieldWorktree, f.fix, "fix it", "(commit on its branch instead of reviewing: the review comments, or your context)"),
 			"", "  "+bold("Checkout"), checkout)
 	} else {
-		out = append(out, "", "  "+bold("Options"),
-			option(fieldWorktree, f.worktree, "git worktree", "(isolated checkout, parallel-safe)"),
-			option(fieldPoteto, f.poteto, "poteto-mode", "(pstack playbooks and subagents: slower, more tokens)"), "")
+		out = append(out, "", "  "+bold("Options"))
+		if !m.noRepoPicked() {
+			out = append(out, option(fieldWorktree, f.worktree, "git worktree", "(isolated checkout, parallel-safe)"))
+		}
+		out = append(out, option(fieldPoteto, f.poteto, "poteto-mode", "(pstack playbooks and subagents: slower, more tokens)"), "")
 		choices := m.repoChoices()
 		f.repo = max(0, min(f.repo, len(choices)-1))
 		filter := fg(cOverlay, "type to filter")

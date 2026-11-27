@@ -80,10 +80,13 @@ const (
 	fieldPoteto
 	fieldRepo
 	fieldContext
-	fieldCount
 )
 
-var prFields = []int{fieldAgent, fieldWorktree, fieldContext}
+var (
+	prFields     = []int{fieldAgent, fieldWorktree, fieldContext}
+	noRepoFields = []int{fieldAgent, fieldPoteto, fieldRepo, fieldContext}
+	allFields    = []int{fieldAgent, fieldWorktree, fieldPoteto, fieldRepo, fieldContext}
+)
 
 type form struct {
 	row Row
@@ -409,6 +412,23 @@ func (m *model) formRepo() string {
 		return ""
 	}
 	return choices[max(0, min(f.repo, len(choices)-1))]
+}
+
+// noRepoPicked is whether the form is on a task with no repo, which has no worktree to choose.
+func (m *model) noRepoPicked() bool {
+	return m.form.task && m.formRepo() == "" && len(m.repoChoices()) > 0
+}
+
+// formFields are the form's fields in tab order: a PR's, a task's with no repo, or a ticket's or
+// task's in a repo.
+func (m *model) formFields() []int {
+	switch {
+	case m.form.row.Pr != nil:
+		return prFields
+	case m.noRepoPicked():
+		return noRepoFields
+	}
+	return allFields
 }
 
 // followRepo puts the form on its repo's default agent, unless I picked one.

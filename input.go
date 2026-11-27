@@ -180,17 +180,11 @@ func (m *model) formInput(msg tea.KeyPressMsg) tea.Cmd {
 		f.field = fieldContext
 		return editContext(f.context)
 	case k == "tab" || (k == "down" && f.field != fieldRepo):
-		if isPr {
-			f.field = prFields[(slices.Index(prFields, f.field)+1)%len(prFields)]
-		} else {
-			f.field = (f.field + 1) % fieldCount
-		}
+		fields := m.formFields()
+		f.field = fields[(slices.Index(fields, f.field)+1)%len(fields)]
 	case k == "shift+tab" || (k == "up" && f.field != fieldRepo):
-		if isPr {
-			f.field = prFields[(slices.Index(prFields, f.field)+len(prFields)-1)%len(prFields)]
-		} else {
-			f.field = (f.field + fieldCount - 1) % fieldCount
-		}
+		fields := m.formFields()
+		f.field = fields[(slices.Index(fields, f.field)+len(fields)-1)%len(fields)]
 	case f.field == fieldAgent && (left || right):
 		if left {
 			f.agent = (f.agent + len(agents) - 1) % len(agents)

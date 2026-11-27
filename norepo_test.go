@@ -132,6 +132,20 @@ func TestTaskFormWithoutARepo(t *testing.T) {
 	if form := strings.Join(m.renderForm(100, 40), "\n"); !strings.Contains(form, "no repo") {
 		t.Errorf("form:\n%s", form)
 	}
+	// The worktree option means nothing with no repo: it isn't shown, and tab passes it by.
+	if form := strings.Join(m.renderForm(100, 40), "\n"); strings.Contains(form, "git worktree") {
+		t.Errorf("the form offers a worktree with no repo:\n%s", form)
+	}
+	f.field = fieldAgent
+	m.formInput(tea.KeyPressMsg{Code: tea.KeyTab})
+	if f.field != fieldPoteto {
+		t.Errorf("tab from the agent went to field %d, want poteto-mode %d", f.field, fieldPoteto)
+	}
+	m.formInput(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+	if f.field != fieldAgent {
+		t.Errorf("shift+tab from poteto-mode went to field %d, want the agent", f.field)
+	}
+	f.field = fieldContext
 	// Typing filters to it as well.
 	f.repoQuery, f.repo = "no re", 0
 	if choices := m.repoChoices(); len(choices) != 1 || choices[0] != "" {
